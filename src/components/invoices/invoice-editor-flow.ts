@@ -125,8 +125,6 @@ export type ForvalChip =
   | { kind: 'valid_until'; date: string }
   | { kind: 'received'; date: string }
   | { kind: 'delivery'; date: string }
-  | { kind: 'your_reference'; reference: string }
-  | { kind: 'invoice_marking'; marking: string }
   | { kind: 'payment_link'; mode: 'auto' | 'manual' }
   | { kind: 'ore_off' }
   | { kind: 'dims'; dims: string }
@@ -141,8 +139,6 @@ export interface ForvalChipsInput {
   validUntil?: string
   receivedDate: string
   deliveryDate: string
-  yourReference: string
-  invoiceMarking: string
   paymentLink: 'auto' | 'manual' | null
   oreRounding: boolean
   /** Compact display of the invoice-level default dims, or null when none. */
@@ -155,6 +151,10 @@ export interface ForvalChipsInput {
  * deviating value MUST surface here: in edit/copy mode the draft may carry a
  * proforma type, an EUR currency, a payment link or dimension defaults that
  * would otherwise round-trip invisibly through PATCH.
+ *
+ * The references (Vår referens, Er referens, Fakturamärkning) are not
+ * collapsed settings: they are per-invoice data rendered in the visible head
+ * of the editor next to the customer (crm#136, crm#187), so they need no chip.
  */
 export function deriveForvalChips(input: ForvalChipsInput): ForvalChip[] {
   const chips: ForvalChip[] = []
@@ -183,12 +183,6 @@ export function deriveForvalChips(input: ForvalChipsInput): ForvalChip[] {
   }
   if (!input.isSelfBilled && input.deliveryDate) {
     chips.push({ kind: 'delivery', date: input.deliveryDate })
-  }
-  if (!input.isSelfBilled && input.yourReference.trim()) {
-    chips.push({ kind: 'your_reference', reference: input.yourReference.trim() })
-  }
-  if (!input.isSelfBilled && input.invoiceMarking.trim()) {
-    chips.push({ kind: 'invoice_marking', marking: input.invoiceMarking.trim() })
   }
   if (!input.isSelfBilled && input.paymentLink) {
     chips.push({ kind: 'payment_link', mode: input.paymentLink })
