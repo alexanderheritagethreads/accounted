@@ -2,7 +2,7 @@
 
 import { useLocale, useTranslations } from 'next-intl'
 import { useState, useSyncExternalStore } from 'react'
-import { ArrowUpRight, KeyRound, Loader2, Terminal } from 'lucide-react'
+import { ArrowUpRight, Building2, KeyRound, Loader2, Terminal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { AttnLine } from '@/components/ui/attn-line'
@@ -15,6 +15,8 @@ import {
   type ConnectTarget,
 } from '@/components/settings/ConnectClientDialog'
 import type { ApiKeyRow } from '@/components/settings/useApiKeys'
+import type { PickerCompany } from '@/components/settings/CompanyPickerList'
+import { KeyCompaniesDialog } from '@/components/settings/KeyCompaniesDialog'
 import { AI_CLIENTS } from '@/lib/onboarding/ai-clients'
 import { claudeConnectorLink } from '@/lib/onboarding/checklist'
 import { getBranding } from '@/lib/branding/service'
@@ -40,13 +42,21 @@ const LOGO: Partial<Record<ConnectionKind | ConnectTarget, string>> = {
 /**
  * Single-colour brand marks drawn in currentColor, so they follow the theme
  * (a black <img> would vanish in dark mode). Path data from simple-icons
- * 16.32.0, CC0-1.0: Cursor's mark, and the Model Context Protocol mark for a
- * generic MCP client.
+ * 16.32.0, CC0-1.0: Cursor's and Google Gemini's marks, and the Model Context
+ * Protocol mark for a generic MCP client.
  */
 function CursorMark({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
       <path d="M11.503.131 1.891 5.678a.84.84 0 0 0-.42.726v11.188c0 .3.162.575.42.724l9.609 5.55a1 1 0 0 0 .998 0l9.61-5.55a.84.84 0 0 0 .42-.724V6.404a.84.84 0 0 0-.42-.726L12.497.131a1.01 1.01 0 0 0-.996 0M2.657 6.338h18.55c.263 0 .43.287.297.515L12.23 22.918c-.062.107-.229.064-.229-.06V12.335a.59.59 0 0 0-.295-.51l-9.11-5.257c-.109-.063-.064-.23.061-.23" />
+    </svg>
+  )
+}
+
+function GeminiMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81" />
     </svg>
   )
 }
@@ -62,6 +72,7 @@ function McpMark({ className }: { className?: string }) {
 const ICON = {
   local: Terminal,
   cursor: CursorMark,
+  gemini: GeminiMark,
   mcp: McpMark,
   other: McpMark,
   key: KeyRound,
@@ -98,18 +109,28 @@ function ClientMark({ kind, size = 'md' }: { kind: ConnectionKind | ConnectTarge
  */
 export function McpConnectionsPanel({
   keys,
+  companies = [],
   isLoading,
   onRevoke,
+  onKeysChanged,
 }: {
   keys: ApiKeyRow[]
+  /** The caller's companies (useApiKeys): with two or more, each row shows and edits its company reach. */
+  companies?: PickerCompany[]
   isLoading: boolean
   onRevoke: (id: string, toastTitle: string) => Promise<void>
+  /** Re-read the keys after a row's companies were edited. */
+  onKeysChanged?: () => void
 }) {
   const t = useTranslations('settings_api_keys')
   const locale = useLocale()
   const targetName = useConnectTargetName()
   const { dialogProps, confirm } = useDestructiveConfirm()
   const [target, setTarget] = useState<ConnectTarget | null>(null)
+  const [editingCompanies, setEditingCompanies] = useState<ApiKeyRow | null>(null)
+  // Only meaningful for a multi-company user: "Alla företag" on a
+  // single-company account would be noise.
+  const hasCompanyPicker = companies.length >= 2
 
   // This panel is server-rendered before it hydrates, and window.location has
   // no server equivalent. Reading the origin at render time therefore yields a
@@ -124,7 +145,7 @@ export function McpConnectionsPanel({
   function rowName(key: ApiKeyRow): string {
     const kind = connectionKind(key)
     if (kind === 'key') return key.name
-    if (kind === 'claude' || kind === 'chatgpt' || kind === 'grok') return targetName(kind)
+    if (kind === 'claude' || kind === 'chatgpt' || kind === 'grok' || kind === 'gemini') return targetName(kind)
     return t(`kind_${kind}`)
   }
 
@@ -274,6 +295,31 @@ export function McpConnectionsPanel({
                     <span className="hidden w-28 shrink-0 truncate text-xs text-muted-foreground lg:block">
                       {permissionSummary}
                     </span>
+                    {/* Only the key's owner may change its companies (the
+                        route answers 403 for anyone else), and "2 of 5" is
+                        counted against the viewer's companies, so another
+                        user's key shows no company control. */}
+                    {hasCompanyPicker && key.is_own && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="hidden shrink-0 text-xs font-normal text-muted-foreground md:inline-flex"
+                        onClick={() => setEditingCompanies(key)}
+                        aria-label={t('companies_edit', { name: rowName(key) })}
+                      >
+                        <Building2 className="mr-1.5 h-3.5 w-3.5" />
+                        {[
+                          key.company_ids && key.company_ids.length > 0
+                            ? t('companies_some', { selected: key.company_ids.length, total: companies.length })
+                            : t('companies_all'),
+                          key.read_only_company_ids && key.read_only_company_ids.length > 0
+                            ? t('companies_read_only', { count: key.read_only_company_ids.length })
+                            : null,
+                        ]
+                          .filter((part): part is string => part !== null)
+                          .join(' · ')}
+                      </Button>
+                    )}
                     <span className="w-28 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
                       {key.last_used_at ? formatDateLong(key.last_used_at, locale) : t('never_used')}
                     </span>
@@ -303,6 +349,16 @@ export function McpConnectionsPanel({
       )}
 
       <ConnectClientDialog target={target} origin={origin} onClose={() => setTarget(null)} />
+      {editingCompanies && (
+        <KeyCompaniesDialog
+          key={editingCompanies.id}
+          keyRow={editingCompanies}
+          name={rowName(editingCompanies)}
+          companies={companies}
+          onClose={() => setEditingCompanies(null)}
+          onSaved={() => onKeysChanged?.()}
+        />
+      )}
       <DestructiveConfirmDialog {...dialogProps} />
     </>
   )

@@ -28,8 +28,8 @@
     "version": 3
   },
   "horizontal/swedish-asset-accounting/depreciation": {
-    "hash": "edb14eee9b565da061df61d142299092fb40d7fa21df99352e2c911ef680c739",
-    "version": 2
+    "hash": "2c2fddb2b75d90c8ede05adfb724d2d0b0088af74a12cbdd774903376c615a9a",
+    "version": 3
   },
   "horizontal/swedish-asset-accounting/leasing-and-disposal": {
     "hash": "9156babc1698fb69f958f0a18b13909bf533a8e1aaebe16ba01dce900ce79be1",
@@ -164,8 +164,8 @@
     "version": 1
   },
   "horizontal/swedish-invoice-compliance": {
-    "hash": "d5b8b0b17ab004e16fad8eb624664c2e267dab192907744deb871f3f9ba623ce",
-    "version": 10
+    "hash": "8f2dc16cde4c422a3f3bb62034f429980636381701119d443cef3b280462107f",
+    "version": 12
   },
   "horizontal/swedish-invoice-compliance/decision-trees": {
     "hash": "4c65433762273a95e8f106cb869bb1a4a6ccf6ac5b5c83086952f0a17adc4494",
@@ -180,8 +180,8 @@
     "version": 6
   },
   "horizontal/swedish-payroll/agi-filing": {
-    "hash": "183e9905b8bc093b157dc1ebbec17eb735e610d9b91055fd3b1edd00027557df",
-    "version": 2
+    "hash": "bafa464c8fb28bd03b54a37803483327acc06a3225c6837ca18df2162b33c3be",
+    "version": 3
   },
   "horizontal/swedish-payroll/bas-7xxx": {
     "hash": "61464f317f81e9bb55d6d65a747a457b85440b076145ed44cd4055b2f0d3c324",

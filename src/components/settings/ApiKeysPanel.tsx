@@ -18,6 +18,14 @@ import { DestructiveConfirmDialog, useDestructiveConfirm } from '@/components/ui
 import { useToast } from '@/components/ui/use-toast'
 import { SettingsRow, SettingsRowEnd } from '@/components/settings/SettingsRows'
 import { CopyBlock } from '@/components/settings/CopyBlock'
+import {
+  CompanyPickerList,
+  orderedSelection,
+  readOnlySelection,
+  setAccessInSet,
+  toggleInSet,
+  type PickerCompany,
+} from '@/components/settings/CompanyPickerList'
 import { Plus, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -91,15 +99,19 @@ const MAX_KEYS = 10
 
 /**
  * Settings → API & MCP → Utvecklare: the row that creates an API key, with
- * the scope picker and the one-time key reveal. The keys themselves are
- * listed with every other connection in McpConnectionsPanel.
+ * the scope picker, the company picker (two or more companies) and the
+ * one-time key reveal. The keys themselves are listed with every other
+ * connection in McpConnectionsPanel.
  */
 export function ApiKeysPanel({
   keyCount,
+  companies = [],
   onCreated,
   borderless,
 }: {
   keyCount: number
+  /** The caller's companies (useApiKeys); the picker shows for two or more. */
+  companies?: PickerCompany[]
   onCreated: () => void
   borderless?: boolean
 }) {
@@ -117,6 +129,20 @@ export function ApiKeysPanel({
   const [newKeyMode, setNewKeyMode] = useState<'live' | 'test'>('live')
   const [newKeyScopes, setNewKeyScopes] = useState<Set<Scope>>(new Set(ALL_SCOPES))
   const [newKeyValue, setNewKeyValue] = useState('')
+
+  // Company allowlist and per-company access. The picker only appears for a
+  // user with two or more companies; every company starts ticked at read and
+  // write, and `company_ids` is sent only for a strict subset or when a
+  // company is read-only (keeping all ticked at read and write =
+  // unrestricted, follows future memberships).
+  const [newKeyCompanies, setNewKeyCompanies] = useState<Set<string>>(new Set())
+  const [newKeyReadOnly, setNewKeyReadOnly] = useState<Set<string>>(new Set())
+  const hasCompanyPicker = companies.length >= 2
+  function openCreateDialog() {
+    setNewKeyCompanies(new Set(companies.map((company) => company.company_id)))
+    setNewKeyReadOnly(new Set())
+    setShowCreateDialog(true)
+  }
 
   // Segregation-of-duties: a single key that both stages bookkeeping (any
   // STAGING_SCOPES member) AND can approve it (pending_operations:approve)
@@ -169,6 +195,16 @@ export function ApiKeysPanel({
           scopes: Array.from(newKeyScopes),
           mode: newKeyMode,
           ...(hasSodConflict ? { acknowledge_sod: true } : {}),
+          // A strict subset, or any read-only company, makes the key
+          // restricted: the access level lives on its allowlist rows.
+          ...(hasCompanyPicker &&
+          (newKeyCompanies.size < companies.length ||
+            readOnlySelection(companies, newKeyCompanies, newKeyReadOnly).length > 0)
+            ? {
+                company_ids: orderedSelection(companies, newKeyCompanies),
+                read_only_company_ids: readOnlySelection(companies, newKeyCompanies, newKeyReadOnly),
+              }
+            : {}),
         }),
       })
       const json = await res.json()
@@ -212,7 +248,7 @@ export function ApiKeysPanel({
         <SettingsRowEnd>
           <Button
             variant="outline"
-            onClick={() => setShowCreateDialog(true)}
+            onClick={openCreateDialog}
             disabled={keyCount >= MAX_KEYS}
           >
             <Plus className="mr-1.5 h-3.5 w-3.5" />
@@ -243,7 +279,7 @@ export function ApiKeysPanel({
             </div>
             <div className="space-y-2">
               <Label>{t('mode_label')}</Label>
-              <div className="inline-flex rounded-full border p-0.5" role="radiogroup" aria-label={t('mode_label')}>
+              <div className="flex w-fit rounded-full border p-0.5" role="radiogroup" aria-label={t('mode_label')}>
                 {(['live', 'test'] as const).map((m) => (
                   <button
                     key={m}
@@ -266,6 +302,25 @@ export function ApiKeysPanel({
                 {newKeyMode === 'test' ? t('mode_test_help') : t('mode_live_help')}
               </p>
             </div>
+            {hasCompanyPicker && (
+              <div className="space-y-2">
+                <div className="flex items-baseline justify-between gap-3">
+                  <Label>{t('companies_section_title')}</Label>
+                  <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+                    {t('selected_count', { selected: newKeyCompanies.size, total: companies.length })}
+                  </span>
+                </div>
+                <CompanyPickerList
+                  companies={companies}
+                  selected={newKeyCompanies}
+                  readOnly={newKeyReadOnly}
+                  lockedId={null}
+                  onToggle={toggleInSet(setNewKeyCompanies)}
+                  onAccessChange={setAccessInSet(setNewKeyReadOnly)}
+                />
+                <p className="text-xs text-muted-foreground">{t('companies_help')}</p>
+              </div>
+            )}
             <div className="space-y-3">
               <div className="flex items-baseline justify-between gap-3">
                 <div className="space-y-1">
@@ -286,7 +341,7 @@ export function ApiKeysPanel({
                         ? t('group_rest_only', { name: t(groupLabelKey(group)) })
                         : t(groupLabelKey(group))}
                     </h4>
-                    <div className="space-y-2 px-2">
+                    <div className="space-y-2">
                       {group.scopes.map((scope) => (
                         <ScopeCard
                           key={scope}
@@ -314,7 +369,11 @@ export function ApiKeysPanel({
             <Button variant="outline" onClick={() => setShowCreateDialog(false)}>
               {t('cancel')}
             </Button>
-            <Button onClick={handleCreate} disabled={newKeyScopes.size === 0} loading={isCreating}>
+            <Button
+              onClick={handleCreate}
+              disabled={newKeyScopes.size === 0 || (hasCompanyPicker && newKeyCompanies.size === 0)}
+              loading={isCreating}
+            >
               {t('create')}
             </Button>
           </DialogFooter>

@@ -13,7 +13,8 @@ import { captureArkivEvent } from '@/lib/arkiv/events'
 import { getCompanyGraph } from '@/lib/arkiv/graph/snapshot'
 import { neighbourhoodOf } from '@/lib/arkiv/graph/neighbourhood'
 import { ensureDocumentRead } from '@/lib/documents/read/on-demand'
-import { listRecords, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, typesFor } from '@/lib/arkiv/list-records'
+import { listRecords, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, originalsOf, typesFor } from '@/lib/arkiv/list-records'
+import { NOT_STRUCTURED_MIME_FILTER } from '@/lib/documents/read/types'
 
 /**
  * Arkiv phase 5: the six tools an agent reads the record with, and the one
@@ -58,7 +59,19 @@ function assertEnabled(companyId: string): void {
 }
 /** The brain (facts, agreements, findings, the graph) rolls out per company; the shelf tools (search, get_record, get_source) work for everyone. */
 function assertBrain(companyId: string): void {
-  if (!isArkivBrainEnabled(companyId)) throw coded('ARKIV_NOT_ENABLED', 'The company brain is not switched on for this company yet. The archive tools work as usual: gnubok_list_records and gnubok_search_records find documents, gnubok_read_document and gnubok_get_source read their pages.')
+  if (!isArkivBrainEnabled(companyId)) throw coded('ARKIV_NOT_ENABLED', 'The company brain is not switched on for this company yet. The archive tools work as usual: gnubok_list_records and gnubok_search_records find documents, gnubok_read_document and gnubok_get_source read their pages, and gnubok_ask_document answers one question with page and quote.')
+}
+
+async function countUnreadDocuments(supabase: SupabaseClient, companyId: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('document_attachments')
+    .select('id', { count: 'exact', head: true })
+    .eq('company_id', companyId)
+    .in('admission_state', ['admitted', 'held'])
+    .is('pages_read_at', null)
+    .or(NOT_STRUCTURED_MIME_FILTER)
+  if (error) throw dbError(error)
+  return count ?? 0
 }
 
 interface Deps {
@@ -79,7 +92,6 @@ interface Deps {
 
 const FACT_SHAPE = {
   type: 'object',
-  additionalProperties: false,
   properties: {
     fact_id: { type: 'string' },
     subject_ref: { type: 'string' },
@@ -332,12 +344,15 @@ async function journalEntryRecord(supabase: SupabaseClient, companyId: string, j
     .maybeSingle()
   if (error) throw dbError(error)
   if (!entry) return null
-  const { data: docs, error: docError } = await supabase.from('document_attachments').select('id').eq('journal_entry_id', journalEntryId).eq('company_id', companyId).limit(50)
+  const { data: docs, error: docError } = await supabase.from('document_attachments').select('id, created_at, sha256_hash').eq('journal_entry_id', journalEntryId).eq('company_id', companyId).limit(50)
   if (docError) throw dbError(docError)
+  const rows = (docs ?? []) as Array<{ id: string; created_at: string; sha256_hash: string | null }>
+  // A later copy of the same file or text says so, so a sum over the verifikat counts it once.
+  const originals = await originalsOf(supabase, companyId, rows)
   const documents = []
-  for (const d of (docs ?? []) as Array<{ id: string }>) {
+  for (const d of rows) {
     const record = await documentRecord(supabase, companyId, d.id)
-    if (record) documents.push(record)
+    if (record) documents.push({ ...record, duplicate_of: originals.has(d.id) ? `document:${originals.get(d.id)}` : null })
   }
   const e = entry as Record<string, unknown> & { id: string }
   return { journal_entry_id: e.id, voucher: `${e.voucher_series ?? ''}${e.voucher_number ?? ''}`, entry_date: e.entry_date, description: e.description, documents }
@@ -350,7 +365,7 @@ export function createArkivTools(deps: Deps): McpTool[] {
       keywords: ['arkiv', 'dokument', 'avtal', 'fakta', 'sök dokument', 'hyresavtal', 'lån', 'registreringsbevis'],
       title: 'Search Records',
       description:
-        'Search the company archive: document text, agreements and facts. Returns record_refs to pass to gnubok_get_record. Use for any question about a contract, registration, decision or what a document says.',
+        'Search the archive: document text, agreements and facts. Returns record_refs for gnubok_get_record. Unread documents are not searched: see hint.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -368,7 +383,6 @@ export function createArkivTools(deps: Deps): McpTool[] {
             type: 'array',
             items: {
               type: 'object',
-              additionalProperties: false,
               properties: {
                 record_ref: { type: 'string' },
                 kind: { type: 'string', enum: ['document', 'agreement', 'fact'] },
@@ -376,13 +390,16 @@ export function createArkivTools(deps: Deps): McpTool[] {
                 snippet: { type: ['string', 'null'] },
                 document_id: { type: ['string', 'null'] },
                 page: { type: ['integer', 'null'] },
+                duplicate_of: { type: ['string', 'null'] },
               },
               required: ['record_ref', 'kind', 'title', 'snippet', 'document_id', 'page'],
             },
           },
           count: { type: 'integer' },
+          unread: { type: 'integer' },
+          hint: { type: ['string', 'null'] },
         },
-        required: ['items', 'count'],
+        required: ['items', 'count', 'unread', 'hint'],
       },
       annotations: deps.readOnly,
       async execute(args, companyId, _userId, supabase) {
@@ -392,7 +409,22 @@ export function createArkivTools(deps: Deps): McpTool[] {
         // Agreements and facts are the brain's interpretations: outside it the documents are the archive.
         const kinds = isArkivBrainEnabled(companyId) ? asked : (['document'] as const).slice()
         const items = await searchRecords(supabase, companyId, String(args.query ?? ''), { kinds, limit: Number(args.limit ?? SEARCH_LIMIT_DEFAULT) })
-        return { items, count: items.length }
+        // An empty answer from an archive nobody has read yet is not "no such document" (prod 2026-09-25: a
+        // company with 10 unread invoices searched "faktura" and got nothing, with nothing saying why).
+        // A later copy of the same file or text says so, as in list_records, so hits are counted once.
+        const hitIds = [...new Set(items.map((i) => i.document_id).filter((id): id is string => !!id))]
+        let originals = new Map<string, string>()
+        if (hitIds.length) {
+          const { data: hitDocs, error: hitError } = await supabase.from('document_attachments').select('id, created_at, sha256_hash').eq('company_id', companyId).in('id', hitIds)
+          if (hitError) throw dbError(hitError)
+          originals = await originalsOf(supabase, companyId, (hitDocs ?? []) as Array<{ id: string; created_at: string; sha256_hash: string | null }>)
+        }
+        const marked = items.map((i) => ({ ...i, duplicate_of: i.document_id && originals.has(i.document_id) ? `document:${originals.get(i.document_id)}` : null }))
+        const unread = await countUnreadDocuments(supabase, companyId)
+        const hint = unread > 0
+          ? `${unread} document${unread === 1 ? ' is' : 's are'} not read yet and not in this search. Page through gnubok_list_records (read: false) and open one with gnubok_read_document: it is read on the spot.`
+          : null
+        return { items: marked, count: marked.length, unread, hint }
       },
     },
     {
@@ -483,7 +515,6 @@ export function createArkivTools(deps: Deps): McpTool[] {
             type: 'array',
             items: {
               type: 'object',
-              additionalProperties: false,
               properties: {
                 from_ref: { type: 'string' },
                 record_ref: { type: 'string' },
@@ -552,7 +583,7 @@ export function createArkivTools(deps: Deps): McpTool[] {
       keywords: ['arkiv', 'fråga dokument', 'vad står det', 'villkor', 'avtal', 'läs'],
       title: 'Ask Document',
       description:
-        'Ask one document one question and get the answer from its own text, with the page and the exact quote, or an honest not_found. Use it for any clause or detail the record does not carry. Answer and quote come from the file, fenced as untrusted data.',
+        'Ask one document one question and get the answer from its own text, with the page and the exact quote, or an honest not_found. Use it for any clause or detail the record does not carry.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -596,7 +627,9 @@ export function createArkivTools(deps: Deps): McpTool[] {
       },
       annotations: deps.readOnly,
       async execute(args, companyId, _userId, supabase) {
-        assertBrain(companyId)
+        // It answers from the raw page text with a verified quote and reads nothing the brain derived, so it works
+        // wherever the shelf does (2026-09-25: every call from a company outside the brain was refused).
+        assertEnabled(companyId)
         const ref = parseRecordRef(String(args.record_ref ?? ''))
         if (!ref || ref.kind !== 'document') throw invalid('record_ref must be document:<uuid>')
         const question = String(args.question ?? '').trim()
@@ -905,23 +938,22 @@ export function createArkivTools(deps: Deps): McpTool[] {
         const d = doc as { id: string; file_name: string; doc_type: string | null; page_count: number | null }
         let unreadable: string | null = null
         const readPages = () => supabase.from('document_pages').select('page_no, text').eq('document_id', documentId).gte('page_no', from).lte('page_no', to).order('page_no', { ascending: true })
-        let { data: pages, error: pagesError } = await readPages()
+        // Read in full before answering, like ask_document: a document read only in part (a scan whose first page
+        // had typed text, a photo the background left for later) returned just the pages it had, and an agent
+        // answered from half a document. ensureDocumentRead does nothing when the document is already complete.
+        const read = await ensureDocumentRead(supabase, companyId, documentId)
+        const { data: pages, error: pagesError } = await readPages()
         if (pagesError) throw dbError(pagesError)
         let pageCount = d.page_count
+        if (read.status === 'read') {
+          const { data: again } = await supabase.from('document_attachments').select('page_count').eq('id', documentId).maybeSingle()
+          pageCount = (again as { page_count: number | null } | null)?.page_count ?? pageCount
+        }
         if (((pages ?? []) as unknown[]).length === 0) {
-          // History the lanes left unread: the agent asking is what it waited for.
-          const read = await ensureDocumentRead(supabase, companyId, documentId)
-          if (read.status !== 'read') {
-            // Said plainly, so an agent never takes an empty answer for an empty document.
-            const { data: stamp } = await supabase.from('document_attachments').select('read_error').eq('id', documentId).maybeSingle()
-            unreadable = (stamp as { read_error: string | null } | null)?.read_error ?? (read.status === 'skipped' ? read.reason : read.status)
-          }
-          if (read.status === 'read') {
-            ;({ data: pages, error: pagesError } = await readPages())
-            if (pagesError) throw dbError(pagesError)
-            const { data: again } = await supabase.from('document_attachments').select('page_count').eq('id', documentId).maybeSingle()
-            pageCount = (again as { page_count: number | null } | null)?.page_count ?? pageCount
-          }
+          // Said plainly, so an agent never takes an empty answer for an empty document.
+          const { data: stamp } = await supabase.from('document_attachments').select('read_error').eq('id', documentId).maybeSingle()
+          const reason = (stamp as { read_error: string | null } | null)?.read_error ?? (read.status === 'skipped' ? read.reason : read.status === 'read' ? null : read.status)
+          unreadable = !reason || reason === 'already_read' ? 'no_text' : reason
         }
         const list = (pages ?? []) as Array<{ page_no: number; text: string }>
         const last = list.length ? list[list.length - 1].page_no : to

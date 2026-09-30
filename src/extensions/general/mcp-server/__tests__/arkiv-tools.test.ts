@@ -64,7 +64,8 @@ describe('Arkiv tools', () => {
 
   it('refuses the brain tools outside the brain rollout and says the shelf tools still work', async () => {
     process.env.ARKIV_BRAIN_COMPANY_IDS = 'someone-else'
-    for (const name of ['gnubok_get_neighbourhood', 'gnubok_get_fact_history', 'gnubok_propose_fact', 'gnubok_resolve_missing', 'gnubok_get_record_links', 'gnubok_ask_document']) {
+    // ask_document is not among them: it answers from the raw page text, so it works wherever the shelf does.
+    for (const name of ['gnubok_get_neighbourhood', 'gnubok_get_fact_history', 'gnubok_propose_fact', 'gnubok_resolve_missing', 'gnubok_get_record_links']) {
       await expect(tool(name).execute({ ref: `company:${CO}`, record_ref: `document:${DOC}`, question: 'x', predicate: 'org_number', subject_kind: 'company', value: 'x', note: 'x', finding_id: DOC }, CO, 'user-1', supabase), name).rejects.toThrow(/not switched on .* gnubok_search_records/)
     }
   })
@@ -83,6 +84,15 @@ describe('Arkiv tools', () => {
     enqueue({ data: null })
     const missing = await caught(tool('gnubok_get_source').execute({ record_ref: `document:${DOC}` }, CO, 'user-1', supabase))
     expect(missing).toMatchObject({ code: 'NOT_FOUND', message_en: 'Document not found' })
+  })
+
+  it('search_records says how many documents are not read yet and how to reach them, so an empty answer is not taken for no document', async () => {
+    process.env.ARKIV_BRAIN_COMPANY_IDS = 'someone-else'
+    enqueue({ data: [] }) // page hits
+    enqueue({ count: 10 }) // unread documents
+    const out = (await tool('gnubok_search_records').execute({ query: 'faktura' }, CO, 'user-1', supabase)) as { count: number; unread: number; hint: string | null }
+    expect(out).toMatchObject({ count: 0, unread: 10 })
+    expect(out.hint).toMatch(/10 documents are not read yet.*gnubok_list_records.*gnubok_read_document/)
   })
 
   it('search_records combines page hits, agreements and facts into record refs', async () => {
@@ -143,6 +153,17 @@ describe('Arkiv tools', () => {
     await expect(tool('gnubok_read_document').execute({ record_ref: `agreement:${AGR}` }, CO, 'user-1', supabase)).rejects.toThrow(/document:<uuid>/)
   })
 
+  it('read_document completes a partly read document before answering, so an agent never answers from half of it', async () => {
+    const { ensureDocumentRead } = await import('@/lib/documents/read/on-demand')
+    vi.mocked(ensureDocumentRead).mockResolvedValueOnce({ status: 'read', pages: 3, reader: 'claude_vision' } as never)
+    enqueue({ data: { id: DOC, file_name: 'skuldebrev.pdf', doc_type: 'agreement.loan', page_count: 3 } })
+    enqueue({ data: [{ page_no: 1, text: 'sida 1' }, { page_no: 2, text: 'sida 2' }, { page_no: 3, text: 'sida 3' }] })
+    enqueue({ data: { page_count: 3 } })
+    const out = (await tool('gnubok_read_document').execute({ record_ref: `document:${DOC}` }, CO, 'user-1', supabase)) as { pages: unknown[] }
+    expect(ensureDocumentRead).toHaveBeenCalledWith(supabase, CO, DOC)
+    expect(out.pages).toHaveLength(3)
+  })
+
   it('read_document says why a document has no text instead of answering with nothing', async () => {
     enqueue({ data: { id: DOC, file_name: 'data.csv', doc_type: null, page_count: null } })
     enqueue({ data: [] })
@@ -159,7 +180,8 @@ describe('Arkiv tools', () => {
 
   it('get_record on a journal entry returns every attachment as a record', async () => {
     enqueue({ data: { id: JE, voucher_series: 'A', voucher_number: 12, entry_date: '2026-09-01', description: 'Hyra september' } })
-    enqueue({ data: [{ id: DOC }] })
+    enqueue({ data: [{ id: DOC, created_at: '2026-09-01', sha256_hash: null }] })
+    enqueue({ data: [] }) // no content hashes: nothing to compare
     enqueue({ data: { id: DOC, file_name: 'faktura.pdf', created_at: '2026-09-01', doc_type: 'supplier_invoice', admission_state: 'admitted', page_count: 1, journal_entry_id: JE } })
     enqueue({ data: { id: 'ext-2', schema_type: 'generic', schema_version: 1, pass: 'consensus', payload: { total_amount: { value: 12500, normalized: 12500, page: 1, quote: 'Att betala 12 500', confidence: 1, method: 'consensus' } }, review_fields: [], created_at: '2026-09-01' } })
     enqueue({ data: [] })
@@ -168,6 +190,19 @@ describe('Arkiv tools', () => {
     expect(out.journal_entry.voucher).toBe('A12')
     expect(out.journal_entry.documents).toHaveLength(1)
     expect(out.journal_entry.documents[0].record.fields[0]).toMatchObject({ field: 'total_amount', value: 12500, page: 1 })
+  })
+
+  it('get_record on a journal entry marks a later copy of the same file, so a sum over its documents counts it once', async () => {
+    process.env.ARKIV_BRAIN_COMPANY_IDS = 'someone-else'
+    const COPY = '99999999-9999-4999-8999-999999999999'
+    enqueue({ data: { id: JE, voucher_series: 'A', voucher_number: 82, entry_date: '2026-06-12', description: 'Higgsfield' } })
+    enqueue({ data: [{ id: DOC, created_at: '2026-06-12T08:58:00Z', sha256_hash: 'abc' }, { id: COPY, created_at: '2026-06-12T09:00:00Z', sha256_hash: 'abc' }] })
+    enqueue({ data: [] }) // content hashes
+    enqueue({ data: [{ id: DOC, created_at: '2026-06-12T08:58:00Z', sha256_hash: 'abc' }, { id: COPY, created_at: '2026-06-12T09:00:00Z', sha256_hash: 'abc' }] }) // same bytes
+    enqueue({ data: { id: DOC, file_name: 'Invoice-0002.pdf', created_at: '2026-06-12', doc_type: 'supplier_invoice', admission_state: 'admitted', page_count: 1, journal_entry_id: JE } })
+    enqueue({ data: { id: COPY, file_name: 'Invoice-0002.pdf', created_at: '2026-06-12', doc_type: 'supplier_invoice', admission_state: 'admitted', page_count: 1, journal_entry_id: JE } })
+    const out = (await tool('gnubok_get_record').execute({ record_ref: `journal_entry:${JE}` }, CO, 'user-1', supabase)) as { journal_entry: { documents: Array<{ document_id: string; duplicate_of: string | null }> } }
+    expect(out.journal_entry.documents.map((d) => [d.document_id, d.duplicate_of])).toEqual([[DOC, null], [COPY, `document:${DOC}`]])
   })
 
   it('get_record reports a missing record', async () => {

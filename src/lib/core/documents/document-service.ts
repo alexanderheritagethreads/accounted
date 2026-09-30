@@ -1,4 +1,13 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { previewPath } from '@/lib/documents/preview'
+import {
+  DOCUMENT_DELETE_REFUSALS,
+  canDeleteDocument,
+  documentDeleteRefusal,
+  readDocumentDeletePins,
+  type DocumentDeleteBlock,
+  type DocumentDeleteRefusalCode,
+} from '@/lib/documents/deletion'
 import { after } from 'next/server'
 import { createServiceClientNoCookies } from '@/lib/auth/api-keys'
 import { dbError } from '@/lib/errors/db-error'
@@ -904,6 +913,22 @@ async function deterministicDocumentId(
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
+/**
+ * True when uploadDocument archived this row with `idempotency_key` set to the
+ * row's own journal_entry_id, which makes its id the deterministic id of
+ * (company, verifikat, content). Verifikat-scoped importers archive this way:
+ * the provider underlag import (upload_source 'api') and the underlag wizard
+ * ('file_upload'). A re-run uses it to recognise its own earlier files. Rows
+ * archived without that key have a random id and never match.
+ */
+export async function isArchivedForOwnJournalEntry(
+  companyId: string,
+  row: { id: string; journal_entry_id: string | null; sha256_hash: string },
+): Promise<boolean> {
+  if (!row.journal_entry_id) return false
+  return row.id === (await deterministicDocumentId(companyId, row.journal_entry_id, row.sha256_hash))
+}
+
 type DocumentUploadedEvent = Extract<CoreEvent, { type: 'document.uploaded' }>
 
 /**
@@ -967,6 +992,13 @@ export async function uploadDocument(
     upload_source?: DocumentUploadSource
     journal_entry_id?: string
     journal_entry_line_id?: string
+    /**
+     * Makes the row id deterministic for (company, key, content). Internal
+     * callers only: no public upload path accepts it. The provider underlag
+     * import recognises its own files by `upload_source: 'api'` together with
+     * this key equal to `journal_entry_id` (isArchivedForOwnJournalEntry), so
+     * no other caller may archive under that combination.
+     */
     idempotency_key?: string
     /**
      * Content dedupe for intake channels: before storing, look for a
@@ -1291,15 +1323,34 @@ export async function linkToJournalEntry(
 
 export type DeleteDocumentResult =
   | { ok: true; document: Pick<DocumentAttachment, 'id' | 'file_name'> }
-  | { ok: false; reason: 'not_found' | 'linked_to_entry'; status: number; message: string }
+  | { ok: false; reason: 'not_found'; status: number; message: string }
+  | {
+      ok: false
+      /** 'linked_to_entry' for a verifikat link (block 'verifikat'), 'pinned' for any other record that holds it. */
+      reason: 'linked_to_entry' | 'pinned'
+      block: DocumentDeleteBlock
+      code: DocumentDeleteRefusalCode
+      status: number
+      message: string
+    }
 
 /**
- * Delete a document if and only if it is not yet linked to a journal entry.
+ * Delete a document if and only if nothing holds it: the rule is
+ * documentDeleteRefusal() in lib/documents/deletion.ts, shared with the Arkiv
+ * record's offer so the two cannot disagree.
  *
  * BFL 7 kap 2§: once a document is attached to a verifikation it becomes
  * räkenskapsinformation and may not be deleted within the 7-year retention
  * window. Linked docs must be superseded via createNewVersion() instead.
- * The block_document_deletion() trigger is the DB-level backstop.
+ * The block_document_deletion() trigger is the DB-level backstop. The
+ * underlag of a registered supplier invoice or utlägg, the file or received
+ * Peppol XML of a booked inbox item, and a bank transaction's underlag are
+ * refused the same way, each with its own Swedish sentence.
+ *
+ * A record that pins the document through a RESTRICT foreign key between the
+ * pin read and the delete (a bank transaction's underlag) is still refused by
+ * the database; the error is thrown with its SQLSTATE intact so
+ * lib/errors/foreign-key-refusal.ts answers it.
  */
 export async function deleteDocument(
   supabase: SupabaseClient,
@@ -1308,7 +1359,7 @@ export async function deleteDocument(
 ): Promise<DeleteDocumentResult> {
   const { data: doc, error: fetchError } = await supabase
     .from('document_attachments')
-    .select('id, file_name, storage_path, journal_entry_id, user_id')
+    .select('id, file_name, storage_path, journal_entry_id, journal_entry_line_id, user_id')
     .eq('id', documentId)
     .eq('company_id', companyId)
     .maybeSingle()
@@ -1322,13 +1373,19 @@ export async function deleteDocument(
     }
   }
 
-  if (doc.journal_entry_id) {
+  // The verifikat link needs no further read; the other pins are read only
+  // for a document it lets go.
+  const refusal = canDeleteDocument(doc)
+    ? documentDeleteRefusal(doc, await readDocumentDeletePins(supabase, companyId, documentId))
+    : documentDeleteRefusal(doc, { supplierInvoice: false, expenseClaim: false, bankTransaction: false, inboxItems: [] })
+  if (refusal) {
     return {
       ok: false,
-      reason: 'linked_to_entry',
+      reason: refusal.block === 'verifikat' ? 'linked_to_entry' : 'pinned',
+      block: refusal.block,
+      code: refusal.code,
       status: 409,
-      message:
-        'Underlaget är knutet till en verifikation och utgör räkenskapsinformation enligt Bokföringslagen 7 kap 2§. Räkenskapsinformation ska bevaras i minst 7 år och får inte raderas. Använd "Ersätt med ny version" om underlaget behöver korrigeras.',
+      message: refusal.message,
     }
   }
 
@@ -1344,12 +1401,18 @@ export async function deleteDocument(
       return {
         ok: false,
         reason: 'linked_to_entry',
+        block: 'verifikat',
+        code: DOCUMENT_DELETE_REFUSALS.verifikat.code,
         status: 409,
         message:
           'Underlaget kan inte tas bort på grund av Bokföringslagens bevarandekrav (7 kap 2§).',
       }
     }
-    throw new Error(`Failed to delete document: ${msg}`)
+    // Keep the driver's code and text: a record that still pins the document
+    // (a bank transaction's underlag, ON DELETE RESTRICT) is a 23503 the
+    // shared foreign-key refusal mapping answers with a 409 and a sentence
+    // that says what to do, instead of a 500.
+    throw dbError(deleteError, null)
   }
 
   if (doc.storage_path) {
@@ -1365,9 +1428,10 @@ export async function deleteDocument(
     // under the company-scoped SELECT policy. Authorization already happened
     // above: the company-filtered row fetch plus the row delete that just
     // succeeded (with block_document_deletion() as the DB-level backstop).
+    // The viewer's preview (lib/documents/preview.ts) goes with the file it was made from.
     await createServiceClientNoCookies()
       .storage.from(DOCUMENTS_BUCKET)
-      .remove(documentStoragePathCandidates(doc.storage_path, companyId))
+      .remove([...documentStoragePathCandidates(doc.storage_path, companyId), previewPath(companyId, doc.id)])
   }
 
   await eventBus.emit({

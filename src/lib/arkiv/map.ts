@@ -258,6 +258,7 @@ export async function buildArkivMap(supabase: SupabaseClient, companyId: string,
           'Gather: gnubok_list_records lists every document of a type or upload period, complete and paginated; duplicate_of marks a later copy of the same text.',
           'Find: gnubok_search_records finds pages by their words and returns record_refs with the page.',
           'Read: gnubok_read_document returns the text, up to 20 pages per call; gnubok_get_source one page with a link to the file.',
+          'Ask: gnubok_ask_document answers one question about one document with page and a verified quote.',
           'Answer only from text you read, citing file and page. Nothing here is pre-extracted: dates and amounts are in the text.',
         ]
       : [

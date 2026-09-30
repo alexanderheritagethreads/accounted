@@ -12,7 +12,7 @@ import { CAPABILITY } from '@/lib/entitlements/keys'
 import { visibleWorklistTotal } from '@/lib/worklist/visible-total'
 import type { AiTaskCategory } from '@/lib/worklist/ai-task'
 import type { MissingUnderlagSample } from '@/lib/worklist/missing-underlag'
-import type { AiClient } from '@/lib/onboarding/ai-clients'
+import { NO_AI_CONNECTION, type AiConnection } from '@/lib/onboarding/ai-clients'
 import { AiTaskAction } from './AiTaskAction'
 import { KopplingarChips } from './KopplingarChips'
 import {
@@ -29,6 +29,7 @@ import {
   Landmark,
   ReceiptText,
   Scale,
+  Send,
   ShieldCheck,
   Stamp,
   FileQuestion,
@@ -83,11 +84,11 @@ interface AttGoraSectionProps {
    */
   hasActiveBankConnection?: boolean
   /**
-   * AI clients this user has connected over MCP OAuth (lib/onboarding/
-   * ai-clients). Drives the footer: hand the first row to a connected
-   * client, or offer the connect buttons when there is none.
+   * This user's agent connection over MCP OAuth (lib/onboarding/ai-clients).
+   * `connected` drives the kopplingar chip; the row's AI action hands work
+   * only to one of the verified `clients`.
    */
-  aiClients?: AiClient[]
+  aiConnection?: AiConnection
   /**
    * What the biggest missing underlag actually need fetching from, derived
    * from the same page of rows the count comes from (lib/worklist/
@@ -175,7 +176,7 @@ export default function AttGoraSection({
   expiringBankConnections = [],
   emptyLedger = false,
   hasActiveBankConnection = true,
-  aiClients = [],
+  aiConnection = NO_AI_CONNECTION,
   missingUnderlag,
   hasSkatteverketConnection = false,
   showKopplingar = false,
@@ -283,7 +284,8 @@ export default function AttGoraSection({
     counts.document_relevance > 0 ||
     counts.document_unclassified > 0 ||
     counts.document_field_review > 0 ||
-    counts.arkiv_finding > 0
+    counts.arkiv_finding > 0 ||
+    counts.peppol_delivery_failed > 0
   const bevakaRows =
     counts.overdue_invoice > 0 ||
     counts.deadline_action > 0 ||
@@ -306,7 +308,7 @@ export default function AttGoraSection({
   // Kvittojakten on "Verifikat utan underlag" (AiTaskAction renders nothing
   // for the other categories).
   const aiAction = (category: AiTaskCategory, count: number) =>
-    <AiTaskAction clients={aiClients} task={{ category, count }} />
+    <AiTaskAction clients={aiConnection.clients} task={{ category, count }} />
 
   // Where the biggest missing underlag actually have to be fetched from, in
   // one line, derived from the ledger rather than reported back by an agent.
@@ -548,7 +550,7 @@ export default function AttGoraSection({
                     )}
                     {counts.document_unclassified > 0 && (
                       <WorklistRow
-                        href="/arkiv"
+                        href="/arkiv/granska#typ"
                         icon={FileQuestion}
                         label={t('row_document_unclassified')}
                         count={counts.document_unclassified}
@@ -570,6 +572,15 @@ export default function AttGoraSection({
                         label={t('row_arkiv_finding')}
                         hint={t('row_arkiv_finding_detail')}
                         count={counts.arkiv_finding}
+                      />
+                    )}
+                    {counts.peppol_delivery_failed > 0 && (
+                      <WorklistRow
+                        href="/invoices"
+                        icon={Send}
+                        label={t('row_peppol_delivery_failed')}
+                        hint={t('row_peppol_delivery_failed_detail')}
+                        count={counts.peppol_delivery_failed}
                       />
                     )}
                   </div>
@@ -644,7 +655,7 @@ export default function AttGoraSection({
       </div>
       {showKopplingar && (
         <KopplingarChips
-          aiClients={aiClients}
+          aiConnection={aiConnection}
           hasBank={hasActiveBankConnection}
           hasSkatteverket={hasSkatteverketConnection}
         />

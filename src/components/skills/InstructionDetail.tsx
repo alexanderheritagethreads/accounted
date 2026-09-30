@@ -12,7 +12,8 @@ export function InstructionDetail({ segment, backHref = '/skills' }: { segment: 
   if (decoded.startsWith('av.')) return <CreatorProfile handle={decoded.slice(3)} backHref={backHref} />
   // "Skriv själv": the item page, empty, with fields to fill in (?typ= picks flow, knowledge or analysis).
   if (decoded === 'ny') return <Suspense><CreateItem backHref={backHref} /></Suspense>
-  return decoded.startsWith('kunskap.') || decoded.startsWith('community.') || decoded.startsWith('egen.')
-    ? <ItemDetail segment={decoded} backHref={backHref} />
-    : <AgentDetail segment={decoded} backHref={backHref} />
+  // Suspense: the item pages read ?rutin= (a routine chosen in Skriv själv).
+  return decoded.startsWith('kunskap.') || decoded.startsWith('community.') || decoded.startsWith('egen.') || decoded.startsWith('analys.')
+    ? <Suspense><ItemDetail segment={decoded} backHref={backHref} /></Suspense>
+    : <Suspense><AgentDetail segment={decoded} backHref={backHref} /></Suspense>
 }

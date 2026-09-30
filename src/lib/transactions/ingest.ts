@@ -278,6 +278,16 @@ export async function buildExistingTransactionMaps(
 }
 
 /**
+ * The unique index on (company_id, external_id) refusing an insert: the id
+ * was stored after the Layer-1 pre-fetch read the batch's ids. Matched by
+ * index name, like the other named-index checks (supplier-invoices/create.ts),
+ * so no other constraint is ever read as a duplicate.
+ */
+function isExternalIdConflict(error: { code?: string | null; message?: string | null } | null): boolean {
+  return error?.code === '23505' && (error.message ?? '').includes('idx_transactions_company_external_id')
+}
+
+/**
  * Generic transaction ingestion pipeline.
  *
  * Handles:
@@ -1087,6 +1097,24 @@ export async function ingestTransactions(
       : await supabase.from('transactions').insert(insertPayload).select().single()
 
     if (insertError || !newTransaction) {
+      // Layer 1, settled by the unique index instead of the pre-fetch: another
+      // writer of the same feed committed this external_id after the batch
+      // read the stored ids. The row exists, exactly as a pre-fetch one moment
+      // later would have found it, so it is a duplicate, not a failed batch
+      // (which would also skip the caller's balance refresh). Traced: with the
+      // shared sync lease, two writers of one feed should be rare.
+      if (isExternalIdConflict(insertError)) {
+        result.duplicates++
+        log.warn('import dedup: external_id stored concurrently, skipped as duplicate', {
+          decision: 'external-id-conflict',
+          mode: 'enforced',
+          bucket: bucketKey,
+          incomingExternalId: raw.external_id,
+          incomingSource: raw.import_source ?? null,
+          cashAccountId,
+        })
+        continue
+      }
       result.errors++
       if (!result.first_error && insertError) {
         result.first_error = {

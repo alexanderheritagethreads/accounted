@@ -2520,6 +2520,40 @@ describe('ingestTransactions', () => {
     if (error) expect(result.first_error).toMatchObject(error)
   })
 
+  // crm#188: two syncs of one feed overlapping (a backfill that outlived its
+  // response, and the cron) insert the same stable external_ids. The loser's
+  // refusal is Layer 1 settled by the unique index: a duplicate, not an error
+  // that fails the whole sync before its balance refresh.
+  it.each([['the checked bank RPC', true], ['a plain insert', false]] as const)(
+    'counts an external_id another writer stored mid-batch as a duplicate (%s)',
+    async (_path, viaBankRoute) => {
+      const { supabase, enqueue } = createQueueMockSupabase()
+      const raw = makeRaw({ bank_connection_id: 'connection', import_source: 'enable_banking' })
+      const bankRoute = { connectionId: 'connection', sessionId: 'session', accountUid: 'uid', currency: 'SEK',
+        cashAccountId: 'cash', ledgerAccount: '1930', token: 'checked-route' }
+      // Booked map, unbooked map, external_id pre-fetch: not stored yet.
+      enqueue({ data: [] }, { data: [] }, { data: [] })
+      if (viaBankRoute) enqueue({ data: cashAccountRows('cash', '1930') })
+      enqueue({ error: {
+        code: '23505',
+        message: 'duplicate key value violates unique constraint "idx_transactions_company_external_id"',
+      } })
+      const result = await ingestTransactions(supabase as never, COMPANY_ID, USER_ID, [raw],
+        viaBankRoute ? { rawInsertOnly: true, settlementAccount: '1930', bankRoute } : { rawInsertOnly: true })
+      expect(result).toMatchObject({ imported: 0, duplicates: 1, errors: 0, transaction_ids: [] })
+      expect(result.first_error).toBeUndefined()
+    },
+  )
+
+  it('still counts a unique violation on any other constraint as an error', async () => {
+    const { supabase, enqueue } = createQueueMockSupabase()
+    const error = { code: '23505', message: 'duplicate key value violates unique constraint "transactions_pkey"' }
+    enqueue({ data: [] }, { data: [] }, { data: [] }, { error })
+    const result = await ingestTransactions(supabase as never, COMPANY_ID, USER_ID, [makeRaw()], { rawInsertOnly: true })
+    expect(result).toMatchObject({ imported: 0, duplicates: 0, errors: 1 })
+    expect(result.first_error).toMatchObject(error)
+  })
+
   it('refuses a bank batch when the cash-account read fails instead of inserting null bindings', async () => {
     const { supabase, enqueue, inserts } = createQueueMockSupabase()
     enqueue({ data: [] }, { data: [] }, { data: [] }, { error: { message: 'lookup unavailable' } })

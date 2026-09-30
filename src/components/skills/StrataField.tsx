@@ -43,8 +43,6 @@ export function StrataField({ seed, ground, bar = '#EBE5D3', strength = 1 }: { s
       const H = wrap!.clientHeight
       canvas!.width = W * dpr
       canvas!.height = H * dpr
-      canvas!.style.width = `${W}px`
-      canvas!.style.height = `${H}px`
       ctx!.clearRect(0, 0, canvas!.width, canvas!.height)
       ctx!.fillStyle = bar
       const rowGap = 6

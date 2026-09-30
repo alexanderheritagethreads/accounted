@@ -119,7 +119,8 @@ describe('buildArkivMap', () => {
     const how = map.how_to.join(' ')
     expect(how).toContain('gnubok_list_records')
     expect(how).toContain('gnubok_read_document')
-    expect(how).not.toMatch(/ask_document|propose_fact|fact_history|record_links/)
+    expect(how).not.toMatch(/propose_fact|fact_history|record_links/)
+    expect(how).toMatch(/ask_document/)
   })
 
   it('throws with the failing read', async () => {
