@@ -5,8 +5,10 @@
 -- 1. Skatteverket writes the fee abbreviated. A skattekontoutdrag row reads
 --    "Förs.avgift moms/arbetsgivardeklaration 251112", which does not contain
 --    the string "förseningsavgift". Rule matching is a plain lowercase
---    substring test (lib/skatteverket/skattekonto-booking.ts), so the rule
---    never saw its own case.
+--    substring test (src/extensions/general/skatteverket/lib/
+--    skattekonto-booking.ts), so the rule never saw its own case. Both the
+--    compact "förs.avgift" and the spaced "förs. avgift" / "förs avgift"
+--    spellings are added.
 --
 -- 2. A fee row always names the tax it belongs to. That same text DOES
 --    contain "moms", and the mervärdesskatt rule sits at priority 20 while
@@ -21,12 +23,12 @@
 -- understates the cost and corrupts the VAT settlement account. Observed on a
 -- real statement where 2 of 24 rows were affected.
 --
--- System rows only (company_id IS NULL). A company that cloned this rule
--- chose its own account and ordering, and silently rewriting a deliberate
--- configuration is worse than leaving it: those are edited in the UI.
+-- System rows only (company_id IS NULL). No UI, API or MCP path writes
+-- company-scoped skattekonto_rules; such a row can only come from a direct
+-- insert, and this migration leaves any such row as it is.
 
 UPDATE public.skattekonto_rules
-SET pattern  = 'skattetillägg,förseningsavgift,förs.avgift,förs avgift',
+SET pattern  = 'skattetillägg,förseningsavgift,förs.avgift,förs. avgift,förs avgift',
     priority = 15
 WHERE company_id IS NULL
   AND counter_account = '6992'

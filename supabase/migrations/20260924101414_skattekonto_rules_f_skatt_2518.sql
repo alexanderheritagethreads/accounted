@@ -15,9 +15,10 @@
 -- Existing verifikat are untouched. A posted entry on 2510 is corrected the
 -- way BFL 5 kap 5 § allows, per entry, never by a data migration.
 --
--- System rows only (company_id IS NULL): a company that cloned the rule chose
--- its own account, and rewriting a deliberate configuration is not this
--- migration's business.
+-- System rows only (company_id IS NULL). No UI, API or MCP path writes
+-- company-scoped skattekonto_rules; such a row can only come from a direct
+-- insert, and this migration leaves any such row as it is. Rule matching lives
+-- in src/extensions/general/skatteverket/lib/skattekonto-booking.ts.
 
 UPDATE public.skattekonto_rules
 SET counter_account = '2518'

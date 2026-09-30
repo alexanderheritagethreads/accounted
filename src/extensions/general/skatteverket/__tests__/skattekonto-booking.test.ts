@@ -6,7 +6,9 @@ import { guessCounterAccount } from '../lib/skattekonto-booking'
 /**
  * System seeds mirror supabase/migrations/20260519100000_skattekonto_rules.sql
  * plus the follow-up corrections 20260817120100 (EF preliminärskatt 2012 ->
- * 2013) and 20260819200100 (requires_employer on the 'avdragen skatt' rule).
+ * 2013), 20260819200100 (requires_employer on the 'avdragen skatt' rule),
+ * 20260924083018 (fee rule: abbreviations, priority 15) and 20260924101414
+ * (AB preliminärskatt 2510 -> 2518).
  * Kept in lockstep so the resolver behaves identically against mock and real DB.
  */
 const SEED_RULES = [
@@ -23,7 +25,7 @@ const SEED_RULES = [
     label: 'Utbetalning från skattekonto', active: true, requires_employer: false,
   },
   {
-    id: 'sys-7', priority: 15, pattern: 'skattetillägg,förseningsavgift,förs.avgift,förs avgift',
+    id: 'sys-7', priority: 15, pattern: 'skattetillägg,förseningsavgift,förs.avgift,förs. avgift,förs avgift',
     amount_min: null, amount_max: null, company_type: 'all',
     counter_account: '6992', counter_account_ef: null,
     label: 'Ej avdragsgilla skatteavgifter', active: true, requires_employer: false,
@@ -113,6 +115,15 @@ describe('guessCounterAccount', () => {
       'company-1',
       'Förs.avgift moms/arbetsgivardeklaration 251112',
       'aktiebolag',
+    )
+    expect(guess?.account).toBe('6992')
+  })
+
+  it('books the abbreviation with a space after the dot on 6992 too', async () => {
+    const { supabase, enqueue } = makeSupabase()
+    enqueueRules(enqueue)
+    const guess = await guessCounterAccount(
+      supabase as unknown as SupabaseClient, 'company-1', 'Förs. avgift moms', 'aktiebolag',
     )
     expect(guess?.account).toBe('6992')
   })
@@ -249,9 +260,9 @@ describe('guessCounterAccount', () => {
     ).toBe('6992')
 
     enqueue({ data: SEED_RULES })
-    // Förseningsavgift contains the substring "förseningsavgift". The "moms" suffix
-    // would also match a lower-priority rule (2650), but priority 25 (penalty)
-    // beats priority 20 (moms): penalty routing wins.
+    // A fee row also names the tax it belongs to, which the tax-type rules at
+    // priority 20 would match. The fee rule sits at priority 15, so penalty
+    // routing wins.
     expect(
       (await guessCounterAccount(supabase as unknown as SupabaseClient, 'company-1', 'Förseningsavgift arbetsgivardeklaration', 'aktiebolag'))?.account,
     ).toBe('6992')
