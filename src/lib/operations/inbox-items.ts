@@ -322,9 +322,10 @@ export const inboxItemsUpdateExtractedData = defineOperation({
 
 // The convert request carries exactly the fields the conversion honours. The
 // dashboard form posts the full supplier-invoice schema, but this path has
-// never read per-line vat_amount, dimensions, öresavrundning or the
-// private-payment fields: a strict object refuses them with 400 instead of
-// accepting and silently dropping them.
+// never read per-line vat_amount, öresavrundning or the private-payment
+// fields: a strict object refuses them with 400 instead of accepting and
+// silently dropping them. The dimensions bags are honoured, as on the
+// dashboard door and the MCP one.
 const invoiceShape = CreateSupplierInvoiceSchema.shape
 const itemShape = CreateSupplierInvoiceItemSchema.shape
 
@@ -342,6 +343,9 @@ const ConvertItem = z.strictObject({
   accrual_period_start: itemShape.accrual_period_start,
   accrual_period_end: itemShape.accrual_period_end,
   accrual_balance_account: itemShape.accrual_balance_account,
+  dimensions: itemShape.dimensions.describe(
+    'This line\'s tags {"<sie_dim_no>":"<code>"}, e.g. {"6":"P001"}; wins per key over default_dimensions.',
+  ),
 })
 
 const ConvertInput = z.strictObject({
@@ -357,6 +361,9 @@ const ConvertInput = z.strictObject({
   reverse_charge: invoiceShape.reverse_charge,
   payment_reference: invoiceShape.payment_reference,
   notes: invoiceShape.notes,
+  default_dimensions: invoiceShape.default_dimensions.describe(
+    'Tags for every line {"<sie_dim_no>":"<code>"}, e.g. {"1":"KS01","6":"P001"}: kostnadsställe 1, projekt 6, codes from GET /dimensions.',
+  ),
   items: z.array(ConvertItem).min(1, 'At least one item is required'),
 })
 
@@ -376,7 +383,8 @@ export const inboxItemsConvertToSupplierInvoice = defineOperation({
     pitfalls: [
       'An item already converted returns 409 INBOX_ITEM_ALREADY_CONVERTED; a supplier invoice number the supplier already has returns 409 SI_CREATE_DUPLICATE_INVOICE_NUMBER with details.existing.',
       'A credit note (read as one, or with a negative net or VAT) returns 409 INBOX_ITEM_IS_CREDIT_NOTE with details.credit_target: the invoice it credits, or the candidates to choose from.',
-      'amount is per line EXCLUDING VAT; VAT is computed from vat_rate. Per-line vat_amount, dimensions and private-payment fields are not accepted here.',
+      'amount is per line EXCLUDING VAT; VAT is computed from vat_rate. Per-line vat_amount and private-payment fields are not accepted here.',
+      'With dimensions enabled, an unknown or archived code in default_dimensions or items[].dimensions returns DIMENSION_VALIDATION_FAILED and registers nothing when the company books on registration; a company that defers booking meets it when the invoice is booked.',
       'No fiscal year for invoice_date returns SI_CREATE_NO_FISCAL_PERIOD and registers nothing.',
       'account_number is a STRING ("6110"), never a number.',
     ],
@@ -430,6 +438,7 @@ export const inboxItemsConvertToSupplierInvoice = defineOperation({
     'SI_FX_RATE_MISSING',
     'SI_CREATE_DUPLICATE_INVOICE_NUMBER',
     'SI_CREATE_NO_FISCAL_PERIOD',
+    'DIMENSION_VALIDATION_FAILED',
     'SI_CREATE_FAILED',
   ],
   http: {

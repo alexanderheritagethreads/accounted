@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { z } from 'zod'
 import { getStructuredError } from '../get-structured-error'
 import { BookkeepingDatabaseError } from '@/lib/bookkeeping/errors'
 import { dbError } from '../db-error'
@@ -240,5 +241,51 @@ describe('getStructuredError: .single() with no row', () => {
       details: 'The result contains 2 rows',
     })
     expect(s.code).not.toBe('NOT_FOUND')
+  })
+})
+
+describe('getStructuredError: a ZodError that reached the dispatch', () => {
+  // A `.parse()` that threw past its tool (create_skill, set_inbox_extracted_data)
+  // answered UNKNOWN_ERROR with the raw issue JSON as message_en, while REST's
+  // errorResponse has always called the same error VALIDATION_ERROR.
+  const schema = z.object({ name: z.string(), steps: z.array(z.string().max(5)), days: z.number() }).strict()
+
+  function zodErrorFor(input: unknown): z.ZodError {
+    const parsed = schema.safeParse(input)
+    if (parsed.success) throw new Error('expected a failure')
+    return parsed.error
+  }
+
+  it('is VALIDATION_ERROR naming each path, never retryable', () => {
+    const s = getStructuredError(zodErrorFor({ steps: ['too long'], days: 1 }))
+    expect(s).toMatchObject({ code: 'VALIDATION_ERROR', retryable: false })
+    expect(s.message_en).toMatch(/^Invalid arguments: name: .+; steps\.0: /)
+  })
+
+  it('renders each reason in Swedish, telling a missing field from a wrong type', () => {
+    expect(getStructuredError(zodErrorFor({ steps: [], days: 'x' })).message_sv).toBe(
+      'name: Obligatoriskt fält saknas. days: Fel typ: ska vara ett tal.',
+    )
+  })
+
+  it('treats a thrown parse like the returned error', () => {
+    let thrown: unknown
+    try {
+      schema.parse({ steps: [], days: 1 })
+    } catch (err) {
+      thrown = err
+    }
+    expect(thrown).toBeInstanceOf(z.ZodError)
+    expect(getStructuredError(thrown)).toMatchObject({ code: 'VALIDATION_ERROR', message_sv: 'name: Obligatoriskt fält saknas.' })
+  })
+
+  it('keeps INTERNAL_ERROR for a parse of data the server built itself (the create_skill body shape)', () => {
+    const s = getStructuredError(
+      Object.assign(new Error('The skill body built from these arguments failed its own validation (a server bug): Line 3: use plain Markdown'), {
+        code: 'INTERNAL_ERROR',
+      }),
+    )
+    expect(s.code).toBe('INTERNAL_ERROR')
+    expect(s.retryable).toBe(false)
   })
 })

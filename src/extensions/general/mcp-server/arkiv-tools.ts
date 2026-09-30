@@ -92,7 +92,6 @@ interface Deps {
 
 const FACT_SHAPE = {
   type: 'object',
-  additionalProperties: false,
   properties: {
     fact_id: { type: 'string' },
     subject_ref: { type: 'string' },
@@ -384,7 +383,6 @@ export function createArkivTools(deps: Deps): McpTool[] {
             type: 'array',
             items: {
               type: 'object',
-              additionalProperties: false,
               properties: {
                 record_ref: { type: 'string' },
                 kind: { type: 'string', enum: ['document', 'agreement', 'fact'] },
@@ -517,7 +515,6 @@ export function createArkivTools(deps: Deps): McpTool[] {
             type: 'array',
             items: {
               type: 'object',
-              additionalProperties: false,
               properties: {
                 from_ref: { type: 'string' },
                 record_ref: { type: 'string' },

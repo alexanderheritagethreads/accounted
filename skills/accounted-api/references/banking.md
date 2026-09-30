@@ -2961,7 +2961,7 @@ Request body:
   invoice_id: string,
   force?: boolean,
   expected_journal_entry_id?: string,
-  lines?: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string }[],
+  lines?: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string, dimensions?: Record<string, string> }[],
   manual_exchange_rate?: number
 }
 ```
@@ -3022,14 +3022,16 @@ Example response `200`:
 **Match a negative bank transaction to a supplier invoice.**
 `scope:transactions:write · risk:high · idempotent`
 
-Confirms a supplier invoice payment match. Creates the payment journal entry (accrual: 2440 debit, credit on the transaction's own settlement account, 1930 when unlinked; cash-method: collapsed registration+payment), updates supplier_invoices, inserts a supplier_invoice_payments row, and links the transaction. Handles FX differences for cross-currency payments (7960 gain / 3960 loss).
+Confirms a supplier invoice payment match. Creates the payment journal entry (accrual: 2440 debit, credit on the transaction's own settlement account, 1930 when unlinked; cash-method: collapsed registration+payment), updates supplier_invoices, inserts a supplier_invoice_payments row, and links the transaction. Handles FX differences for cross-currency payments (7960 gain / 3960 loss), a bank fee paid on top of the invoice (6570) and öresavrundning on a whole-krona SEK payment (3740). Same payment plan and verifikat as the dashboard match.
 
 **Use when:** You have a bank payment and a known open supplier invoice. The transaction must be negative (expense) and unlinked.
 **Do not use for:** Categorizing a direct supplier expense without an invoice: use `:categorize`. Matching to a customer invoice: use `:match-invoice`. Bulk auto-match: `POST /reconciliation/bank/run`.
 
 **Pitfalls:**
 - Cash-method companies can settle a foreign invoice in full (booked at the payment-date rate); only a PARTIAL cash-method payment across currencies is rejected (MATCH_SI_CASH_FX_UNSUPPORTED): pay in full, switch to accrual, or book manually.
-- Cash-method öresavrundning: a SEK bank row less than 1 kr off a never-booked SEK invoice (a whole-krona payment of an öre total) settles it in full. The payment account is credited with the bank amount and the residual is booked on 3740 (no VAT); paid_amount records the debt settled, not the cash moved. A difference of 1 kr or more is a partial and still returns SI_CASH_PARTIAL_UNSUPPORTED.
+- Öresavrundning (both accounting methods): a SEK bank row less than 1 kr off the remaining balance of a SEK invoice (a whole-krona payment of an öre total) settles it in full. The payment account is credited with the bank amount and the residual is booked on 3740 (no VAT); paid_amount records the debt settled, not the cash moved. A shortfall of 1 kr or more is a partial payment (on a never-booked cash-method invoice it returns SI_CASH_PARTIAL_UNSUPPORTED).
+- Bank fee on top: a same-currency row that pays more than the remaining balance settles the invoice in full; 2440 is cleared by the remaining balance only and the excess (up to 5 000 kr) is booked on 6570 and returned as bank_fee_sek (0 when there is none, and always 0 with custom lines, which book what they say). paid_amount never exceeds the invoice total. Check bank_fee_sek: a large one usually means the row pays another invoice too.
+- A same-currency excess above the fee cap returns 400 MATCH_SI_AMOUNT_EXCEEDS_REMAINING and books nothing: allocate the payment across several invoices with POST /transactions/{id}/match-batch. The check runs before any conflicting categorization is reversed. A cross-currency match is not capped: it settles the remaining balance and books the whole SEK difference as kursdifferens (7960/3960).
 - Transaction must be negative (amount < 0). Positive returns MATCH_SI_NOT_EXPENSE.
 - Supplier invoice must NOT be paid/credited already. paid/credited returns MATCH_SI_ALREADY_PAID; registered/approved/partially_paid/overdue are matchable.
 - Idempotency-Key is mandatory.
@@ -3043,7 +3045,7 @@ Request body:
 ```ts
 {
   supplier_invoice_id: string,
-  lines?: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string }[]
+  lines?: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string, dimensions?: Record<string, string> }[]
 }
 ```
 
@@ -3062,7 +3064,8 @@ Response `200`:
     invoice_status: string,
     paid_amount: number,
     remaining_amount: number,
-    journal_entry_id: string | null
+    journal_entry_id: string | null,
+    bank_fee_sek: number
   },
   meta: {
     request_id: string,
@@ -3084,7 +3087,8 @@ Example response `200`:
     "invoice_status": "paid",
     "paid_amount": 5000,
     "remaining_amount": 0,
-    "journal_entry_id": "je_…"
+    "journal_entry_id": "je_…",
+    "bank_fee_sek": 0
   },
   "meta": {
     "request_id": "req_…",

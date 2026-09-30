@@ -28,8 +28,8 @@
     "version": 3
   },
   "horizontal/swedish-asset-accounting/depreciation": {
-    "hash": "edb14eee9b565da061df61d142299092fb40d7fa21df99352e2c911ef680c739",
-    "version": 2
+    "hash": "2c2fddb2b75d90c8ede05adfb724d2d0b0088af74a12cbdd774903376c615a9a",
+    "version": 3
   },
   "horizontal/swedish-asset-accounting/leasing-and-disposal": {
     "hash": "9156babc1698fb69f958f0a18b13909bf533a8e1aaebe16ba01dce900ce79be1",
@@ -164,8 +164,8 @@
     "version": 1
   },
   "horizontal/swedish-invoice-compliance": {
-    "hash": "bdd5552d203e8ecad794c8e99849a8cc366b0a9d780e867b3e6fe5c90776e2ad",
-    "version": 11
+    "hash": "8f2dc16cde4c422a3f3bb62034f429980636381701119d443cef3b280462107f",
+    "version": 12
   },
   "horizontal/swedish-invoice-compliance/decision-trees": {
     "hash": "4c65433762273a95e8f106cb869bb1a4a6ccf6ac5b5c83086952f0a17adc4494",

@@ -261,7 +261,7 @@ export const SkattekontoStatusBlockSchema = z.object({
   saldo_skatteverket: z.number().nullable(),
   /** ISO timestamp of the saldo snapshot; null when never synced. */
   fetched_at: z.string().nullable(),
-  /** Earliest SKV-posted row we hold: the start of the comparable history. */
+  /** Start of the comparable history: the earliest SKV-posted row we hold, or the 1630 IB date when that is later. */
   history_start: z.string().nullable(),
   /** saldo_at_start - ledger balance before history_start. Null without a snapshot. */
   opening_difference: z.number().nullable(),

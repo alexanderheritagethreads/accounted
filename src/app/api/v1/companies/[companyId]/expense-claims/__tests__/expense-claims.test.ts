@@ -318,6 +318,73 @@ describe('POST /api/v1/companies/:companyId/expense-claims', () => {
     ])
   })
 
+  it('tags the cost line with the claim\'s dimensions; the VAT and liability legs stay untagged', async () => {
+    const client = makeClient({
+      company_members: MEMBER,
+      companies: { data: { entity_type: 'aktiebolag' }, error: null },
+      fiscal_periods: [OPEN_YEAR, OPEN_YEAR_LIST],
+      expense_claims: { data: claimRow({ journal_entry_id: null }), error: null },
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await post({ ...validClaim, dimensions: { '1': 'KS01', '6': 'P001' } })
+    expect(res.status).toBe(201)
+
+    const entry = createJournalEntryMock.mock.calls[0][3]
+    expect(entry.lines.map((l: { account_number: string; dimensions?: unknown }) => [l.account_number, l.dimensions])).toEqual([
+      ['5410', { '1': 'KS01', '6': 'P001' }],
+      ['2641', undefined],
+      ['2893', undefined],
+    ])
+  })
+
+  it('custom lines keep their own dimensions, and the claim bag defaults only the class 3-8 lines', async () => {
+    const client = makeClient({
+      company_members: MEMBER,
+      companies: { data: { entity_type: 'aktiebolag' }, error: null },
+      fiscal_periods: [OPEN_YEAR, OPEN_YEAR_LIST],
+      expense_claims: { data: claimRow({ journal_entry_id: null }), error: null },
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await post({
+      ...validClaim,
+      dimensions: { '6': 'P001' },
+      lines: [
+        { account_number: '5410', debit_amount: 300, credit_amount: 0, dimensions: { '1': 'KS01', '6': 'P002' } },
+        { account_number: '6110', debit_amount: 100, credit_amount: 0 },
+        { account_number: '2641', debit_amount: 100, credit_amount: 0 },
+        { account_number: '2893', debit_amount: 0, credit_amount: 500 },
+      ],
+    })
+    expect(res.status).toBe(201)
+
+    const entry = createJournalEntryMock.mock.calls[0][3]
+    expect(entry.lines.map((l: { account_number: string; dimensions?: unknown }) => [l.account_number, l.dimensions])).toEqual([
+      // The line's own value wins per key; the claim bag fills the rest.
+      ['5410', { '1': 'KS01', '6': 'P002' }],
+      ['6110', { '6': 'P001' }],
+      ['2641', undefined],
+      ['2893', undefined],
+    ])
+  })
+
+  it('400 VALIDATION_ERROR for a malformed dimensions bag on the claim or on a line, writing nothing', async () => {
+    const client = makeClient({ company_members: MEMBER })
+    mockServiceClient.mockReturnValue(client)
+    const onClaim = await post({ ...validClaim, dimensions: { projekt: 'P001' } })
+    expect(onClaim.status).toBe(400)
+    expect((await onClaim.json()).error.code).toBe('VALIDATION_ERROR')
+    const onLine = await post({
+      ...validClaim,
+      lines: [
+        { account_number: '5410', debit_amount: 500, credit_amount: 0, dimensions: { '6': 'P"1' } },
+        { account_number: '2893', debit_amount: 0, credit_amount: 500 },
+      ],
+    })
+    expect(onLine.status).toBe(400)
+    expect(wrote(client)).toBe(false)
+    expect(createJournalEntryMock).not.toHaveBeenCalled()
+  })
+
   it('an employee claim books 2820 under the employee\'s own name', async () => {
     const client = makeClient({
       company_members: MEMBER,
@@ -413,6 +480,21 @@ describe('POST /api/v1/companies/:companyId/expense-claims', () => {
     expect(body.data.preview.verifikat.lines).toContainEqual({ account_number: '2018', debit_amount: 0, credit_amount: 500 })
     expect(wrote(client)).toBe(false)
     expect(createJournalEntryMock).not.toHaveBeenCalled()
+  })
+
+  it('a dry run shows the approver the dimensions the cost line will carry', async () => {
+    const client = makeClient({
+      company_members: MEMBER,
+      companies: { data: { entity_type: 'aktiebolag' }, error: null },
+      fiscal_periods: [OPEN_YEAR, OPEN_YEAR_LIST],
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await post({ ...validClaim, dimensions: { '6': 'P001' } }, '?dry_run=true')
+    expect(res.status).toBe(200)
+    const lines = (await res.json()).data.preview.verifikat.lines
+    expect(lines).toContainEqual({ account_number: '5410', debit_amount: 400, credit_amount: 0, dimensions: { '6': 'P001' } })
+    expect(lines).toContainEqual({ account_number: '2893', debit_amount: 0, credit_amount: 500 })
+    expect(wrote(client)).toBe(false)
   })
 
   it('a foreign dry run reads the rate without the cache client', async () => {

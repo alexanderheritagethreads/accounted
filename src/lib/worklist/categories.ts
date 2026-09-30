@@ -29,6 +29,7 @@ import {
 } from '@/lib/invoices/matchable-statuses'
 import { todayIsoStockholm } from '@/lib/dates/iso'
 import { resolveSkattekontoOcr, SKATTEKONTO_BANKGIRO } from '@/lib/skatteverket/skattekonto-ocr'
+import { listPeppolFailedInvoiceIds } from '@/lib/invoices/peppol-failed-invoices'
 import type { ExpensePayoutDue, SkattekontoPaymentDue, SuggestedMatch } from './types'
 
 // Canonical home is lib/worklist/types.ts (dependency-free, client-safe);
@@ -326,6 +327,24 @@ export async function countMissedAgreementPayments(supabase: SupabaseClient, com
     .eq('status', 'missed')
   if (error) return logAndZero('agreement_payment_missed', companyId, error)
   return count ?? 0
+}
+
+/**
+ * Issued invoices whose latest Peppol delivery failed: the number of ids the
+ * peppol_failed_invoice_ids function returns on the session client (lib/
+ * invoices/peppol-failed-invoices.ts), the same list the invoice chips show.
+ * The list is capped at PEPPOL_FAILED_INVOICE_LIMIT, so the count is too;
+ * a to-do badge needs no more.
+ */
+export async function countFailedPeppolDeliveries(
+  supabase: SupabaseClient,
+  companyId: string,
+): Promise<number> {
+  try {
+    return (await listPeppolFailedInvoiceIds({ supabase, companyId })).length
+  } catch (err) {
+    return logAndZero('peppol_delivery_failed', companyId, err as { message?: string })
+  }
 }
 
 /** Overdue customer invoices (not credited). */

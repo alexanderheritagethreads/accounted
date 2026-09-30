@@ -1092,6 +1092,35 @@ export async function getReconciliationStatus(
 // ============================================================
 
 /**
+ * Why manualLink or linkTransactionToVouchers refused. Stable, so a caller
+ * branches on the code and never on the Swedish sentence: the account-keyed
+ * surface (lib/reconciliation/actions.ts) maps it to its pair skip codes.
+ * Before the codes, every refusal read as "the amounts do not close", which
+ * sent an agent with a mistyped verifikat id off to book a residual.
+ */
+export type BankLinkRefusalCode =
+  | 'TRANSACTION_NOT_FOUND'
+  /** Bound to a cash account on another ledger account than the one reconciled. */
+  | 'TRANSACTION_OTHER_ACCOUNT'
+  | 'TRANSACTION_IGNORED'
+  | 'TRANSACTION_ALREADY_LINKED'
+  | 'ENTRY_NOT_FOUND'
+  /** A draft or a cancelled draft: not in the ledger. */
+  | 'ENTRY_NOT_POSTED'
+  | 'ENTRY_REVERSED'
+  /** The verifikat does not settle the row on the account: no line there, or the amounts differ. */
+  | 'NOT_SETTLED'
+  /** A 1:N request that is not a split: a verifikat twice, fewer than two, more than 50. */
+  | 'INVALID_SPLIT'
+  /** Someone else linked the row between the read and the write. */
+  | 'LINK_RACE'
+  | 'WRITE_FAILED'
+
+function refused(code: BankLinkRefusalCode, error: string): { success: false; error: string; code: BankLinkRefusalCode } {
+  return { success: false, error, code }
+}
+
+/**
  * Manually link a transaction to an existing journal entry.
  * Validates that the journal entry has a bank account line and amounts are directionally compatible.
  */
@@ -1102,7 +1131,7 @@ export async function manualLink(
   journalEntryId: string,
   userId: string,
   accountNumber: string = '1930',
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; code?: BankLinkRefusalCode }> {
   // Fetch transaction. The junction rows ride along on the same read: a row
   // split over several verifikat (linkTransactionToVouchers) or bulk-booked
   // into a samlingsverifikat carries journal_entry_id = NULL, and the pointer
@@ -1118,13 +1147,19 @@ export async function manualLink(
     .single()
 
   if (txError || !txRow) {
-    return { success: false, error: 'Transaktionen kunde inte hittas.' }
+    return refused('TRANSACTION_NOT_FOUND', 'Transaktionen kunde inte hittas.')
   }
   const { transaction_voucher_links: junctionRows, ...tx } = txRow as Record<string, unknown> & {
     transaction_voucher_links?: Array<{ journal_entry_id: string; role?: string | null }> | null
   }
   if (hasBankLineJunctionRow(junctionRows)) {
-    return { success: false, error: 'Transaktionen är redan kopplad till en verifikation.' }
+    return refused('TRANSACTION_ALREADY_LINKED', 'Transaktionen är redan kopplad till en verifikation.')
+  }
+  // An ignored row can never carry a link (CHECK transactions_is_ignored_no_
+  // journal_entry): refused by name here, where the UPDATE below used to fail
+  // on the constraint with a "Försök igen" that no retry can satisfy.
+  if (tx.is_ignored === true) {
+    return refused('TRANSACTION_IGNORED', 'Transaktionen är ignorerad. Återställ den innan du kopplar.')
   }
 
   // Only a LIVE (posted) pointer blocks re-linking. A transaction still pointing
@@ -1135,7 +1170,7 @@ export async function manualLink(
     typeof tx.journal_entry_id === 'string' &&
     (await hasLiveJournalEntryLink(supabase, companyId, tx.journal_entry_id))
   ) {
-    return { success: false, error: 'Transaktionen är redan kopplad till en verifikation.' }
+    return refused('TRANSACTION_ALREADY_LINKED', 'Transaktionen är redan kopplad till en verifikation.')
   }
 
   // Fetch journal entry + verify it has a 1930 line
@@ -1147,11 +1182,14 @@ export async function manualLink(
     .single()
 
   if (entryError || !entry) {
-    return { success: false, error: 'Verifikationen kunde inte hittas.' }
+    return refused('ENTRY_NOT_FOUND', 'Verifikationen kunde inte hittas.')
   }
 
+  if (entry.status === 'reversed') {
+    return refused('ENTRY_REVERSED', 'Verifikationen är makulerad och kan inte kopplas.')
+  }
   if (entry.status !== 'posted') {
-    return { success: false, error: 'Verifikationen är inte bokförd ännu.' }
+    return refused('ENTRY_NOT_POSTED', 'Verifikationen är inte bokförd ännu.')
   }
 
   // Defense-in-depth: the transaction must belong to the account being
@@ -1176,10 +1214,7 @@ export async function manualLink(
       .eq('company_id', companyId)
       .maybeSingle()
     if (txCa?.ledger_account && txCa.ledger_account !== accountNumber) {
-      return {
-        success: false,
-        error: `Transaktionen hör till ${txCa.ledger_account}, inte ${accountNumber}`,
-      }
+      return refused('TRANSACTION_OTHER_ACCOUNT', `Transaktionen hör till ${txCa.ledger_account}, inte ${accountNumber}`)
     }
     siblingInfo = await describeCashAccountSiblings(supabase, companyId, tx.cash_account_id)
     if (siblingInfo && siblingInfo.siblings.length > 0) {
@@ -1200,7 +1235,7 @@ export async function manualLink(
     .in('account_number', allowedLineAccounts)
 
   if (!lines || lines.length === 0) {
-    return { success: false, error: `Verifikationen saknar rad på ${allowedLineAccounts.join(' eller ')}` }
+    return refused('NOT_SETTLED', `Verifikationen saknar rad på ${allowedLineAccounts.join(' eller ')}`)
   }
 
   // When the voucher's bank leg sits on a SIBLING ledger only, the row moves
@@ -1246,10 +1281,10 @@ export async function manualLink(
         accountNumber,
         siblingLedgers,
       })
-      return {
-        success: false,
-        error: `Verifikationen är bokförd på ${siblingLedgers.join(' och ')}, som inte är transaktionens konto (${accountNumber}). Rätta verifikationen eller flytta transaktionen först.`,
-      }
+      return refused(
+        'NOT_SETTLED',
+        `Verifikationen är bokförd på ${siblingLedgers.join(' och ')}, som inte är transaktionens konto (${accountNumber}). Rätta verifikationen eller flytta transaktionen först.`,
+      )
     }
   }
 
@@ -1290,10 +1325,10 @@ export async function manualLink(
   ).select('id')
 
   if (updateError) {
-    return { success: false, error: 'Kunde inte koppla transaktionen. Försök igen.' }
+    return refused('WRITE_FAILED', 'Kunde inte koppla transaktionen. Försök igen.')
   }
   if (!updatedRows || updatedRows.length === 0) {
-    return { success: false, error: 'Transaktionen är redan kopplad till en verifikation.' }
+    return refused('LINK_RACE', 'Transaktionen är redan kopplad till en verifikation.')
   }
 
   try {
@@ -1331,6 +1366,8 @@ export interface VoucherAllocationInput {
 export interface LinkTransactionToVouchersResult {
   success: boolean
   error?: string
+  /** Why the split was refused; present whenever success is false. */
+  code?: BankLinkRefusalCode
   /** The slices as validated, defaults resolved. Present on success and on dry runs. */
   allocations?: VoucherAllocation[]
 }
@@ -1377,13 +1414,13 @@ export async function linkTransactionToVouchers(
 ): Promise<LinkTransactionToVouchersResult> {
   const journalEntryIds = allocations.map((a) => a.journal_entry_id)
   if (new Set(journalEntryIds).size !== journalEntryIds.length) {
-    return { success: false, error: 'Samma verifikat förekommer flera gånger i fördelningen.' }
+    return refused('INVALID_SPLIT', 'Samma verifikat förekommer flera gånger i fördelningen.')
   }
   if (journalEntryIds.length < 2) {
-    return { success: false, error: 'En delning kräver minst två verifikat.' }
+    return refused('INVALID_SPLIT', 'En delning kräver minst två verifikat.')
   }
   if (journalEntryIds.length > 50) {
-    return { success: false, error: 'En delning kan omfatta högst 50 verifikat.' }
+    return refused('INVALID_SPLIT', 'En delning kan omfatta högst 50 verifikat.')
   }
 
   const { data: txRow, error: txError } = await supabase
@@ -1393,26 +1430,26 @@ export async function linkTransactionToVouchers(
     .eq('company_id', companyId)
     .single()
   if (txError || !txRow) {
-    return { success: false, error: 'Transaktionen kunde inte hittas.' }
+    return refused('TRANSACTION_NOT_FOUND', 'Transaktionen kunde inte hittas.')
   }
   const { transaction_voucher_links: junctionRows, ...tx } = txRow as Record<string, unknown> & {
     transaction_voucher_links?: Array<{ journal_entry_id: string; role?: string | null }> | null
   }
   if (tx.is_ignored === true) {
-    return { success: false, error: 'Transaktionen är ignorerad. Återställ den innan du kopplar.' }
+    return refused('TRANSACTION_IGNORED', 'Transaktionen är ignorerad. Återställ den innan du kopplar.')
   }
   // Stricter than manualLink on purpose: a split is the whole explanation of
   // the row, so ANY junction row (a residual's 'other' row included) makes it
   // ineligible; the UNIQUE (transaction_id, journal_entry_id) key would refuse
   // a re-anchor of that voucher anyway.
   if (Array.isArray(junctionRows) && junctionRows.length > 0) {
-    return { success: false, error: 'Transaktionen är redan kopplad till en verifikation.' }
+    return refused('TRANSACTION_ALREADY_LINKED', 'Transaktionen är redan kopplad till en verifikation.')
   }
   if (
     typeof tx.journal_entry_id === 'string' &&
     (await hasLiveJournalEntryLink(supabase, companyId, tx.journal_entry_id))
   ) {
-    return { success: false, error: 'Transaktionen är redan kopplad till en verifikation.' }
+    return refused('TRANSACTION_ALREADY_LINKED', 'Transaktionen är redan kopplad till en verifikation.')
   }
   // Third anchor of isTransactionBooked: a payment row (match-invoice,
   // match-batch) settles the row through invoice_payments /
@@ -1430,7 +1467,7 @@ export async function linkTransactionToVouchers(
       .limit(1),
   ])
   if ((invoicePayments?.length ?? 0) > 0 || (supplierPayments?.length ?? 0) > 0) {
-    return { success: false, error: 'Transaktionen är redan matchad mot en faktura.' }
+    return refused('TRANSACTION_ALREADY_LINKED', 'Transaktionen är redan matchad mot en faktura.')
   }
 
   // The transaction must belong to the account being reconciled (same guard
@@ -1444,10 +1481,7 @@ export async function linkTransactionToVouchers(
       .eq('company_id', companyId)
       .maybeSingle()
     if (txCa?.ledger_account && txCa.ledger_account !== accountNumber) {
-      return {
-        success: false,
-        error: `Transaktionen hör till ${txCa.ledger_account}, inte ${accountNumber}`,
-      }
+      return refused('TRANSACTION_OTHER_ACCOUNT', `Transaktionen hör till ${txCa.ledger_account}, inte ${accountNumber}`)
     }
   }
 
@@ -1470,9 +1504,12 @@ export async function linkTransactionToVouchers(
   }
   for (const id of journalEntryIds) {
     const entry = entryById.get(id)
-    if (!entry) return { success: false, error: 'Verifikationen kunde inte hittas.' }
+    if (!entry) return refused('ENTRY_NOT_FOUND', `Verifikationen ${id} kunde inte hittas.`)
+    if (entry.status === 'reversed') {
+      return refused('ENTRY_REVERSED', `Verifikat ${labelOf(id)} är makulerat och kan inte kopplas.`)
+    }
     if (entry.status !== 'posted') {
-      return { success: false, error: `Verifikat ${labelOf(id)} är inte bokförd ännu.` }
+      return refused('ENTRY_NOT_POSTED', `Verifikat ${labelOf(id)} är inte bokförd ännu.`)
     }
   }
 
@@ -1497,36 +1534,33 @@ export async function linkTransactionToVouchers(
   for (const input of allocations) {
     const label = labelOf(input.journal_entry_id)
     if (!netByEntry.has(input.journal_entry_id)) {
-      return { success: false, error: `Verifikat ${label} saknar rad på ${accountNumber}` }
+      return refused('NOT_SETTLED', `Verifikat ${label} saknar rad på ${accountNumber}`)
     }
     const net = netByEntry.get(input.journal_entry_id) ?? null
     if (net === null) {
-      return { success: false, error: `Verifikat ${label} saknar belopp i ${currency} på ${accountNumber}` }
+      return refused('NOT_SETTLED', `Verifikat ${label} saknar belopp i ${currency} på ${accountNumber}`)
     }
     const slice = roundOre(input.amount ?? net)
     if (Math.abs(slice) < VOUCHER_LINK_AMOUNT_TOLERANCE) {
-      return { success: false, error: `Beloppet för verifikat ${label} får inte vara 0.` }
+      return refused('NOT_SETTLED', `Beloppet för verifikat ${label} får inte vara 0.`)
     }
     if (Math.sign(slice) !== Math.sign(net)) {
-      return {
-        success: false,
-        error: `Beloppet för verifikat ${label} har fel riktning: verifikatet bokför ${net} på ${accountNumber}.`,
-      }
+      return refused(
+        'NOT_SETTLED',
+        `Beloppet för verifikat ${label} har fel riktning: verifikatet bokför ${net} på ${accountNumber}.`,
+      )
     }
     if (Math.abs(slice) > Math.abs(net) + VOUCHER_LINK_AMOUNT_TOLERANCE) {
-      return {
-        success: false,
-        error: `Beloppet för verifikat ${label} (${slice}) är större än verifikatets rad på ${accountNumber} (${net}).`,
-      }
+      return refused(
+        'NOT_SETTLED',
+        `Beloppet för verifikat ${label} (${slice}) är större än verifikatets rad på ${accountNumber} (${net}).`,
+      )
     }
     resolved.push({ journal_entry_id: input.journal_entry_id, amount: slice })
   }
   const sliceSum = roundOre(resolved.reduce((sum, a) => sum + a.amount, 0))
   if (Math.abs(sliceSum - txAmount) > VOUCHER_LINK_AMOUNT_TOLERANCE) {
-    return {
-      success: false,
-      error: `Fördelningen (${sliceSum}) stämmer inte med transaktionens belopp (${txAmount}).`,
-    }
+    return refused('NOT_SETTLED', `Fördelningen (${sliceSum}) stämmer inte med transaktionens belopp (${txAmount}).`)
   }
 
   if (options.dryRun) {
@@ -1556,10 +1590,10 @@ export async function linkTransactionToVouchers(
     : lockUpdate.eq('journal_entry_id', previousJournalEntryId)
   ).select('id')
   if (lockError) {
-    return { success: false, error: 'Kunde inte koppla transaktionen. Försök igen.' }
+    return refused('WRITE_FAILED', 'Kunde inte koppla transaktionen. Försök igen.')
   }
   if (!lockedRows || lockedRows.length === 0) {
-    return { success: false, error: 'Transaktionen är redan kopplad till en verifikation.' }
+    return refused('LINK_RACE', 'Transaktionen är redan kopplad till en verifikation.')
   }
 
   const { error: insertError } = await supabase.from('transaction_voucher_links').insert(
@@ -1597,7 +1631,7 @@ export async function linkTransactionToVouchers(
       companyId,
       transactionId,
     })
-    return { success: false, error: 'Kunde inte koppla transaktionen. Försök igen.' }
+    return refused('WRITE_FAILED', 'Kunde inte koppla transaktionen. Försök igen.')
   }
 
   // Behandlingshistorik (BFNAR 2013:2 kap 8): one match event for the row,

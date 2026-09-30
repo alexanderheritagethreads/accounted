@@ -316,6 +316,90 @@ describe('PATCH /api/v1/companies/:companyId/settings', () => {
   })
 })
 
+describe('PATCH /api/v1/companies/:companyId/settings: turning dimensions on', () => {
+  // Regression: the codes already on journal lines were registered only when
+  // the settings page's toggle called the scan after its own save, so turning
+  // dimensions on over the API left the registry without the history's codes.
+  const tagged = {
+    rpc: { data: null, error: null },
+    journal_entries: { data: [{ id: 'entry-1' }], error: null },
+    journal_entry_lines: {
+      data: [{ id: 'line-1', journal_entry_id: 'entry-1', dimensions: { '1': 'KS01', '6': 'P001' } }],
+      error: null,
+    },
+    dimensions: { data: [{ id: 'dim-1', sie_dim_no: 1 }, { id: 'dim-6', sie_dim_no: 6 }], error: null },
+  }
+
+  it('registers the codes already on journal lines and says how many', async () => {
+    const client = makeClient({
+      company_members: OWNER,
+      company_settings: [{ data: { ...STORED, dimensions_enabled: false } }, { data: { ...STORED, dimensions_enabled: true } }],
+      deadlines: HAS_DEADLINES,
+      ...tagged,
+      dimension_values: [{ data: [{ dimension_id: 'dim-1', code: 'KS01' }], error: null }, { data: [{ id: 'value-1' }], error: null }],
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await updateSettings(patch(BASE, { dimensions_enabled: true }), params)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data.dimensions_enabled).toBe(true)
+    expect(body.meta.warnings).toEqual([expect.objectContaining({ code: 'DIMENSION_CODES_IMPORTED' })])
+    expect(body.meta.warnings[0].message_sv).toMatch(/^1 dimensionskoder/)
+    expect(client.rpc).toHaveBeenCalledWith('ensure_company_dimensions', { p_company_id: COMPANY_ID })
+    // KS01 is registered already: only P001 is added, archived.
+    const upsert = client.calls.find((c) => c.table === 'dimension_values' && c.method === 'upsert')
+    expect(upsert?.args[0]).toEqual([
+      { company_id: COMPANY_ID, dimension_id: 'dim-6', code: 'P001', name: 'P001', is_active: false },
+    ])
+  })
+
+  it('keeps the save when the registration fails, and says so', async () => {
+    const client = makeClient({
+      company_members: OWNER,
+      company_settings: [{ data: { ...STORED, dimensions_enabled: false } }, { data: { ...STORED, dimensions_enabled: true } }],
+      deadlines: HAS_DEADLINES,
+      rpc: { data: null, error: null },
+      journal_entries: { data: null, error: { message: 'statement timeout', code: '57014' } },
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await updateSettings(patch(BASE, { dimensions_enabled: true }), params)
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data.dimensions_enabled).toBe(true)
+    expect(body.meta.warnings).toEqual([expect.objectContaining({ code: 'DIMENSION_CODES_IMPORT_FAILED' })])
+  })
+
+  it('a dry run says the codes will be registered and neither writes nor scans', async () => {
+    const client = makeClient({
+      company_members: OWNER,
+      company_settings: { data: { ...STORED, dimensions_enabled: false } },
+      deadlines: HAS_DEADLINES,
+      ...tagged,
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await updateSettings(patch(`${BASE}?dry_run=true`, { dimensions_enabled: true }), params)
+    expect(res.status).toBe(200)
+    const { data } = await res.json()
+    expect(data.preview).toMatchObject({ dimensions_enabled: true, dimension_codes_will_import: true })
+    expect(client.rpc).not.toHaveBeenCalled()
+    expect(client.updates('company_settings')).toHaveLength(0)
+  })
+
+  it('does not scan when dimensions were already on', async () => {
+    const client = makeClient({
+      company_members: OWNER,
+      company_settings: { data: { ...STORED, dimensions_enabled: true } },
+      deadlines: HAS_DEADLINES,
+      ...tagged,
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await updateSettings(patch(BASE, { dimensions_enabled: true }), params)
+    expect(res.status).toBe(200)
+    expect(client.rpc).not.toHaveBeenCalled()
+    expect((await res.json()).meta.warnings).toBeUndefined()
+  })
+})
+
 describe('PATCH /api/v1/companies/:companyId/settings/tax-profile', () => {
   const URL_ = `${BASE}/tax-profile`
 

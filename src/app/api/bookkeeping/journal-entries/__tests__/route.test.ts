@@ -694,3 +694,90 @@ describe('POST /api/bookkeeping/journal-entries', () => {
     expect(body.error).toBe('Kunde inte hantera verifikationen. Försök igen.')
   })
 })
+
+/**
+ * The dashboard route accepts only the source types the dashboard's own forms
+ * author ('manual', and 'vat_settlement' for the reviewed momsredovisning
+ * proposal and VAT templates). An engine-owned label would let a business
+ * voucher claim that type's dimension-policy exemption ('system' skips every
+ * rule, 'accrual' skips registry validation) and show a false source.
+ */
+describe('POST /api/bookkeeping/journal-entries: source_type allowlist', () => {
+  const mockUser = { id: 'user-1', email: 'test@test.se' }
+  const emptyParams = { params: Promise.resolve({}) }
+  const baseBody = {
+    fiscal_period_id: VALID_UUID,
+    entry_date: '2024-06-15',
+    description: 'Test entry',
+    lines: [
+      { account_number: '6570', debit_amount: 100, credit_amount: 0 },
+      { account_number: '1930', debit_amount: 0, credit_amount: 100 },
+    ],
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    reset()
+    mockSupabase.auth.getUser.mockResolvedValue({ data: { user: mockUser } })
+  })
+
+  it.each([
+    'system',
+    'accrual',
+    'storno',
+    'correction',
+    'year_end',
+    'import',
+    'opening_balance',
+    'credit_note',
+    'invoice_paid',
+  ])('rejects the engine-owned source_type %s with 400 before the engine runs', async (sourceType) => {
+    const request = createMockRequest('/api/bookkeeping/journal-entries', {
+      method: 'POST',
+      body: { ...baseBody, source_type: sourceType },
+    })
+    const response = await POST(request, emptyParams)
+    const { status, body } = await parseJsonResponse<{ error: string; errors: Array<{ field: string }> }>(response)
+
+    expect(status).toBe(400)
+    expect(body.errors.map((e) => e.field)).toEqual(['source_type'])
+    expect(body.error).toContain('"manual" eller "vat_settlement"')
+    expect(mockCreateJournalEntry).not.toHaveBeenCalled()
+  })
+
+  it('books the reviewed VAT settlement with source_type vat_settlement', async () => {
+    mockCreateJournalEntry.mockResolvedValue(makeJournalEntry())
+
+    const request = createMockRequest('/api/bookkeeping/journal-entries', {
+      method: 'POST',
+      body: { ...baseBody, source_type: 'vat_settlement' },
+    })
+    const response = await POST(request, emptyParams)
+
+    expect(response.status).toBe(200)
+    expect(mockCreateJournalEntry).toHaveBeenCalledWith(
+      expect.anything(),
+      'company-1',
+      'user-1',
+      expect.objectContaining({ source_type: 'vat_settlement' })
+    )
+  })
+
+  it('defaults an omitted source_type to manual', async () => {
+    mockCreateJournalEntry.mockResolvedValue(makeJournalEntry())
+
+    const request = createMockRequest('/api/bookkeeping/journal-entries', {
+      method: 'POST',
+      body: baseBody,
+    })
+    const response = await POST(request, emptyParams)
+
+    expect(response.status).toBe(200)
+    expect(mockCreateJournalEntry).toHaveBeenCalledWith(
+      expect.anything(),
+      'company-1',
+      'user-1',
+      expect.objectContaining({ source_type: 'manual' })
+    )
+  })
+})

@@ -13,9 +13,12 @@ import { describe, it, expect } from 'vitest'
 import {
   REPORT_ARG_ALIASES,
   describeAliasConflicts,
+  describeArgHint,
   normalizeReportArgAliases,
   suggestArgKey,
 } from '../report-arg-aliases'
+import { listArgKeys, listRequiredArgKeys } from '../arg-guard'
+import { parseRecordRef } from '../arkiv-tools'
 import { tools } from '../server'
 
 describe('normalizeReportArgAliases', () => {
@@ -250,5 +253,149 @@ describe('suggestArgKey', () => {
   it('returns null when nothing close is valid', () => {
     expect(suggestArgKey('fiscal_period_id', ['invoice_id'])).toBeNull()
     expect(suggestArgKey('fromdate', ['from_date'])).toBeNull()
+  })
+})
+
+/** The hint the dispatcher would give for one unknown key on a real tool. */
+function hintOn(toolName: string, unknownKey: string, args: Record<string, unknown> = { [unknownKey]: 'x' }) {
+  const tool = tools.find((t) => t.name === toolName)
+  if (!tool) throw new Error(`no tool ${toolName}`)
+  const schema = tool.inputSchema as Record<string, unknown>
+  const validKeys = listArgKeys(schema)
+  expect(validKeys, `${toolName} must not already accept ${unknownKey}`).not.toContain(unknownKey)
+  return suggestArgKey(unknownKey, validKeys, { required: listRequiredArgKeys(schema), args })
+}
+
+// Prod telemetry 2026-09-23..28: calls rejected with no hint at all. Each
+// synonym is checked against the real schemas, both ways: it names the target
+// on a tool that has it, and nothing on one that does not.
+describe('suggestArgKey: the synonyms agents sent, against real schemas', () => {
+  it.each([
+    ['name', 'gnubok_load_skill', 'slug', 'gnubok_list_skills'],
+    ['skill', 'gnubok_load_skill', 'slug', 'gnubok_list_skills'],
+    ['skill_name', 'gnubok_load_skill', 'slug', 'gnubok_list_skills'],
+    ['document_id', 'gnubok_ask_document', 'record_ref', 'gnubok_list_skills'],
+    ['record_id', 'gnubok_get_record', 'record_ref', 'gnubok_list_skills'],
+    ['record_type', 'gnubok_list_records', 'type', 'gnubok_list_skills'],
+    ['record_type', 'gnubok_get_record', 'record_ref', 'gnubok_search_tools'],
+    ['item_id', 'gnubok_get_inbox_item', 'inbox_item_id', 'gnubok_list_skills'],
+    ['item_id', 'gnubok_reconcile_unmatch', 'external_id', 'gnubok_search_tools'],
+    ['tool', 'gnubok_search_tools', 'query', 'gnubok_list_skills'],
+    ['description', 'gnubok_search_tools', 'query', 'gnubok_list_skills'],
+    ['entry_id', 'gnubok_set_voucher_note', 'journal_entry_id', 'gnubok_list_skills'],
+    ['note', 'gnubok_set_voucher_note', 'notes', 'gnubok_search_tools'],
+    ['month', 'gnubok_list_salary_runs', 'period_month', 'gnubok_search_tools'],
+    ['year', 'gnubok_list_salary_runs', 'period_year', 'gnubok_search_tools'],
+    ['period_id', 'gnubok_close_period', 'fiscal_period_id', 'gnubok_list_skills'],
+    ['date_from', 'gnubok_list_verifikat_without_documents', 'since', 'gnubok_list_skills'],
+    ['from_date', 'gnubok_list_verifikat_without_documents', 'since', 'gnubok_list_skills'],
+    ['start_date', 'gnubok_list_verifikat_without_documents', 'since', 'gnubok_list_skills'],
+    ['until', 'gnubok_get_income_statement', 'to_date', 'gnubok_list_verifikat_without_documents'],
+    ['until', 'gnubok_list_reconciliation_items', 'date_to', 'gnubok_list_transactions_without_documents'],
+    ['date_to', 'gnubok_get_ar_ledger', 'as_of_date', 'gnubok_list_verifikat_without_documents'],
+    ['offset', 'gnubok_list_salary_runs', 'cursor', 'gnubok_search_tools'],
+  ])('%s -> %s names "%s"; %s gets no hint', (unknownKey, withTarget, expected, without) => {
+    expect(hintOn(withTarget, unknownKey)).toBe(expected)
+    expect(hintOn(without, unknownKey)).toBeNull()
+  })
+
+  it('never points an upper bound at the lower bound of a since-only list', () => {
+    for (const key of ['until', 'date_to', 'to_date', 'end_date']) {
+      expect(hintOn('gnubok_list_verifikat_without_documents', key), key).toBeNull()
+    }
+  })
+})
+
+describe('suggestArgKey: the structural fallback for id-shaped keys', () => {
+  it('names the one key ending in _<subject>_id', () => {
+    expect(suggestArgKey('run_id', ['salary_run_id', 'period_year'])).toBe('salary_run_id')
+    expect(hintOn('gnubok_book_salary_run', 'run_id')).toBe('salary_run_id')
+  })
+
+  it('names the one key ending in <subject>_ref, then the one _ref key', () => {
+    // resolve_missing takes document_ref; the table's record_ref is not there.
+    expect(hintOn('gnubok_resolve_missing', 'document_id')).toBe('document_ref')
+    expect(hintOn('gnubok_get_record', 'id')).toBe('record_ref')
+    expect(hintOn('gnubok_get_fact_history', 'agreement_id')).toBe('subject_ref')
+  })
+
+  it('falls back to the only required key when it is an identifier', () => {
+    expect(hintOn('gnubok_get_inbox_item', 'id')).toBe('inbox_item_id')
+    // Not inbox_item_id, which credit_supplier_invoice also takes: a bare id
+    // there means the invoice being credited. Why id is not in the table.
+    expect(hintOn('gnubok_credit_supplier_invoice', 'id')).toBe('supplier_invoice_id')
+    expect(hintOn('gnubok_update_account', 'account_id')).toBe('account_number')
+  })
+
+  it('names nothing on a tie, whatever the required keys say', () => {
+    expect(
+      suggestArgKey('document_id', ['source_document_id', 'target_document_id'], { required: ['source_document_id'] }),
+    ).toBeNull()
+    expect(suggestArgKey('id', ['record_ref', 'subject_ref'], { required: ['record_ref'] })).toBeNull()
+  })
+
+  it('never points an id at a required key that is not an identifier', () => {
+    // gnubok_get_task requires kind ("bookkeep", "vat", ...), not a uuid.
+    expect(hintOn('gnubok_get_task', 'operation_id')).toBeNull()
+    expect(suggestArgKey('fact_id', ['content', 'kind'], { required: ['content'] })).toBeNull()
+  })
+
+  it('names nothing when the required key was sent too, or when there are two', () => {
+    const validKeys = ['journal_entry_id', 'notes']
+    const required = ['journal_entry_id']
+    expect(suggestArgKey('voucher_id', validKeys, { required, args: { voucher_id: 'v-1' } })).toBe('journal_entry_id')
+    expect(
+      suggestArgKey('voucher_id', validKeys, { required, args: { journal_entry_id: 'je-1', voucher_id: 'v-1' } }),
+    ).toBeNull()
+    expect(hintOn('gnubok_reconcile_unmatch', 'id')).toBeNull()
+  })
+
+  it('only applies to id-shaped keys', () => {
+    expect(suggestArgKey('invoice', ['invoice_id'], { required: ['invoice_id'] })).toBeNull()
+    expect(suggestArgKey('uuid', ['invoice_id'], { required: ['invoice_id'] })).toBeNull()
+  })
+})
+
+describe('describeArgHint', () => {
+  const uuid = '0b8f6a1e-2c3d-4e5f-8a9b-0c1d2e3f4a5b'
+  const hint = (toolName: string, args: Record<string, unknown>) => {
+    const tool = tools.find((t) => t.name === toolName)!
+    const schema = tool.inputSchema as Record<string, unknown>
+    const context = { required: listRequiredArgKeys(schema), args }
+    return Object.keys(args)
+      .filter((key) => !listArgKeys(schema).includes(key))
+      .map((key) => describeArgHint(key, listArgKeys(schema), context))
+  }
+
+  it('shows the exact record_ref for document_id with a uuid, in the form parseRecordRef reads', () => {
+    const expected = `"document_id" -> "record_ref": "document:${uuid}"`
+    expect(hint('gnubok_ask_document', { document_id: uuid, question: 'Vad är uppsägningstiden?' })).toEqual([expected])
+    expect(hint('gnubok_get_record', { document_id: uuid })).toEqual([expected])
+    expect(parseRecordRef(`document:${uuid}`)).toEqual({ kind: 'document', id: uuid })
+  })
+
+  it('builds the ref from record_type and record_id sent together', () => {
+    expect(hint('gnubok_get_record', { record_type: 'document', record_id: uuid })).toEqual([
+      '"record_type" -> "record_ref"',
+      `"record_id" -> "record_ref": "document:${uuid}"`,
+    ])
+    expect(hint('gnubok_get_record', { record_type: 'Journal_Entry', record_id: uuid })[1]).toBe(
+      `"record_id" -> "record_ref": "journal_entry:${uuid}"`,
+    )
+  })
+
+  it('names the key without a value when the call does not say which record', () => {
+    expect(hint('gnubok_ask_document', { document_id: '42', question: 'Vad kostar det?' })).toEqual([
+      '"document_id" -> "record_ref"',
+    ])
+    expect(hint('gnubok_get_record', { record_id: uuid })).toEqual(['"record_id" -> "record_ref"'])
+    expect(hint('gnubok_get_record', { record_type: 'invoice', record_id: uuid })[1]).toBe(
+      '"record_id" -> "record_ref"',
+    )
+  })
+
+  it('is the plain pair for every other key, and null with nothing to suggest', () => {
+    expect(describeArgHint('note', ['notes', 'journal_entry_id'])).toBe('"note" -> "notes"')
+    expect(describeArgHint('colour', ['notes'])).toBeNull()
   })
 })

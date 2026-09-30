@@ -17,6 +17,7 @@
  */
 import { z } from 'zod'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { fieldValidationError, zodFieldIssues } from '@/lib/errors/refusal'
 import { throwOutcomeFailure } from '@/lib/operations/errors'
 import type { AnyOperation } from '@/lib/operations/types'
 import { createLogger } from '@/lib/logger'
@@ -177,10 +178,13 @@ export function createOperationTools(operations: readonly AnyOperation[], deps: 
   return tools
 }
 
+/**
+ * The operation's input, or VALIDATION_ERROR naming every field at fault (the
+ * code v1 answers for the same body). A plain Error here reached the agent as
+ * UNKNOWN_ERROR, "Något gick fel. Försök igen.", from every generated tool.
+ */
 function parseOrThrow(op: AnyOperation, args: Record<string, unknown>): unknown {
   const parsed = (op.input as unknown as z.ZodTypeAny).safeParse(args)
   if (parsed.success) return parsed.data
-  const issue = parsed.error.issues[0]
-  const path = issue?.path?.join('.') || 'args'
-  throw new Error(`Invalid ${path}: ${issue?.message ?? 'validation failed'}`)
+  throw fieldValidationError('Invalid arguments', zodFieldIssues(parsed.error, args))
 }

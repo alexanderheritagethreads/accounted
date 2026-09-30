@@ -11,7 +11,7 @@ import { peppolGetRegistration, peppolRegister } from '@/lib/operations/peppol'
 
 ensureInitialized()
 
-// The connector transport waits up to 60 s for the hosted access point; the
+// The connector transport waits up to 50 s for a registration call; the
 // platform default would cut the registration off mid-call and leave a
 // pending row behind.
 export const maxDuration = 90

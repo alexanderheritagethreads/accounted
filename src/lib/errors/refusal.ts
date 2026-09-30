@@ -71,11 +71,29 @@ export function fieldValidationError(context: string, issues: FieldIssue[]): Err
  * missing field reads as missing rather than as a type error.
  */
 export function zodFieldIssues(error: z.ZodError, input: unknown): FieldIssue[] {
-  return error.issues.map((issue) => ({
+  return error.issues.map((issue) => fieldIssue(issue, valueAtPath(input, issue.path)))
+}
+
+/**
+ * zodFieldIssues for a ZodError whose input is gone: a `.parse()` that threw
+ * past its call site and reached the dispatch on its own. Only the Swedish
+ * reason for a type error needs the value, and Zod 4 names what it received
+ * at the end of its own message ("expected string, received undefined").
+ */
+export function zodErrorFieldIssues(error: z.ZodError): FieldIssue[] {
+  return error.issues.map((issue) => {
+    const received = / received (undefined|null)$/.exec(issue.message)?.[1]
+    // Any other value reads as "wrong type"; which one does not matter here.
+    return fieldIssue(issue, received === 'undefined' ? undefined : received === 'null' ? null : issue.message)
+  })
+}
+
+function fieldIssue(issue: z.core.$ZodIssue, value: unknown): FieldIssue {
+  return {
     field: issue.path.map(String).join('.') || 'arguments',
     en: issue.message,
-    sv: swedishReason(issue, valueAtPath(input, issue.path)),
-  }))
+    sv: swedishReason(issue, value),
+  }
 }
 
 /**

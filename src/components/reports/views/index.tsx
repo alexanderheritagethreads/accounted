@@ -2864,8 +2864,14 @@ export function GeneralLedgerView({ periodId, initialAccountFilter, dimensionFil
   const [error, setError] = useState<string | null>(null)
   const [accountFrom, setAccountFrom] = useState('')
   const [accountTo, setAccountTo] = useState('')
+  // Only the newest request may land. The window changes right after mount
+  // (the date-range control resolves its preset, or a drill-down's window),
+  // and the superseded request must not overwrite the ledger it was
+  // replaced by when it happens to finish last.
+  const requestSeq = React.useRef(0)
 
   const fetchData = useCallback(async (fromOverride?: string, toOverride?: string) => {
+    const seq = ++requestSeq.current
     const from = fromOverride ?? accountFrom
     const to = toOverride ?? accountTo
     setLoading(true)
@@ -2882,6 +2888,7 @@ export function GeneralLedgerView({ periodId, initialAccountFilter, dimensionFil
       }
       const res = await fetch(`/api/reports/general-ledger?${params}`)
       const result = await res.json()
+      if (seq !== requestSeq.current) return
       if (result.error) {
         // Envelope object, not a string: see the note on the other report
         // fetches. Rendering it bare blanks the page.
@@ -2890,9 +2897,9 @@ export function GeneralLedgerView({ periodId, initialAccountFilter, dimensionFil
         setData(result.data)
       }
     } catch {
-      setError('Kunde inte hämta huvudbok')
+      if (seq === requestSeq.current) setError('Kunde inte hämta huvudbok')
     } finally {
-      setLoading(false)
+      if (seq === requestSeq.current) setLoading(false)
     }
   }, [periodId, accountFrom, accountTo, dimensionFilter, dateRange])
 
@@ -3593,6 +3600,7 @@ export function ARLedgerView({ periodId }: { periodId: string }) {
 // --- Resultat per projekt/kostnadsställe (dimension P&L matrix) ---
 
 export function DimensionPnlView({ periodId, dateRange }: { periodId: string; dateRange: DateRangeValue }) {
+  const t = useTranslations('reports')
   // Loading is DERIVED (result key ≠ current query string) instead of a
   // setState at effect start: keeps react-hooks/set-state-in-effect clean
   // and is race-safe when the pivot/date changes mid-flight.
@@ -3701,7 +3709,18 @@ export function DimensionPnlView({ periodId, dateRange }: { periodId: string; da
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        {pivotPicker || <span />}
+        <div className="flex flex-wrap items-center gap-3">
+          {pivotPicker}
+          {/* The window the amounts cover, as the server computed it: a
+              quarter picked above reads as that quarter, not the year to date. */}
+          <p className="text-sm text-muted-foreground tabular-nums">
+            {t('date_range_label')}:{' '}
+            {t('date_range_custom_summary', {
+              from: formatDate(data.period.start),
+              to: formatDate(data.period.end),
+            })}
+          </p>
+        </div>
         <ReportExportMenu items={[{ format: 'xlsx', href: `/api/reports/dimension-pnl/xlsx?${reportQs}` }]} />
       </div>
 

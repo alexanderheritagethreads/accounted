@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { createQueuedMockSupabase } from '@/tests/helpers'
 import {
   findCancelledEntryIds,
+  findImportedStornoPairs,
   loadCancelledEntryIds,
   type EntryForCancellation,
 } from '../skattekonto-cancelled-entries'
@@ -78,6 +79,21 @@ describe('findCancelledEntryIds', () => {
     expect(result.has('t3')).toBe(true)
     // Two identical bookings, one storno: exactly one of them is cancelled.
     expect(Number(result.has('t1')) + Number(result.has('t2'))).toBe(1)
+  })
+})
+
+describe('findImportedStornoPairs', () => {
+  it('returns the imported pairs only, as [earlier, later], never an in-app storno', () => {
+    const original = entry('v290', 290, '2025-08-19', [['1630', 0, 65484], ['2650', 65484, 0]])
+    const annulment = entry('v463', 463, '2025-08-19', [['1630', 65484, 0], ['2650', 0, 65484]], {
+      description: 'Annullering av A290: Momsdebitering - Skatteverket',
+    })
+    const reversed = entry('orig', 1, '2025-08-19', [['1630', 0, 300], ['2710', 300, 0]], {
+      status: 'reversed',
+      reversed_by_id: 'st',
+    })
+    const stornoEntry = entry('st', 2, '2025-08-19', [['1630', 300, 0], ['2710', 0, 300]], { reverses_id: 'orig' })
+    expect(findImportedStornoPairs([annulment, stornoEntry, original, reversed])).toEqual([['v290', 'v463']])
   })
 })
 

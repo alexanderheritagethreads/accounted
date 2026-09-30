@@ -7,6 +7,7 @@ import {
 } from '@/lib/invoices/peppol-bis-billing'
 import type {
   PeppolDeliveryEvidence,
+  PeppolParticipant,
   PeppolVerifiedEvent,
 } from '@/lib/invoices/peppol-transport'
 
@@ -128,6 +129,49 @@ export async function listPeppolDeliveriesForInvoice(args: {
     .order('created_at', { ascending: false })
   if (error) throw new Error(`Failed to list Peppol deliveries: ${error.message}`)
   return (data ?? []) as PeppolDeliverySummary[]
+}
+
+/**
+ * Delivery states that are history: the same document stages a new delivery
+ * (the live-row index of 20260930100000) and a resend replaces the
+ * submission they hold at the access point.
+ */
+const SUPERSEDED_DELIVERY_STATUSES = new Set(['failed', 'no_route'])
+
+/**
+ * The submission a resend replaces (PeppolSubmission.replacesSubmissionId):
+ * the latest submission this provider accepted for the invoice and this
+ * recipient, when its delivery then failed or had no route. Null when
+ * nothing was submitted to this recipient, and when the latest submission is
+ * still live: a document the network is delivering is never overwritten. A
+ * submission id means something only to the provider that issued it, for the
+ * receiver it was addressed to.
+ */
+export async function findReplaceableSubmission(args: {
+  service: SupabaseClient
+  companyId: string
+  invoiceId: string
+  provider: string
+  recipient: PeppolParticipant
+}): Promise<string | null> {
+  const { data, error } = await args.service
+    .from('peppol_deliveries')
+    .select('provider_submission_id, status')
+    .eq('company_id', args.companyId)
+    .eq('invoice_id', args.invoiceId)
+    .eq('provider', args.provider)
+    .eq('recipient_scheme', args.recipient.scheme)
+    .eq('recipient_identifier', args.recipient.identifier)
+    .not('provider_submission_id', 'is', null)
+    .order('submitted_at', { ascending: false, nullsFirst: false })
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw new Error(`Failed to read the previous Peppol submission: ${error.message}`)
+  const latest = data as { provider_submission_id: string | null; status: string } | null
+  return latest?.provider_submission_id && SUPERSEDED_DELIVERY_STATUSES.has(latest.status)
+    ? latest.provider_submission_id
+    : null
 }
 
 export async function listPeppolDeliverySummaries(args: {

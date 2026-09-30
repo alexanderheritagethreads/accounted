@@ -23,6 +23,7 @@ vi.mock('@/lib/reconciliation/bank-reconciliation', () => ({
 
 import { getReconciliationStatus } from '@/lib/reconciliation/bank-reconciliation'
 import { BANK_ROWS_MISSING_HINT, computeVatCloseCheck, tools } from '../server'
+import { toToolError } from '../tool-result'
 
 const COMPANY_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 const PERIOD = { period_type: 'monthly', year: 2026, period: 1 }
@@ -406,6 +407,17 @@ describe('gnubok_get_reconciliation_status: same shared resolution', () => {
     await expect(
       reconStatusTool.execute({ account_number: '9999' }, COMPANY_ID, 'user-1', supabase),
     ).rejects.toThrow(/Okänt kassakonto 9999/)
+    // Coded, never UNKNOWN_ERROR ("Försök igen"): no retry finds the account.
+    const err = await reconStatusTool
+      .execute({ account_number: '9999' }, COMPANY_ID, 'user-1', mockSupabase([null, null]).supabase)
+      .then(() => null, (e: unknown) => e)
+    const envelope = toToolError(err, { toolName: 'gnubok_get_reconciliation_status' }).error
+    expect(envelope).toMatchObject({
+      code: 'CASH_ACCOUNT_NOT_FOUND',
+      retryable: false,
+      remediation: { tool: 'gnubok_list_cash_accounts' },
+    })
+    expect(envelope.remediation?.description).toContain('account_key "skattekonto"')
     expect(getReconciliationStatusMock).not.toHaveBeenCalled()
     // A NAMED account must never silently resolve to the primary one: the
     // caller asked about 9999, so a status labelled 9999 carrying another

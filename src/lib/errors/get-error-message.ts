@@ -746,7 +746,7 @@ export function getErrorMessage(
         if (typeof structured.message === 'string' && structured.message.trim()) {
           return structured.message
         }
-        return 'Ett angivet kostnadsställe/projekt finns inte i dimensionsregistret eller är arkiverat. Skapa värdet i registret först.'
+        return 'Ett angivet dimensionsvärde finns inte i dimensionsregistret eller är arkiverat. Skapa värdet i registret först.'
       }
 
       if (structured.code === 'NO_OPEN_PERIOD_FOR_DATE') {

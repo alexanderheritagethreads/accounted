@@ -9,8 +9,8 @@ export interface SubmitFeedbackInput {
    *  ticket with the files attached. */
   files?: File[]
   /** Force a separate ticket instead of continuing the SDK's current one.
-   *  Needed when the customer starts a new request while another is open:
-   *  without it the SDK appends the message to the open ticket. */
+   *  Without it the SDK appends the message to its current ticket, whatever
+   *  its status: a resolved one included, which nobody reads. */
   newTicket?: boolean
 }
 

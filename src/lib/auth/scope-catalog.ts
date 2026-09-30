@@ -98,15 +98,6 @@ export const DEFAULT_OAUTH_SCOPES: ApiKeyScope[] = [
 ]
 
 /**
- * Scopes advertised in the RFC 8414 authorization-server metadata document
- * (/.well-known/oauth-authorization-server). Restricted to the same set that
- * /authorize will grant by default: destructive scopes still work when
- * requested explicitly, they just aren't enumerated for unauthenticated
- * callers (defense-in-depth against scope-escalation reconnaissance).
- */
-export const PUBLIC_OAUTH_METADATA_SCOPES: ApiKeyScope[] = [...DEFAULT_OAUTH_SCOPES]
-
-/**
  * Scopes that allow staging a pending_operation. Used to detect a
  * segregation-of-duties conflict when paired with `pending_operations:approve`
  * on the same API key (ISO 27001:2022 A.5.3, SOC 2 CC6.1).
@@ -406,6 +397,13 @@ export const TOOL_SCOPE_MAP: Record<string, ApiKeyScope> = {
   gnubok_create_dimension:                'bookkeeping:write',
   gnubok_update_dimension:                'bookkeeping:write',
   gnubok_delete_dimension:                'bookkeeping:write',
+  // Account dimension rules (operations dimension-rules.*).
+  gnubok_list_dimension_rules:            'reports:read',
+  gnubok_create_dimension_rule:           'bookkeeping:write',
+  gnubok_update_dimension_rule:           'bookkeeping:write',
+  gnubok_delete_dimension_rule:           'bookkeeping:write',
+  // Retag history of posted lines (operation dimensions.retag-log).
+  gnubok_list_dimension_retag_log:        'reports:read',
   gnubok_get_dimension_pnl:               'reports:read',
   // Staged bulk retag of posted-line dimensions (dimensions PR6).
   gnubok_tag_journal_lines:               'bookkeeping:write',

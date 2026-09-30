@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { createMockSupabase, createQueuedMockSupabase } from '@/tests/helpers'
 import { resolvePrimaryBankAccount, resolveSettlementAccount } from '../settlement-account'
 import { BookkeepingDatabaseError } from '../errors'
+import { errorResponse, getStructuredError } from '@/lib/errors/get-structured-error'
+import { getErrorEntry } from '@/lib/errors/structured-errors'
 
 const noopLog = { warn: vi.fn() } as unknown as import('@/lib/logger').Logger
 
@@ -114,6 +116,49 @@ describe('resolveSettlementAccount', () => {
 
     expect(result).toBe('1940')
     expect(supabase.from).toHaveBeenCalledWith('cash_accounts')
+  })
+
+  describe("explicit cash_account_id and the transaction's currency (feedback seq 753539)", () => {
+    // An Enable Banking account stored with currency 'XXX' resolved its ledger
+    // here, so match_batch_allocate staged a verifikat, while the bank-booking
+    // guards (which find the account only in the transaction's currency)
+    // refused it at approval with BANK_BOOKING_CASH_ACCOUNT_MISSING.
+    it.each([
+      ['XXX', 'SEK'],
+      ['SEK', 'USD'],
+      ['EUR', 'SEK'],
+    ])('refuses a linked %s account for a %s transaction', async (accountCurrency, txCurrency) => {
+      const { supabase, mockResult } = createMockSupabase()
+      mockResult({ data: { ledger_account: '1930', currency: accountCurrency }, error: null })
+
+      const err = await resolveSettlementAccount(supabase as never, 'company-1', 'ca-1', noopLog, txCurrency)
+        .then(() => null, (e: unknown) => e)
+
+      expect(err).toMatchObject({ code: 'BANK_BOOKING_CURRENCY_MISMATCH' })
+      expect((err as Error).message).toContain(`in ${txCurrency} but its bank account 1930 is in ${accountCurrency}`)
+      // What an agent and the dashboard receive: the registered code, its
+      // Swedish sentence, not retryable, 409 on the REST envelope.
+      expect(getStructuredError(err)).toMatchObject({
+        code: 'BANK_BOOKING_CURRENCY_MISMATCH',
+        message_sv: getErrorEntry('BANK_BOOKING_CURRENCY_MISMATCH')!.message_sv,
+        retryable: false,
+      })
+      expect(errorResponse(err, { error: vi.fn(), warn: vi.fn() }).status).toBe(409)
+    })
+
+    it('returns a linked account in the transaction currency', async () => {
+      const { supabase, mockResult } = createMockSupabase()
+      mockResult({ data: { ledger_account: '1932', currency: 'EUR' }, error: null })
+
+      expect(await resolveSettlementAccount(supabase as never, 'company-1', 'ca-1', noopLog, 'EUR')).toBe('1932')
+    })
+
+    it('does not check a caller that omits the currency', async () => {
+      const { supabase, mockResult } = createMockSupabase()
+      mockResult({ data: { ledger_account: '1930', currency: 'XXX' }, error: null })
+
+      expect(await resolveSettlementAccount(supabase as never, 'company-1', 'ca-1', noopLog)).toBe('1930')
+    })
   })
 
   it('throws a BookkeepingDatabaseError instead of silently falling back when the lookup errors', async () => {

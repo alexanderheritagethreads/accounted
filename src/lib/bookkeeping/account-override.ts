@@ -80,13 +80,13 @@ export async function applyAccountOverride(
     throw new Error(`Database error: ${error.message}`)
   }
   if (!account) {
-    throw new Error(
+    throw unusableOverride(
       `Konto ${accountOverride} finns inte i kontoplanen: account_override kräver ett befintligt aktivt konto. ` +
       'Skapa det först (gnubok_create_account) eller välj ett annat konto.',
     )
   }
   if (!account.is_active) {
-    throw new Error(
+    throw unusableOverride(
       `Konto ${accountOverride} är inaktivt i kontoplanen. ` +
       'Aktivera det först (gnubok_update_account med is_active=true) eller välj ett annat konto.',
     )
@@ -117,4 +117,14 @@ export async function applyAccountOverride(
     accountOverride,
     account.default_vat_treatment ?? null,
   )
+}
+
+/**
+ * An override account the chart cannot take (missing or inactive), coded
+ * TX_CATEGORIZE_INVALID_ACCOUNT as the v1 categorize route answers for the
+ * same argument; uncoded, an MCP agent got UNKNOWN_ERROR and retry advice.
+ * The text stays Swedish: the approval commit shows it to the user as is.
+ */
+function unusableOverride(message: string): Error {
+  return Object.assign(new Error(message), { code: 'TX_CATEGORIZE_INVALID_ACCOUNT' })
 }

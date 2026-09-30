@@ -44,6 +44,12 @@ interface BillingView {
   trialEndsAt: string | null
   daysLeft: number | null
   chargeDeferred: boolean
+  /**
+   * Paying card: the first charge of a subscription started during the trial
+   * (Stripe 'trialing'). The sell view promised this date before checkout;
+   * null once the first charge is behind.
+   */
+  firstChargeAt: string | null
   paidJustNow: boolean
   isDemo: boolean
   /**
@@ -198,6 +204,7 @@ function BillingCoreContent() {
           isPaying?: unknown
           configured?: unknown
           trialEndsAt?: unknown
+          firstChargeAt?: unknown
           isDemo?: unknown
           teamAgreement?: unknown
           coverage?: unknown
@@ -214,6 +221,7 @@ function BillingCoreContent() {
         const msLeft = trialEndsAt ? new Date(trialEndsAt).getTime() - Date.now() : null
         const daysLeft = msLeft !== null ? Math.max(0, Math.ceil(msLeft / 86_400_000)) : null
         const chargeDeferred = msLeft !== null && msLeft > DEFER_THRESHOLD_MS
+        const firstChargeAt = typeof d.firstChargeAt === 'string' ? d.firstChargeAt : null
         // Set by the checkout success redirect. Provisioning happens via the
         // Stripe webhook, so isPaying can lag the redirect by a few seconds.
         const paidJustNow = new URLSearchParams(window.location.search).get('success') === '1'
@@ -239,6 +247,7 @@ function BillingCoreContent() {
           trialEndsAt,
           daysLeft,
           chargeDeferred,
+          firstChargeAt,
           paidJustNow,
           isDemo: d.isDemo === true,
           teamAgreement,
@@ -312,7 +321,14 @@ function BillingCoreContent() {
     paidFooter = (
       <div className="flex flex-col items-center gap-3">
         <BillingActions isPaying configured={view.configured} />
-        <p className="text-center text-xs text-muted-foreground">{t('manage_line')}</p>
+        <div className="space-y-1 text-center text-xs text-muted-foreground">
+          {/* Subscribed during the trial: the card is committed but not yet
+              charged, so say when, in the words the sell view used. */}
+          {view.firstChargeAt && (
+            <p>{t('first_charge_on', { date: formatDateLong(view.firstChargeAt) })}</p>
+          )}
+          <p>{t('manage_line')}</p>
+        </div>
       </div>
     )
   } else if (view.paidJustNow) {

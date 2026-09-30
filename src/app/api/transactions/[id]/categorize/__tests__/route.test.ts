@@ -1735,7 +1735,7 @@ describe('POST /api/transactions/[id]/categorize', () => {
       error: null,
     })
     // resolveSettlementAccount: the row's own cash account is the live 1940
-    enqueue({ data: { ledger_account: '1940' }, error: null })
+    enqueue({ data: { ledger_account: '1940', currency: 'SEK' }, error: null })
     // Guard: cash_accounts scan + bank_connections status lookup
     enqueue({
       data: [
@@ -1800,7 +1800,7 @@ describe('POST /api/transactions/[id]/categorize', () => {
       },
       error: null,
     })
-    enqueue({ data: { ledger_account: '1940' }, error: null }) // resolveSettlementAccount
+    enqueue({ data: { ledger_account: '1940', currency: 'SEK' }, error: null }) // resolveSettlementAccount
     enqueue({
       data: [
         { id: 'ca-live', ledger_account: '1940', bank_connection_id: 'conn-new', iban: 'SE455', enabled: true, currency: 'SEK' },
@@ -1831,6 +1831,106 @@ describe('POST /api/transactions/[id]/categorize', () => {
     }
     expect(mapping.debit_account).toBe('5010')
     expect(mapping.credit_account).toBe('1940')
+  })
+
+  // Learned dimension bags (D5): a learned code whose value was archived since
+  // is dropped when the template is applied, instead of rejecting the booking.
+  // An explicit pick is the user's decision and passes through untouched.
+  const learnedTemplate = (overrides: Record<string, unknown> = {}) => ({
+    id: '11111111-1111-4111-8111-111111111111',
+    company_id: 'company-1',
+    counterparty_name: 'Telia',
+    counterparty_aliases: [],
+    debit_account: '6200',
+    credit_account: '1930',
+    vat_treatment: null,
+    vat_account: null,
+    category: null,
+    line_pattern: null,
+    occurrence_count: 3,
+    confidence: 0.9,
+    source: 'user_approved',
+    is_active: true,
+    ...overrides,
+  })
+
+  it('drops a learned dimension code the registry has archived and books the active ones', async () => {
+    const tx = makeTransaction({ id: 'tx-1', amount: -1250, merchant_name: 'Telia', journal_entry_id: null })
+
+    enqueue({ data: tx, error: null })
+    enqueue({ data: { entity_type: 'aktiebolag', fiscal_year_start_month: 1 }, error: null })
+    enqueue({ data: learnedTemplate({ default_dimensions: { '1': 'KS01', '6': 'P001' } }), error: null })
+    // Registry check of the learned bag: dimensions enabled, P001 archived.
+    enqueue({ data: { dimensions_enabled: true }, error: null })
+    enqueue({ data: [{ id: 'dim-1', sie_dim_no: 1 }, { id: 'dim-6', sie_dim_no: 6 }], error: null })
+    enqueue({
+      data: [
+        { dimension_id: 'dim-1', code: 'KS01', is_active: true },
+        { dimension_id: 'dim-6', code: 'P001', is_active: false },
+      ],
+      error: null,
+    })
+    enqueue({ data: [], error: null }) // resolveSettlementAccount: no enabled cash accounts -> 1930
+    enqueue({ data: [{ id: 'period-1' }], error: null }) // ensureFiscalPeriod
+    mockCreateTransactionJournalEntry.mockResolvedValue({ id: 'je-1' })
+    enqueue({ data: [{ id: 'tx-1' }], error: null }) // CAS update
+
+    const request = createMockRequest('/api/transactions/tx-1/categorize', {
+      method: 'POST',
+      body: { is_business: true, counterparty_template_id: '11111111-1111-4111-8111-111111111111' },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<unknown>(response)
+
+    expect(status, JSON.stringify(body)).toBe(200)
+    const mapping = mockCreateTransactionJournalEntry.mock.calls[0][4] as { dimensions?: Record<string, string> }
+    expect(mapping.dimensions).toEqual({ '1': 'KS01' })
+  })
+
+  it('never filters an explicit pick: an archived code in body.dimensions reaches the engine, which rejects it', async () => {
+    const tx = makeTransaction({ id: 'tx-1', amount: -1250, merchant_name: 'Telia', journal_entry_id: null })
+
+    enqueue({ data: tx, error: null })
+    enqueue({ data: { entity_type: 'aktiebolag', fiscal_year_start_month: 1 }, error: null })
+    enqueue({ data: learnedTemplate(), error: null }) // no learned bag: no registry read
+    enqueue({ data: [], error: null }) // resolveSettlementAccount
+    enqueue({ data: [{ id: 'period-1' }], error: null }) // ensureFiscalPeriod
+    mockCreateTransactionJournalEntry.mockResolvedValue({ id: 'je-1' })
+    enqueue({ data: [{ id: 'tx-1' }], error: null }) // CAS update
+
+    const request = createMockRequest('/api/transactions/tx-1/categorize', {
+      method: 'POST',
+      body: {
+        is_business: true,
+        counterparty_template_id: '11111111-1111-4111-8111-111111111111',
+        dimensions: { '6': 'P001' },
+      },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status } = await parseJsonResponse(response)
+
+    expect(status).toBe(200)
+    const mapping = mockCreateTransactionJournalEntry.mock.calls[0][4] as { dimensions?: Record<string, string> }
+    expect(mapping.dimensions).toEqual({ '6': 'P001' })
+  })
+
+  it('returns 404 for a counterparty template that is not an active template of the company', async () => {
+    const tx = makeTransaction({ id: 'tx-1', amount: -1250, merchant_name: 'Telia', journal_entry_id: null })
+
+    enqueue({ data: tx, error: null })
+    enqueue({ data: { entity_type: 'aktiebolag', fiscal_year_start_month: 1 }, error: null })
+    enqueue({ data: null, error: null }) // categorization_templates: not found
+
+    const request = createMockRequest('/api/transactions/tx-1/categorize', {
+      method: 'POST',
+      body: { is_business: true, counterparty_template_id: '11111111-1111-4111-8111-111111111111' },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{ error: { code: string } }>(response)
+
+    expect(status).toBe(404)
+    expect(body.error.code).toBe('NOT_FOUND')
+    expect(mockCreateTransactionJournalEntry).not.toHaveBeenCalled()
   })
 
   it('still books a transfer whose 19xx counter is a live cash account', async () => {

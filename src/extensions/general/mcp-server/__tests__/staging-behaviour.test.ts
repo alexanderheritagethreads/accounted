@@ -99,6 +99,7 @@ const noNetwork = async (): Promise<never> => {
 }
 registerPeppolTransport({
   provider: PEPPOL_TEST_PROVIDER,
+  tenantId: PEPPOL_TEST_PROVIDER,
   lookupRecipient: noNetwork,
   submit: noNetwork,
   verifyWebhook: noNetwork,
@@ -359,6 +360,8 @@ const SETTLED_SKATTEKONTO_ROW = {
   status: 'booked',
   journal_entry_id: null,
   is_ignored: false,
+  // The ledger-twin search windows on the event date.
+  transaktionsdatum: '2026-02-12',
   transaktionstext: 'Moms jan 2026',
   belopp_skatteverket: -5000,
 }
@@ -654,6 +657,13 @@ const BRIDGE_TARGET_FIXTURES: Record<string, Fixture> = {
   // "At least one field" tools: the schema requires only the id.
   gnubok_update_asset: { args: { name: 'Bandsåg' } },
   gnubok_update_dimension: { args: { name: 'Avdelning' }, rows: { dimensions: { is_system: false, name: 'Avd' } } },
+  // Account dimension rules: the account has no rule for the dimension yet;
+  // the update pauses a required rule, which carries no value.
+  gnubok_create_dimension_rule: { empty: ['account_dimension_rules'] },
+  gnubok_update_dimension_rule: {
+    args: { is_active: false },
+    rows: { account_dimension_rules: { rule_type: 'required', value_id: null } },
+  },
   // Settings are owner/admin only on every door: the preview reads the caller's role.
   gnubok_update_company_settings: { args: { phone: '08-123 45 67' }, rows: { company_members: { role: 'owner' } } },
   gnubok_update_recurring_schedule: { args: { name: 'Hyra' } },
@@ -691,6 +701,8 @@ const BRIDGE_TARGET_FIXTURES: Record<string, Fixture> = {
       company_settings: LIMITED_COMPANY,
       companies: LIMITED_COMPANY,
     },
+    // No 1630 verifikat in the window: the ledger-twin guard lets it through.
+    empty: ['journal_entries'],
   },
   gnubok_book_skattekonto_rows: {
     rows: {
@@ -698,6 +710,8 @@ const BRIDGE_TARGET_FIXTURES: Record<string, Fixture> = {
       company_settings: LIMITED_COMPANY,
       companies: LIMITED_COMPANY,
     },
+    // No 1630 verifikat in the window: the ledger-twin guard lets it through.
+    empty: ['journal_entries'],
   },
   gnubok_link_documents_to_vouchers: {
     args: {
@@ -708,7 +722,11 @@ const BRIDGE_TARGET_FIXTURES: Record<string, Fixture> = {
   // Documents and the invoice inbox (wave 3): an unlinked document, an
   // unbooked transaction whose pin is not räkenskapsinformation, and inbox
   // items never converted or booked.
-  gnubok_delete_document: { rows: { document_attachments: { file_name: 'kvitto.pdf', journal_entry_id: null } } },
+  // No registered record holds the document either (lib/documents/deletion.ts reads these pins).
+  gnubok_delete_document: {
+    rows: { document_attachments: { file_name: 'kvitto.pdf', journal_entry_id: null } },
+    empty: ['supplier_invoices', 'expense_claims', 'transactions', 'invoice_inbox_items'],
+  },
   gnubok_detach_document_from_transaction: {
     rows: { transactions: { document_id: SOME_UUID }, document_attachments: { journal_entry_id: null } },
   },

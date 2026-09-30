@@ -12,6 +12,7 @@ import {
   bookkeepingErrorResponse,
   EntryDateOutsideFiscalPeriodError,
   JournalEntryNotBalancedError,
+  MandatoryDimensionMissingError,
 } from '@/lib/bookkeeping/errors'
 
 const noopLogger = {
@@ -51,6 +52,21 @@ describe('structured-errors registry', () => {
       expect(entry?.message_sv).toBeTruthy()
       expect(entry?.message_en).toBeTruthy()
     }
+  })
+
+  it('registers BOKIO_PLAN_NO_API as a 422 that names the plans and never blames the token', () => {
+    const entry = getErrorEntry('BOKIO_PLAN_NO_API')
+    expect(entry).toBeDefined()
+    // 422, never 401: same reasoning as the Björn Lundén verdicts above.
+    expect(entry?.httpStatus).toBe(422)
+    // The token can be fine: the plan is what blocks, so the message says
+    // which plans include the API and must not send the user back to re-check
+    // what they pasted.
+    expect(entry?.message_sv).toContain('Plus, Premium och Business')
+    expect(entry?.message_sv).toContain('Basic')
+    expect(entry?.message_sv).not.toMatch(/kontrollera integrationsuppgifterna/i)
+    expect(entry?.message_en).toContain('Plus, Premium and Business')
+    expect(entry?.retryable).toBeFalsy()
   })
 
   it('has an entry for every code the link-transaction service can emit', () => {
@@ -173,6 +189,19 @@ describe('errorResponse', () => {
     expect(body.error.message).toMatch(/balanserar inte/i)
     expect(body.error.requestId).toBe('req_1')
     expect(body.error.details).toMatchObject({ totalDebit: 100, totalCredit: 90 })
+  })
+
+  it('maps a required-dimension refusal to MANDATORY_DIMENSION_MISSING (400) with its violations, not a 500', async () => {
+    const err = new MandatoryDimensionMissingError([
+      { account_number: '7510', sie_dim_no: '6', dimension_name: 'Projekt' },
+    ])
+    const res = errorResponse(err, noopLogger, { requestId: 'req_dim' })
+    expect(res.status).toBe(400)
+    const body = await readEnvelope(res)
+    expect(body.error.code).toBe('MANDATORY_DIMENSION_MISSING')
+    expect(body.error.details).toEqual({
+      violations: [{ account_number: '7510', sie_dim_no: '6', dimension_name: 'Projekt' }],
+    })
   })
 
   it('preserves AccountsNotInChartError details', async () => {

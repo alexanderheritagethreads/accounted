@@ -168,6 +168,16 @@ describe('submitFeedback', () => {
       expect(sendMessageMock).toHaveBeenCalledWith('ett nytt ärende', undefined, true)
     })
 
+    // The in-app composer always forces a new ticket, so this is the path every
+    // plain message takes: the subject prefix and the email fallback hold here too.
+    it('keeps the subject and the email fallback on a forced new ticket', async () => {
+      sendMessageMock.mockResolvedValue(null)
+      stubFetchOk()
+      const result = await submitFeedback({ subject: 'Moms', message: 'en fråga', newTicket: true })
+      expect(sendMessageMock).toHaveBeenCalledWith('[Moms]\n\nen fråga', undefined, true)
+      expect(result).toEqual({ ok: true, channels: ['email'] })
+    })
+
     // Since 2026-09-14 the founders answer in PostHog and the reply shows in
     // the app, so the ticket IS the delivery; email is not even attempted.
     it('reports success on the ticket alone and leaves email untouched', async () => {

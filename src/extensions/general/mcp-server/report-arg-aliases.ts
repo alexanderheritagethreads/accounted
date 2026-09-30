@@ -23,7 +23,7 @@
  * with a "Did you mean" hint instead.
  *
  * Every other tool gets suggestArgKey instead: the unknown-parameter error
- * names the parameter the caller most likely meant.
+ * names the parameter the caller most likely meant, and never runs the call.
  */
 import { ACCOUNT_NUMBER_RE } from '@/lib/invariants/account-number'
 
@@ -220,25 +220,99 @@ export function describeAliasConflicts(conflicts: readonly AliasConflict[]): str
     .join('; ') + '. Send only one of each pair.'
 }
 
-/** Common synonyms, each with the canonical names it most likely means. */
+// Upper bounds of a date range. The since-only lists have none, so an upper
+// bound sent to them names nothing, never the lower bound.
+const UPPER_BOUND = ['to_date', 'date_to', 'as_of_date']
+
+/**
+ * Common synonyms, each with the canonical names it most likely means. Hints
+ * only: the call is still rejected, so an entry here can never make a call
+ * run with a parameter the caller did not name. The first candidate the tool
+ * actually has wins, so a synonym whose targets a tool lacks says nothing.
+ */
 const SYNONYMS: Readonly<Record<string, readonly string[]>> = {
   fiscal_period_id: ['period_id', 'fiscal_period_id'],
   fiscal_year_id: ['period_id', 'fiscal_period_id'],
-  date_from: ['from_date', 'date_from'],
-  from_date: ['date_from', 'from_date'],
-  start_date: ['from_date', 'date_from', 'period_start'],
-  date_to: ['to_date', 'date_to'],
+  period_id: ['fiscal_period_id'],
+  date_from: ['from_date', 'date_from', 'since'],
+  from_date: ['date_from', 'from_date', 'since'],
+  start_date: ['from_date', 'date_from', 'period_start', 'since'],
+  date_to: UPPER_BOUND,
+  until: UPPER_BOUND,
   to_date: ['date_to', 'to_date', 'as_of_date'],
   end_date: ['to_date', 'date_to', 'period_end'],
   as_of: ['as_of_date', 'to_date'],
   as_of_date: ['to_date', 'date_to', 'as_of'],
+  month: ['period_month'],
+  year: ['period_year'],
   query: ['text', 'query', 'search'],
   search: ['query', 'text', 'search'],
   search_text: ['text', 'query'],
+  tool: ['query'],
+  description: ['query'],
   account: ['account_number', 'accounts', 'account_from'],
   account_number: ['accounts', 'account_from', 'account'],
   voucher_number: ['voucher_number_from'],
   metric: ['metrics'],
+  name: ['slug'],
+  skill: ['slug'],
+  skill_name: ['slug'],
+  document_id: ['record_ref'],
+  record_id: ['record_ref'],
+  // A record_ref carries its kind ("document:<uuid>"), so on the record tools
+  // the type belongs in the ref.
+  record_type: ['type', 'record_ref'],
+  // external_id: list_reconciliation_items names its rows item_id, and
+  // reconcile_unmatch takes the outside row's id as external_id.
+  item_id: ['inbox_item_id', 'external_id'],
+  entry_id: ['journal_entry_id'],
+  note: ['notes'],
+  offset: ['cursor'],
+}
+
+export interface ArgHintContext {
+  /** The tool's required keys: the last structural fallback may name the only one. */
+  required?: readonly string[]
+  /** The arguments as sent, for a hint that can show the exact value to send. */
+  args?: Readonly<Record<string, unknown>>
+}
+
+// "id" or "<subject>_id".
+const ID_KEY = /^(?:(.+)_)?id$/
+
+// The only kind of required key an id-shaped key is pointed at: an
+// identifier (invoice_id, record_ref, account_number, slug), never a kind, a
+// name or a question. gnubok_get_task called with operation_id must not be
+// told to send its uuid as kind.
+const IDENTIFIER_KEY = /(?:^|_)(?:id|ids|ref|refs|number|numbers|no)$|^slug$/
+
+/**
+ * The structural fallback for an id-shaped key the synonym table does not
+ * know. Most specific first: a key ending in "_<subject>_id" (run_id ->
+ * salary_run_id), one ending in "<subject>_ref", any "_ref" key (id ->
+ * record_ref), and last the tool's only required key. A step with two
+ * candidates is a tie and names nothing.
+ */
+function structuralArgKey(unknownKey: string, validKeys: readonly string[], context: ArgHintContext): string | null {
+  const match = ID_KEY.exec(unknownKey)
+  if (!match) return null
+  const subject = match[1]
+  const others = validKeys.filter((key) => key !== unknownKey)
+  const steps = [
+    subject === undefined ? [] : others.filter((key) => key.endsWith(`_${subject}_id`)),
+    subject === undefined ? [] : others.filter((key) => key.endsWith(`${subject}_ref`)),
+    others.filter((key) => key.endsWith('_ref')),
+  ]
+  for (const candidates of steps) {
+    if (candidates.length === 1) return candidates[0]
+    if (candidates.length > 1) return null
+  }
+  const required = (context.required ?? []).filter((key) => others.includes(key))
+  if (required.length !== 1) return null
+  const [only] = required
+  // Sent already: then the unknown key is something else, not a misnamed copy.
+  if (context.args !== undefined && Object.hasOwn(context.args, only)) return null
+  return IDENTIFIER_KEY.test(only) ? only : null
 }
 
 /**
@@ -247,7 +321,53 @@ const SYNONYMS: Readonly<Record<string, readonly string[]>> = {
  * only: "constructor" or "__proto__" must read as unknown, not as
  * Object.prototype members.
  */
-export function suggestArgKey(unknownKey: string, validKeys: readonly string[]): string | null {
-  if (!Object.hasOwn(SYNONYMS, unknownKey)) return null
-  return SYNONYMS[unknownKey].find((key) => key !== unknownKey && validKeys.includes(key)) ?? null
+export function suggestArgKey(
+  unknownKey: string,
+  validKeys: readonly string[],
+  context: ArgHintContext = {},
+): string | null {
+  if (Object.hasOwn(SYNONYMS, unknownKey)) {
+    const synonym = SYNONYMS[unknownKey].find((key) => key !== unknownKey && validKeys.includes(key))
+    if (synonym !== undefined) return synonym
+  }
+  return structuralArgKey(unknownKey, validKeys, context)
+}
+
+const RECORD_KINDS = new Set(['document', 'agreement', 'party', 'journal_entry', 'fact'])
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * The record_ref the call already holds under other names, in the
+ * `<kind>:<uuid>` form parseRecordRef reads: document_id=<uuid> is
+ * "document:<uuid>", and record_id or id next to a record_type naming the
+ * kind is "<kind>:<uuid>". Null when the call does not say which record.
+ */
+function recordRefValue(unknownKey: string, args: Readonly<Record<string, unknown>>): string | null {
+  const id = args[unknownKey]
+  if (typeof id !== 'string' || !UUID_RE.test(id)) return null
+  if (unknownKey === 'document_id') return `document:${id}`
+  if (unknownKey !== 'record_id' && unknownKey !== 'id') return null
+  const kind = Object.hasOwn(args, 'record_type') ? args.record_type : undefined
+  if (typeof kind !== 'string') return null
+  const normalized = kind.trim().toLowerCase()
+  return RECORD_KINDS.has(normalized) ? `${normalized}:${id}` : null
+}
+
+/**
+ * One "did you mean" entry: `"document_id" -> "record_ref"`, or with the
+ * value to send when the call already holds it:
+ * `"document_id" -> "record_ref": "document:<uuid>"`. Null when there is
+ * nothing to suggest.
+ */
+export function describeArgHint(
+  unknownKey: string,
+  validKeys: readonly string[],
+  context: ArgHintContext = {},
+): string | null {
+  const target = suggestArgKey(unknownKey, validKeys, context)
+  if (target === null) return null
+  const value = target === 'record_ref' && context.args !== undefined ? recordRefValue(unknownKey, context.args) : null
+  return value === null
+    ? `"${unknownKey}" -> "${target}"`
+    : `"${unknownKey}" -> "${target}": ${JSON.stringify(value)}`
 }

@@ -127,7 +127,7 @@ export const skatteverketAgiValidateIndividuppgift = defineOperation({
     pitfalls: [
       CONNECTION_PITFALL,
       'betalningsmottagarId is the payee\'s personnummer (12 digits): it is sent to Skatteverket and not stored by Accounted beyond the audit row\'s metadata.',
-      'forstaAnstalld and vaxaStod are mutually exclusive (400 VALIDATION_ERROR).',
+      'forstaAnstalld and vaxaStod (FK062/FK063) exist only through redovisningsPeriod 202512 and are mutually exclusive. Setting either for 202601 or later answers 400 VALIDATION_ERROR: växa-stöd is now a refund applied for after filing (Lag 2025:1334), and the individuppgift carries the full avgifter.',
       'A payload that breaks the v1.7 schema answers 400 VALIDATION_ERROR before anything reaches Skatteverket.',
     ],
     example: {

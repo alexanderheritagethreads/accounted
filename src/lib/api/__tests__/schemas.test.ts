@@ -3461,3 +3461,24 @@ describe('salary calculation policy and engångsskatt shapes', () => {
     expect(Patch.safeParse({ one_off_tax_percent: null }).success).toBe(true)
   })
 })
+
+describe('CreateJournalEntryLineSchema: cost_center/project aliases follow the bag value rule', () => {
+  const line = (extra: Record<string, unknown>) => ({ account_number: '5010', debit_amount: 100, credit_amount: 0, ...extra })
+
+  it('accepts a normal alias and trims it, like the bag it lands in', () => {
+    const result = CreateJournalEntryLineSchema.safeParse(line({ cost_center: '  KS01 ', project: 'P100' }))
+    expect(result.success).toBe(true)
+    expect(result.data).toMatchObject({ cost_center: 'KS01', project: 'P100' })
+  })
+
+  it('still accepts a blank alias, which means untagged', () => {
+    expect(CreateJournalEntryLineSchema.safeParse(line({ cost_center: '', project: '   ' })).success).toBe(true)
+  })
+
+  it('refuses an alias the jel_dimensions_well_formed CHECK would refuse, as a validation error', () => {
+    for (const bad of [{ cost_center: 'K'.repeat(41) }, { project: 'P"1' }, { project: 'P{1}' }]) {
+      const result = CreateJournalEntryLineSchema.safeParse(line(bad))
+      expect(result.success).toBe(false)
+    }
+  })
+})

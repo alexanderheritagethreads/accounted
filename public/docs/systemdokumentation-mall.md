@@ -134,7 +134,7 @@ De fullständiga behandlingsreglerna finns i den genererade systemdokumentatione
 
 ### 4.5 Dimensioner
 
-[OM KOSTNADSSTÄLLEN ELLER PROJEKT ANVÄNDS: konteringsrader kan märkas med dimensionsvärden för uppföljning per kostnadsställe eller projekt. Dimensionerna påverkar inte huvudbokföringens saldon. Visas under **Bokföring > Kostnadsställen & projekt** när dimensioner har slagits på under **Inställningar > Bokföring > Allmänt**. STRYK DETTA AVSNITT OM DIMENSIONER INTE ANVÄNDS.]
+[OM DIMENSIONER ANVÄNDS: konteringsrader kan märkas med dimensionsvärden för uppföljning per kostnadsställe, projekt eller egen dimension. Dimensionerna påverkar inte huvudbokföringens saldon. Visas under **Bokföring > Dimensioner** när dimensioner har slagits på under **Inställningar > Bokföring > Allmänt**. STRYK DETTA AVSNITT OM DIMENSIONER INTE ANVÄNDS.]
 
 ### 4.6 Avstämningsordning
 

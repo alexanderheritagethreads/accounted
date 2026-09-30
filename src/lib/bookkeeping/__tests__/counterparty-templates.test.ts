@@ -1367,6 +1367,49 @@ describe('dimensions propagation (PR7)', () => {
 
       expect(result.vat_lines.find((l) => l.account_number === '5410')?.dimensions).toBeUndefined()
     })
+
+    it('marks the business lines, and only them, so an explicit bag knows where it belongs', () => {
+      const template = makeCategorizationTemplate({
+        debit_account: '5410',
+        credit_account: '1930',
+        line_pattern: [
+          { account: '2641', type: 'vat', side: 'debit', vat_rate: 0.25 },
+          { account: '5410', type: 'business', side: 'debit', ratio: 0.3334 },
+          { account: '6110', type: 'business', side: 'debit', ratio: 0.3334 },
+          { account: '2710', type: 'tax', side: 'debit', ratio: 0.3334 },
+        ],
+      })
+      const match = { template, matchMethod: 'exact_alias' as const, confidence: 0.9 }
+      // Three 0.3334 ratios over-allocate, so a 3740 rounding line appears.
+      const tx = makeTransaction({ amount: -125 })
+
+      const result = buildMappingResultFromCounterpartyTemplate(match, tx, 'enskild_firma')
+
+      const marked = result.vat_lines.filter((l) => l.business_line).map((l) => l.account_number)
+      expect(marked.sort()).toEqual(['5410', '6110'])
+      expect(result.vat_lines.some((l) => l.account_number === '3740')).toBe(true)
+    })
+
+    it('an explicit categorize bag reaches the booked business lines per key, never the VAT line (the categorize route sets it after the build)', () => {
+      const template = makeCategorizationTemplate({
+        debit_account: '5410',
+        credit_account: '1930',
+        line_pattern: [
+          { account: '2641', type: 'vat', side: 'debit', vat_rate: 0.25 },
+          { account: '5410', type: 'business', side: 'debit', ratio: 1, dimensions: { '1': 'KS01', '6': 'P001' } },
+        ],
+      })
+      const match = { template, matchMethod: 'exact_alias' as const, confidence: 0.9 }
+      const tx = makeTransaction({ amount: -1250 })
+
+      const mapping = buildMappingResultFromCounterpartyTemplate(match, tx, 'enskild_firma')
+      mapping.dimensions = { '6': 'P002' }
+      const lines = buildTransactionEntryLines(tx, mapping)
+
+      expect(lines.find((l) => l.account_number === '5410')?.dimensions).toEqual({ '1': 'KS01', '6': 'P002' })
+      expect(lines.find((l) => l.account_number === '2641')?.dimensions).toBeUndefined()
+      expect(lines.find((l) => l.account_number === '1930')?.dimensions).toBeUndefined()
+    })
   })
 
   describe('populateTemplatesFromSieVouchers: line-pattern dimension learning', () => {

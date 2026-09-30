@@ -12,6 +12,10 @@ import { createServiceClient } from '@/lib/supabase/server'
 // issueAndBookInvoice() emits on.
 ensureInitialized()
 
+// The connector transport waits up to 25 s for the lookup and 50 s for the
+// submit (lib/invoices/transports/connector.ts), so the send gets 90 s.
+export const maxDuration = 90
+
 const paramsSchema = z.object({ id: z.uuid() })
 
 function summaryPayload(delivery: PeppolDeliverySummary) {

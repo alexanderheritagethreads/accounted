@@ -208,6 +208,7 @@ export const supplierInvoicesUpdateItemAccount = defineOperation({
       'A settled invoice answers 409 SI_ITEM_ACCOUNT_SETTLED.',
       'A locked or closed period answers 409 JOURNAL_RATTELSE_PERIOD_LOCKED: past a lock, storno is the only lawful correction.',
       'When the verifikat was already corrected by hand and holds no matching line on the old account, the answer is 409 SI_ITEM_ACCOUNT_NO_MATCHING_LINE and nothing changes.',
+      'A foreign-currency line moves the kronor the registration booked (the line at the invoice\'s stored rate); an invoice without that rate answers 409 SI_ITEM_ACCOUNT_FX_RATE_UNKNOWN and nothing changes.',
       'account_number is a STRING ("6550"), never a number.',
     ],
     example: {
@@ -229,6 +230,7 @@ export const supplierInvoicesUpdateItemAccount = defineOperation({
     'SI_ITEM_NOT_FOUND',
     'SI_ITEM_ACCOUNT_SETTLED',
     'SI_ITEM_ACCOUNT_NO_MATCHING_LINE',
+    'SI_ITEM_ACCOUNT_FX_RATE_UNKNOWN',
     'JOURNAL_RATTELSE_PERIOD_LOCKED',
     'JOURNAL_RATTELSE_REFUSED',
     'SI_ITEM_ACCOUNT_UPDATE_FAILED',

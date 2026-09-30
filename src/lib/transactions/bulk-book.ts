@@ -13,7 +13,8 @@
  * (POST /api/transactions/bulk-book) and the v1 operation
  * transactions.bulk-book (lib/operations/transactions.ts). The MCP tool
  * gnubok_bulk_book_transactions stages the same RPC through its own
- * hand-written preview and commit executor.
+ * hand-written preview and commit executor, and runs the same dimension
+ * policy (enforceBulkBookDimensionPolicy below) at stage and at commit.
  *
  * Rules before the RPC: every row belongs to the company; one currency, and
  * that currency SEK (the ledger columns are kronor and nothing here carries
@@ -22,21 +23,29 @@
  * lines only on active accounts of the company's chart; a template the
  * caller can see (system, the company's own, or a team the user belongs to:
  * the RLS rule, re-applied here because the v1 door runs as the service
- * role); the account dimension rules. The RPC re-checks tenant scope, date,
- * direction, balance, periods and not-already-booked.
+ * role); the dimension policy (account rules and registry validation). The
+ * RPC re-checks tenant scope, date, direction, balance, periods and
+ * not-already-booked.
  *
  * A dry run runs every rule above and answers the lines the verifikat would
  * carry; it writes nothing (no RPC, no events, no behandlingshistorik).
  */
+import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Logger } from '@/lib/logger'
 import type { OperationContext, OperationOutcome } from '@/lib/operations/types'
 import type { BookingTemplateLibraryLine, Transaction } from '@/types'
 import { applyTemplate } from '@/lib/bookkeeping/template-library'
-import { mergeDimensionBags } from '@/lib/bookkeeping/dimension-resolver'
+import {
+  mergeDimensionBags,
+  validateEntryDimensions,
+  type DimensionAliasInput,
+} from '@/lib/bookkeeping/dimension-resolver'
 import {
   applyDimensionRules,
   assertMandatoryDimensions,
   fetchActiveDimensionRules,
 } from '@/lib/bookkeeping/dimension-rules'
+import { isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { propagateUnderlagForBookedTransaction } from '@/lib/transactions/inbox-underlag'
 import { detectBookingDuplicate } from '@/lib/transactions/booking-duplicate-detection'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
@@ -321,20 +330,19 @@ export async function bulkBookTransactions(
     newEntryPayload = { description: body.entry_description, lines }
   }
 
-  // Account dimension rules (dimensions PR10): the RPC bypasses the TS
-  // engine, so the policy runs here. Zero rules or a failed fetch changes
-  // nothing (fail-open, same posture as the engine).
+  // Dimension policy: the RPC bypasses the TS engine, so it runs here.
   if (newEntryPayload) {
-    const rules = await fetchActiveDimensionRules(supabase, companyId)
-    if (rules === null) opLog.warn('dimension rule fetch failed: policy skipped (fail-open)')
-    if (rules && rules.length > 0) {
-      newEntryPayload.lines = applyDimensionRules(newEntryPayload.lines, rules)
-      try {
-        assertMandatoryDimensions(newEntryPayload.lines, rules)
-      } catch (err) {
-        // A BookkeepingError: the doors translate it verbatim.
-        return { ok: false, code: 'UNKNOWN_ERROR', error: err }
-      }
+    try {
+      newEntryPayload.lines = await enforceBulkBookDimensionPolicy(
+        supabase,
+        companyId,
+        newEntryPayload.lines,
+        opLog,
+      )
+    } catch (err) {
+      // A BookkeepingError: the doors translate it verbatim.
+      if (isBookkeepingError(err)) return { ok: false, code: 'UNKNOWN_ERROR', error: err }
+      throw err
     }
   }
 
@@ -421,6 +429,44 @@ export async function bulkBookTransactions(
       docs_linked: result.docs_linked,
     },
   }
+}
+
+/**
+ * The dimension policy every bulk-book door runs on a new samlingsverifikat's
+ * lines before bulk_book_transactions: the dashboard and v1 through
+ * bulkBookTransactions above, the MCP tool at stage and its executor at
+ * commit (rules may change and a value may be archived between the two). The
+ * RPC inserts and commits in SQL and never passes through createDraftEntry or
+ * commitEntry, so without this the MCP door skipped the rules and no door
+ * checked the codes against the registry. Same layers, order and toggle
+ * semantics as the engine:
+ *   1. account dimension rules: default/fixed applied onto the bags (a
+ *      failed rule fetch fails open, like the engine);
+ *   2. registry validation (validateEntryDimensions: free for untagged
+ *      lines, free text while dimensions_enabled is off, unknown or archived
+ *      codes refused otherwise);
+ *   3. 'required' rules asserted on the resulting bags.
+ * The RPC books source_type 'manual', which the rule policy enforces, so no
+ * exemption applies. Returns the lines with the rules applied (the same array
+ * when nothing applies). Throws MandatoryDimensionMissingError or
+ * DimensionValidationError, which every door already translates.
+ */
+export async function enforceBulkBookDimensionPolicy<
+  T extends DimensionAliasInput & { account_number: string },
+>(
+  supabase: SupabaseClient,
+  companyId: string,
+  lines: T[],
+  log?: Pick<Logger, 'warn'>,
+): Promise<T[]> {
+  const rules = await fetchActiveDimensionRules(supabase, companyId)
+  if (rules === null) {
+    log?.warn('dimension rule fetch failed: rules skipped (fail-open)', { companyId })
+  }
+  const ruled = rules && rules.length > 0 ? applyDimensionRules(lines, rules) : lines
+  await validateEntryDimensions(supabase, companyId, ruled)
+  if (rules && rules.length > 0) assertMandatoryDimensions(ruled, rules)
+  return ruled
 }
 
 /** btl_select: system templates, the company's own, and the user's teams'. */

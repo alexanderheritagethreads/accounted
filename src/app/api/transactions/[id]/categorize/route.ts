@@ -16,7 +16,11 @@ import { appendProcessingHistory } from '@/lib/processing-history/append'
 import { saveUserMappingRule, applySettlementAccount } from '@/lib/bookkeeping/mapping-engine'
 import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { guardCounterLegs } from '@/lib/cash-accounts/service'
-import { upsertCounterpartyTemplate, buildMappingResultFromCounterpartyTemplate } from '@/lib/bookkeeping/counterparty-templates'
+import {
+  upsertCounterpartyTemplate,
+  buildMappingResultFromCounterpartyTemplate,
+  loadCounterpartyTemplateMatch,
+} from '@/lib/bookkeeping/counterparty-templates'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponse, errorResponseFromCode, getStructuredError } from '@/lib/errors/get-structured-error'
 import {
@@ -38,7 +42,6 @@ import { AccountsNotInChartError, accountsNotInChartResponse } from '@/lib/bookk
 import { collectMappingResultAccounts, findUnresolvableAccounts } from '@/lib/bookkeeping/account-validation'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import type { Logger } from '@/lib/logger'
-import type { CategorizationTemplate } from '@/types'
 import { validateBody } from '@/lib/api/validate'
 import { CategorizeTransactionSchema } from '@/lib/api/schemas'
 import type { Transaction, TransactionCategory, EntityType } from '@/types'
@@ -318,32 +321,23 @@ export const POST = withRouteContext(
 
     let mappingResult
     if (body.counterparty_template_id && is_business) {
-      const { data: cpTemplate } = await supabase
-        .from('categorization_templates')
-        .select('*')
-        .eq('id', body.counterparty_template_id)
-        .eq('company_id', companyId)
-        .eq('is_active', true)
-        .maybeSingle()
+      // Learned codes the registry no longer accepts are dropped on load; an
+      // explicit body.dimensions (applied below) is never filtered.
+      const match = await loadCounterpartyTemplateMatch(supabase, companyId, body.counterparty_template_id)
 
-      if (!cpTemplate) {
+      if (!match) {
         return errorResponseFromCode('NOT_FOUND', txLog, {
           requestId,
           details: { resource: 'counterparty_template', id: body.counterparty_template_id },
         })
       }
 
-      const match = {
-        template: cpTemplate as CategorizationTemplate,
-        matchMethod: 'exact_alias' as const,
-        confidence: Number(cpTemplate.confidence),
-      }
       mappingResult = buildMappingResultFromCounterpartyTemplate(
         match, transaction as Transaction, entityType, vatRegistered,
       )
       txLog.info('using counterparty template', {
-        counterparty: cpTemplate.counterparty_name,
-        lines: cpTemplate.line_pattern ? 'multi' : 'simple',
+        counterparty: match.template.counterparty_name,
+        lines: match.template.line_pattern ? 'multi' : 'simple',
       })
     } else if (body.template_id) {
       const template = getTemplateById(body.template_id)!

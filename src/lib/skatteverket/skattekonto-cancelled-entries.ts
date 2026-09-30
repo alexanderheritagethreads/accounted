@@ -24,7 +24,9 @@ import { SKATTEKONTO_ACCOUNT } from './manual-verifikat-prefill'
  *      ("Korrigering av ver.nr. A177"). The anchor keeps a real payment and a
  *      later refund of the same amount (also a mirror) out of this set.
  *
- * Nothing here writes to the ledger; the set only filters match candidates.
+ * Nothing here writes to the ledger. The set filters match candidates, and
+ * the skattekonto reconciliation settles the imported pairs the way it
+ * settles an in-app storno pair (lib/reconciliation/skattekonto-reconciliation.ts).
  */
 
 export interface EntryForCancellation {
@@ -79,6 +81,11 @@ function anchored(a: EntryForCancellation, b: EntryForCancellation): boolean {
   )
 }
 
+/** In-app storno shape (1 in the module comment): the link fields say it. */
+function isLinkedStorno(e: EntryForCancellation): boolean {
+  return e.status === 'reversed' || !!e.reverses_id || !!e.reversed_by_id
+}
+
 /**
  * Ids of entries that are cancelled (see the module comment). Pure: pass
  * every entry with ALL its lines (not only 1630), both halves of a pair
@@ -88,11 +95,22 @@ function anchored(a: EntryForCancellation, b: EntryForCancellation): boolean {
 export function findCancelledEntryIds(entries: EntryForCancellation[]): Set<string> {
   const cancelled = new Set<string>()
   for (const e of entries) {
-    if (e.status === 'reversed' || e.reverses_id || e.reversed_by_id) cancelled.add(e.id)
+    if (isLinkedStorno(e)) cancelled.add(e.id)
   }
+  for (const pair of findImportedStornoPairs(entries)) {
+    for (const id of pair) cancelled.add(id)
+  }
+  return cancelled
+}
 
+/**
+ * The imported storno pairs (2 in the module comment) among `entries`, each
+ * as [earlier, later]. Same input contract and pairing order as
+ * findCancelledEntryIds; entries with storno link fields are never paired.
+ */
+export function findImportedStornoPairs(entries: EntryForCancellation[]): Array<[string, string]> {
   const open = entries
-    .filter((e) => e.status === 'posted' && !cancelled.has(e.id))
+    .filter((e) => e.status === 'posted' && !isLinkedStorno(e))
     .sort(
       (a, b) =>
         (a.entry_date < b.entry_date ? -1 : a.entry_date > b.entry_date ? 1 : 0) ||
@@ -102,6 +120,7 @@ export function findCancelledEntryIds(entries: EntryForCancellation[]): Set<stri
   const sig = new Map(open.map((e) => [e.id, signature(e, false)]))
   const neg = new Map(open.map((e) => [e.id, signature(e, true)]))
   const paired = new Set<string>()
+  const pairs: Array<[string, string]> = []
   for (let i = 0; i < open.length; i++) {
     const a = open[i]
     if (paired.has(a.id) || !sig.get(a.id)) continue
@@ -112,11 +131,11 @@ export function findCancelledEntryIds(entries: EntryForCancellation[]): Set<stri
       if (!anchored(a, b)) continue
       paired.add(a.id)
       paired.add(b.id)
+      pairs.push([a.id, b.id])
       break
     }
   }
-  for (const id of paired) cancelled.add(id)
-  return cancelled
+  return pairs
 }
 
 interface HeadRow {
@@ -136,6 +155,28 @@ export async function loadCancelledEntryIds(
   from: string,
   to: string,
 ): Promise<Set<string>> {
+  return findCancelledEntryIds(await loadEntriesForCancellation(supabase, companyId, from, to))
+}
+
+/**
+ * The imported storno pairs among entries touching 1630 in [from, to], with
+ * the same lookaround as loadCancelledEntryIds. Throws on a read failure.
+ */
+export async function loadImportedStornoPairs(
+  supabase: SupabaseClient,
+  companyId: string,
+  from: string,
+  to: string,
+): Promise<Array<[string, string]>> {
+  return findImportedStornoPairs(await loadEntriesForCancellation(supabase, companyId, from, to))
+}
+
+async function loadEntriesForCancellation(
+  supabase: SupabaseClient,
+  companyId: string,
+  from: string,
+  to: string,
+): Promise<EntryForCancellation[]> {
   const heads = await fetchEntryLines<HeadRow>({
     supabase,
     entryColumns:
@@ -153,7 +194,7 @@ export async function loadCancelledEntryIds(
     const e = h.journal_entries
     if (e && !byId.has(e.id)) byId.set(e.id, { ...e, lines: [] })
   }
-  if (byId.size === 0) return new Set()
+  if (byId.size === 0) return []
 
   const lines = await fetchLinesByEntryIds<{
     id: string
@@ -164,5 +205,5 @@ export async function loadCancelledEntryIds(
   }>(supabase, Array.from(byId.keys()), 'account_number, debit_amount, credit_amount')
   for (const l of lines) byId.get(l.journal_entry_id)?.lines.push(l)
 
-  return findCancelledEntryIds(Array.from(byId.values()))
+  return Array.from(byId.values())
 }

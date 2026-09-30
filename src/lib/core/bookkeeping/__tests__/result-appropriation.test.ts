@@ -36,10 +36,17 @@ vi.mock('@/lib/bookkeeping/entry-lines', () => ({
   fetchEntryLines: vi.fn(),
 }))
 
-import { generateResultAppropriation } from '../result-appropriation-service'
+// The year-end previews look up the next period (none unless a test says so).
+vi.mock('../period-service', () => ({
+  findNextPeriod: vi.fn(),
+}))
+
+import { generateResultAppropriation, previewResultAppropriation } from '../result-appropriation-service'
 import { getOpeningBalances } from '@/lib/reports/opening-balances'
 import { createJournalEntry } from '@/lib/bookkeeping/engine'
 import { fetchEntryLines } from '@/lib/bookkeeping/entry-lines'
+import { findNextPeriod } from '../period-service'
+import { carryAfterDispositions } from '../prior-result-carry'
 
 const FAKE_ENTRY = { id: 'ra-1', voucher_series: 'A', voucher_number: 2 }
 
@@ -70,6 +77,7 @@ beforeEach(() => {
   results = []
   vi.mocked(createJournalEntry).mockResolvedValue(FAKE_ENTRY as never)
   vi.mocked(fetchEntryLines).mockResolvedValue([] as never)
+  vi.mocked(findNextPeriod).mockResolvedValue(null)
 })
 
 /** Lines of one live entry in the period, as fetchEntryLines returns them. */
@@ -333,5 +341,158 @@ describe('generateResultAppropriation with a disposition booked by hand (PostHog
     expect(input.lines).toContainEqual(
       expect.objectContaining({ account_number: '2099', debit_amount: 30000, credit_amount: 0 })
     )
+  })
+})
+
+describe('previewResultAppropriation (feedback seq 707985)', () => {
+  // The year-end previews disclose the omföring before the close: the carry
+  // is the ingående balans the close will write (projectedIbNet), less what
+  // is already disposed in the next period, by the rule the close uses.
+  const closing = (entityType: string, projectedIbNet: number) => ({
+    periodId: 'p-2024',
+    periodEnd: '2024-12-31',
+    entityType: entityType as never,
+    projectedIbNet,
+  })
+  const NEXT = { id: 'p-2025', period_start: '2025-01-01' }
+
+  it('discloses Dr 2099 / Cr 2098 for an aktiebolag profit, dated the day after the close', async () => {
+    const preview = await previewResultAppropriation(makeClient() as never, 'c1', closing('aktiebolag', 150000))
+
+    expect(preview).toEqual({
+      from_account: '2099',
+      to_account: '2098',
+      amount: 150000,
+      direction: 'profit',
+      entry_date: '2025-01-01',
+      skipped_reason: null,
+      disposed_by: [],
+    })
+    // No next period yet: nothing in it can have moved the carry.
+    expect(fetchEntryLines).not.toHaveBeenCalled()
+  })
+
+  it('discloses 2069 -> 2068 for an ideell förening, a loss as direction loss', async () => {
+    const preview = await previewResultAppropriation(makeClient() as never, 'c1', closing('ideell_forening', -4000))
+
+    expect(preview).toMatchObject({
+      from_account: '2069',
+      to_account: '2068',
+      amount: 4000,
+      direction: 'loss',
+      skipped_reason: null,
+    })
+  })
+
+  it('discloses the skip when the next period already disposes the result (feedback seq 707985, A1172)', async () => {
+    vi.mocked(findNextPeriod).mockResolvedValue(NEXT as never)
+    results = [NO_EXISTING] // no live omföring in the next period
+    // The migrated history's own disposition, as prod holds it: Dr 2069 moves
+    // the 2024 result to 2067, Cr 2069 re-homes 2025's result.
+    vi.mocked(fetchEntryLines).mockResolvedValue(
+      entryLines('a1172', 'manual', 1172, [
+        { account_number: '2067', debit_amount: 0, credit_amount: 35059.47 },
+        { account_number: '2069', debit_amount: 35059.47, credit_amount: 0 },
+        { account_number: '2069', debit_amount: 0, credit_amount: 10612.53 },
+      ]) as never
+    )
+
+    const preview = await previewResultAppropriation(makeClient() as never, 'c1', closing('ideell_forening', 35059.47))
+
+    expect(preview).toEqual({
+      from_account: '2069',
+      to_account: '2068',
+      amount: 0,
+      direction: 'profit',
+      entry_date: '2025-01-01',
+      skipped_reason: 'already_disposed',
+      disposed_by: ['A1172'],
+    })
+  })
+
+  it('agrees with the close: what the preview skips, the omföring does not book', async () => {
+    const a1172 = entryLines('a1172', 'manual', 1172, [
+      { account_number: '2067', debit_amount: 0, credit_amount: 35059.47 },
+      { account_number: '2069', debit_amount: 35059.47, credit_amount: 0 },
+    ])
+    vi.mocked(findNextPeriod).mockResolvedValue(NEXT as never)
+    vi.mocked(fetchEntryLines).mockResolvedValue(a1172 as never)
+    results = [NO_EXISTING]
+    const preview = await previewResultAppropriation(makeClient() as never, 'c1', closing('ideell_forening', 35059.47))
+
+    // After the close the next period's IB holds the projected amount.
+    resultIdx = 0
+    results = [{ data: { entity_type: 'ideell_forening' }, error: null }, NO_EXISTING, PERIOD]
+    mockOpeningBalance([{ account_number: '2069', debit: 0, credit: 35059.47 }])
+    const entry = await generateResultAppropriation(makeClient() as never, 'c1', 'u1', 'p-2025')
+
+    expect(preview?.skipped_reason).toBe('already_disposed')
+    expect(entry).toBeNull()
+    expect(createJournalEntry).not.toHaveBeenCalled()
+  })
+
+  it('discloses only what a partial disposition in the next period left', async () => {
+    vi.mocked(findNextPeriod).mockResolvedValue(NEXT as never)
+    results = [NO_EXISTING]
+    vi.mocked(fetchEntryLines).mockResolvedValue(
+      entryLines('m1', 'import', 12, [
+        { account_number: '2099', debit_amount: 10000, credit_amount: 0 },
+        { account_number: '2091', debit_amount: 0, credit_amount: 10000 },
+      ]) as never
+    )
+
+    const preview = await previewResultAppropriation(makeClient() as never, 'c1', closing('aktiebolag', 30000))
+
+    expect(preview).toMatchObject({ amount: 20000, skipped_reason: null, disposed_by: ['A12'] })
+  })
+
+  it('discloses the skip when a live omföring is already booked in the next period', async () => {
+    vi.mocked(findNextPeriod).mockResolvedValue(NEXT as never)
+    results = [{ data: { id: 'ra-existing' }, error: null }]
+
+    const preview = await previewResultAppropriation(makeClient() as never, 'c1', closing('aktiebolag', 30000))
+
+    expect(preview).toMatchObject({ amount: 0, skipped_reason: 'already_booked' })
+    expect(fetchEntryLines).not.toHaveBeenCalled()
+  })
+
+  it('is null for an enskild firma and when there is nothing to move', async () => {
+    expect(await previewResultAppropriation(makeClient() as never, 'c1', closing('enskild_firma', 50000))).toBeNull()
+    expect(await previewResultAppropriation(makeClient() as never, 'c1', closing('aktiebolag', 0.004))).toBeNull()
+    expect(findNextPeriod).not.toHaveBeenCalled()
+  })
+})
+
+describe('carryAfterDispositions: a prior result moved off too often (a migrated aktiebolag)', () => {
+  it('reports what went beyond the carry and leaves nothing for another omföring', async () => {
+    // FY2022: the automatic omföring AND the previous system's imported
+    // disposition both moved 2021's result off 2099.
+    vi.mocked(fetchEntryLines).mockResolvedValue([
+      ...entryLines('a181', 'result_appropriation', 181, [
+        { account_number: '2099', debit_amount: 151986.05, credit_amount: 0 },
+        { account_number: '2098', debit_amount: 0, credit_amount: 151986.05 },
+      ]),
+      ...entryLines('a176', 'import', 176, [
+        { account_number: '2091', debit_amount: 0, credit_amount: 151178.05 },
+        { account_number: '2099', debit_amount: 151178.05, credit_amount: 0 },
+      ]),
+    ] as never)
+
+    const carry = await carryAfterDispositions(makeClient() as never, 'c1', 'p-2022', 'aktiebolag' as never, 151986.05)
+
+    expect(carry).toMatchObject({ ibNet: 151986.05, remaining: 0, overMoved: -151178.05, movedBy: ['A181', 'A176'] })
+  })
+
+  it('reports no over-move for a carry disposed exactly once', async () => {
+    vi.mocked(fetchEntryLines).mockResolvedValue(
+      entryLines('a181', 'result_appropriation', 181, [
+        { account_number: '2099', debit_amount: 151986.05, credit_amount: 0 },
+        { account_number: '2098', debit_amount: 0, credit_amount: 151986.05 },
+      ]) as never
+    )
+
+    const carry = await carryAfterDispositions(makeClient() as never, 'c1', 'p-2022', 'aktiebolag' as never, 151986.05)
+
+    expect(carry).toMatchObject({ remaining: 0, overMoved: 0 })
   })
 })

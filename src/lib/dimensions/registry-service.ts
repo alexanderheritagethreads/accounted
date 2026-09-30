@@ -56,7 +56,10 @@ export function nextFreeDimensionNumber(taken: ReadonlySet<number>, from = 20): 
   return n
 }
 
-async function ensureSystemDimensions(ctx: OperationContext): Promise<OperationOutcome<never> | null> {
+/** What a registry read needs: no acting user (the MCP resolve path has none to hand). */
+type RegistryReadContext = Pick<OperationContext, 'supabase' | 'companyId' | 'log'>
+
+async function ensureSystemDimensions(ctx: RegistryReadContext): Promise<OperationOutcome<never> | null> {
   const { error } = await ctx.supabase.rpc('ensure_company_dimensions', { p_company_id: ctx.companyId })
   if (error) {
     ctx.log.error('ensure_company_dimensions failed', error)
@@ -69,10 +72,12 @@ async function ensureSystemDimensions(ctx: OperationContext): Promise<OperationO
  * The registry with every value nested, dimensions by sort_order then
  * number, values by code. Seeds the system dims first, so the list is never
  * empty. Values are paginated: an SIE history can mint thousands of codes,
- * past PostgREST's silent 1000-row cap.
+ * past PostgREST's silent 1000-row cap. The MCP tools read the registry
+ * through this function too (list_dimensions and the resolve step of every
+ * dims-bag write), so no door can see a shorter registry than another.
  */
 export async function listDimensions(
-  ctx: OperationContext,
+  ctx: RegistryReadContext,
 ): Promise<OperationOutcome<{ dimensions: DimensionWithValues[] }>> {
   const ensured = await ensureSystemDimensions(ctx)
   if (ensured) return ensured

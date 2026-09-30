@@ -33,6 +33,7 @@ import { suggestBalanceAccount } from '@/lib/bookkeeping/accruals/account-sugges
 import { isSlpPensionAccount } from '@/lib/bookkeeping/slp-lines'
 import { isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { booksInvoicesOnIssue } from '@/lib/bookkeeping/booking-mode'
+import { sellerVatIsCost } from '@/lib/bookkeeping/vat-registration'
 import { reverseEntry } from '@/lib/bookkeeping/engine'
 import { checkPeriodLock } from '@/lib/api/v1/check-period-lock'
 import type { CreateSupplierInvoiceSchema } from '@/lib/api/schemas'
@@ -304,11 +305,12 @@ export async function createSupplierInvoice(
   // Icke momsregistrerad verksamhet has no deduction right for input VAT
   // (avdragsrätt, 13 kap. ML 2023:200): a line carrying moms would book
   // 2641 the company can never reclaim. Reverse charge stays allowed:
-  // self-assessment is a separate obligation from deduction.
+  // self-assessment is a separate obligation from deduction. The inbox paths
+  // fold the underlag's moms into the cost under the same rule
+  // (sellerVatIsCost); a caller registering by hand sends the gross.
   const vatRegistered = companySettings?.vat_registered !== false
   if (
-    !vatRegistered &&
-    !reverseCharge &&
+    sellerVatIsCost(companySettings?.vat_registered, reverseCharge) &&
     body.items.some((item) => (item.vat_rate ?? 0) > 0 || (item.vat_amount ?? 0) > 0)
   ) {
     return invalid('company is not VAT-registered; supplier invoice lines cannot carry moms')

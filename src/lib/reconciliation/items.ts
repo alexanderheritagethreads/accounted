@@ -99,11 +99,25 @@ function page<T>(all: T[], limit: number, offset: number): ListItemsResult & { i
 }
 
 /**
- * A linked row shows its verifikat, not an id: date, label and text come from
- * journal_entries in one batched read after the items are built.
+ * A linked row shows its verifikat, not an id, and so does a bank matcher
+ * proposal, whose row carries only potential_journal_entry_id: date, label
+ * and text come from journal_entries in one batched read after the items are
+ * built. Without it a proposed pair showed an id prefix and the bank date
+ * where the verifikat's label, text and date belong.
  */
-async function attachLinkedEntries(supabase: SupabaseClient, companyId: string, items: ReconciliationItem[]): Promise<void> {
-  const ids = [...new Set(items.map((i) => i.linked_journal_entry_id).filter((x): x is string => !!x))]
+async function attachEntries(
+  supabase: SupabaseClient,
+  companyId: string,
+  items: ReconciliationItem[],
+  bareProposals: ReconciliationProposal[] = [],
+): Promise<void> {
+  const ids = [
+    ...new Set(
+      [...items.map((i) => i.linked_journal_entry_id), ...bareProposals.map((p) => p.journal_entry_id)].filter(
+        (x): x is string => !!x,
+      ),
+    ),
+  ]
   if (ids.length === 0) return
   const byId = new Map<string, NonNullable<ReconciliationItem['linked_entry']>>()
   for (let i = 0; i < ids.length; i += 200) {
@@ -120,6 +134,15 @@ async function attachLinkedEntries(supabase: SupabaseClient, companyId: string, 
     if (!it.linked_journal_entry_id) continue
     const meta = byId.get(it.linked_journal_entry_id)
     if (meta) it.linked_entry = meta
+  }
+  // A proposal whose verifikat is not found keeps its fallback (bank date, no label).
+  for (const p of bareProposals) {
+    const meta = byId.get(p.journal_entry_id)
+    if (!meta) continue
+    p.entry_date = meta.entry_date
+    p.voucher_series = meta.voucher_series
+    p.voucher_number = meta.voucher_number
+    p.description = meta.description
   }
 }
 
@@ -150,7 +173,7 @@ export async function listAccountItems(
     const all = options.bucket
       ? status.items[options.bucket]
       : BUCKET_ORDER.flatMap((b) => status.items[b])
-    await attachLinkedEntries(supabase, companyId, all)
+    await attachEntries(supabase, companyId, all)
     return { ...page(all, limit, offset), older_unmatched_count: status.older_unmatched_count }
   }
 
@@ -169,6 +192,7 @@ export async function listAccountItems(
     const push = (item: ReconciliationItem) => {
       byBucket.set(item.bucket, [...(byBucket.get(item.bucket) ?? []), item])
     }
+    const persistedProposals: ReconciliationProposal[] = []
 
     const wantsExternal = buckets.some((b) =>
       ['proposed', 'unmatched_external', 'matched', 'ignored'].includes(b),
@@ -248,6 +272,24 @@ export async function listAccountItems(
                 ? 'proposed'
                 : 'unmatched_external'
           if (!buckets.includes(bucket)) continue
+          // The matcher persists only the verifikat id; attachEntries fills in
+          // its label, date and text once every item is built. Live proposals
+          // only: a matched row can keep a stale pointer (a multi-row
+          // bulk_book links through the junction and never clears it), and a
+          // real voucher label there would read as the row's link.
+          const persisted: ReconciliationProposal | null = tx.potential_journal_entry_id
+            ? {
+                journal_entry_id: tx.potential_journal_entry_id,
+                voucher_number: null,
+                voucher_series: null,
+                entry_date: tx.date,
+                description: '',
+                entry_status: 'posted',
+                confidence: Number(tx.potential_match_confidence ?? 0.75),
+                reasons: [tx.potential_match_method ?? 'föreslagen av matcharen'],
+              }
+            : null
+          if (persisted && bucket === 'proposed') persistedProposals.push(persisted)
           push({
             item_id: tx.id,
             item_type: 'transaction',
@@ -258,18 +300,7 @@ export async function listAccountItems(
             amount: roundOre(Number(tx.amount)),
             currency: tx.currency,
             linked_journal_entry_id: tx.journal_entry_id ?? junctionLinks.get(tx.id)?.[0] ?? null,
-            proposal: tx.potential_journal_entry_id
-              ? {
-                  journal_entry_id: tx.potential_journal_entry_id,
-                  voucher_number: null,
-                  voucher_series: null,
-                  entry_date: tx.date,
-                  description: '',
-                  entry_status: 'posted',
-                  confidence: Number(tx.potential_match_confidence ?? 0.75),
-                  reasons: [tx.potential_match_method ?? 'föreslagen av matcharen'],
-                }
-              : coveringSet,
+            proposal: persisted ?? coveringSet,
             actions:
               bucket === 'matched'
                 ? ['unmatch']
@@ -319,7 +350,7 @@ export async function listAccountItems(
     }
 
     const all = buckets.flatMap((b) => byBucket.get(b) ?? [])
-    await attachLinkedEntries(supabase, companyId, all)
+    await attachEntries(supabase, companyId, all, persistedProposals)
     return page(all, limit, offset)
   }
 

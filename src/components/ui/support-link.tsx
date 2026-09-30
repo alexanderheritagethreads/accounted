@@ -297,10 +297,12 @@ export function SupportLink({ variant = 'inline', subject, children, className, 
       subject,
       message: message.trim(),
       files: attachments,
-      // With a ticket still open, the SDK would otherwise append this to it.
-      // The same goes for any ticket opened here, a resolved one read for its
-      // answer included: loading a thread makes it the SDK's current ticket.
-      newTicket: active !== null || thread !== null,
+      // The composer only ever starts a new request: replies to an open ticket
+      // go through handleReply. Without the flag the SDK appends to its current
+      // ticket, which can be a resolved one this dialog no longer shows (it was
+      // opened earlier, or remembered from a previous visit), and a message
+      // there reaches nobody. So this is unconditional, not derived from state.
+      newTicket: true,
     })
     setIsSending(false)
 

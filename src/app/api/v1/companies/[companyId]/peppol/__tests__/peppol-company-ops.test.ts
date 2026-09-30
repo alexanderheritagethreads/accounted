@@ -123,6 +123,7 @@ const registeredRow = {
 function makeTransport(overrides: Partial<PeppolTransport> = {}): PeppolTransport {
   return {
     provider: 'test-ap',
+    tenantId: 'test-ap-account',
     lookupRecipient: vi.fn(),
     submit: vi.fn(),
     verifyWebhook: vi.fn(),

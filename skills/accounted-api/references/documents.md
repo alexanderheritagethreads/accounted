@@ -250,18 +250,20 @@ Example response `200`:
 
 ### `DELETE /api/v1/companies/{companyId}/documents/{id}`
 
-**Delete a document that is not linked to any verifikat.**
+**Delete a document that no verifikat or registered record holds.**
 `scope:documents:write · risk:medium · idempotent · dry-run`
 
-Removes the document row and its stored file. Refused once the document is linked to a journal entry: it is then räkenskapsinformation under BFL 7 kap 2 § and must be kept for 7 years (correct it with a new version instead). The database trigger enforces the same rule. Idempotent. Dry-runnable.
+Removes the document row and its stored file. Refused once the document is linked to a journal entry: it is then räkenskapsinformation under BFL 7 kap 2 § and must be kept for 7 years (correct it with a new version instead). The database trigger enforces the same rule. Also refused while a supplier invoice or an expense claim has it as underlag, while an inbox item that was booked or turned into a supplier invoice has it as its file or received Peppol XML, and while a bank transaction has it as underlag. Idempotent. Dry-runnable.
 
-**Use when:** A duplicate, blank or wrong upload that no verifikat references should go.
+**Use when:** A duplicate, blank or wrong upload that no verifikat or registered record references should go.
 **Do not use for:** Taking a document off a bank transaction (POST /transactions/{id}/detach-document), discarding an inbox item (DELETE /inbox-items/{id}) or anything linked to a verifikat.
 
 **Pitfalls:**
 - A linked document returns 409 DOC_DELETE_LINKED, whatever the verifikat's status.
 - The file is removed from storage too: this cannot be undone.
-- A document pinned to an unbooked bank transaction is not protected by this rule: detach it first if the transaction still needs it.
+- A document still pinned to a bank transaction returns 409 DOCUMENT_DELETE_BLOCKED_BY_TRANSACTION: detach it from the transaction first.
+- The underlag of a supplier invoice or an expense claim returns 409 DOC_DELETE_SUPPLIER_INVOICE_UNDERLAG or DOC_DELETE_EXPENSE_CLAIM_UNDERLAG, whatever its status and even before any verifikat links it.
+- The file or the received Peppol XML of a booked or converted inbox item returns 409 DOC_DELETE_BOOKED_INBOX_ITEM; an inbox item never booked does not hold its files.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -792,7 +794,8 @@ Registers a supplier invoice (status registered, next ankomstnummer) from the gi
 **Pitfalls:**
 - An item already converted returns 409 INBOX_ITEM_ALREADY_CONVERTED; a supplier invoice number the supplier already has returns 409 SI_CREATE_DUPLICATE_INVOICE_NUMBER with details.existing.
 - A credit note (read as one, or with a negative net or VAT) returns 409 INBOX_ITEM_IS_CREDIT_NOTE with details.credit_target: the invoice it credits, or the candidates to choose from.
-- amount is per line EXCLUDING VAT; VAT is computed from vat_rate. Per-line vat_amount, dimensions and private-payment fields are not accepted here.
+- amount is per line EXCLUDING VAT; VAT is computed from vat_rate. Per-line vat_amount and private-payment fields are not accepted here.
+- With dimensions enabled, an unknown or archived code in default_dimensions or items[].dimensions returns DIMENSION_VALIDATION_FAILED and registers nothing when the company books on registration; a company that defers booking meets it when the invoice is booked.
 - No fiscal year for invoice_date returns SI_CREATE_NO_FISCAL_PERIOD and registers nothing.
 - account_number is a STRING ("6110"), never a number.
 
@@ -816,7 +819,8 @@ Request body:
   reverse_charge?: boolean,
   payment_reference?: string,
   notes?: string,
-  items: { description: string, amount?: number, quantity?: number, unit?: string, unit_price?: number, account_number: string, vat_rate?: 0 | 0.06 | 0.12 | 0.25, vat_code?: string, reverse_charge_rate?: number, apply_slp?: boolean, accrual_period_start?: string | null, accrual_period_end?: string | null, accrual_balance_account?: string | null }[]
+  default_dimensions?: Record<string, string>,
+  items: { description: string, amount?: number, quantity?: number, unit?: string, unit_price?: number, account_number: string, vat_rate?: 0 | 0.06 | 0.12 | 0.25, vat_code?: string, reverse_charge_rate?: number, apply_slp?: boolean, accrual_period_start?: string | null, accrual_period_end?: string | null, accrual_balance_account?: string | null, dimensions?: Record<string, string> }[]
 }
 ```
 

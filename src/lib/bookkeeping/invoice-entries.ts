@@ -862,30 +862,22 @@ export async function createCreditNoteJournalEntry(
 }
 
 /**
- * Create journal entry for kontantmetoden (cash method) when payment is received.
- * Supports per-item VAT rates. Revenue + VAT recognised at payment.
+ * The kontantmetoden (cash method) verifikat for a received payment, pure:
+ * createInvoiceCashEntry books exactly these lines and the bank-match preview
+ * shows them, so the rows a user approves or edits carry what gets booked,
+ * the invoice's dimensions included. Supports per-item VAT rates. Revenue +
+ * VAT recognised at payment.
  *
  *   Debit  1930 Företagskonto       [total]
  *   Credit 30xx Försäljning         [subtotal per rate]
  *   Credit 26xx Utgående moms       [vat per rate]  (if applicable)
  */
-export async function createInvoiceCashEntry(
-  supabase: SupabaseClient,
-  companyId: string,
-  userId: string,
+export function buildInvoiceCashLines(
   invoice: Invoice,
-  paymentDate: string,
-  entityType: EntityType = 'enskild_firma',
+  entityType: EntityType,
   customerName?: string,
   settlementAccountNumber: string = '1930',
-  bankTransaction?: Pick<Transaction, 'id' | 'cash_account_id' | 'date' | 'amount' | 'currency'>
-): Promise<JournalEntry | null> {
-  const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, paymentDate)
-  if (!fiscalPeriodId) {
-    log.warn('No open fiscal period found for payment date:', paymentDate)
-    return null
-  }
-
+): { description: string; lines: CreateJournalEntryLineInput[] } {
   const lines: CreateJournalEntryLineInput[] = []
   const isForeign = invoice.currency !== 'SEK'
   const tag = invoiceTag(invoice)
@@ -956,10 +948,45 @@ export async function createInvoiceCashEntry(
   lines.push(...rotRut.lines)
   lines.push(...creditLines)
 
+  return {
+    description: buildInvoiceDescription('Kontantbetalning kundfaktura', invoice.invoice_number, customerName, invoice.id),
+    lines,
+  }
+}
+
+/**
+ * Create the journal entry for kontantmetoden (cash method) when payment is
+ * received: the lines of buildInvoiceCashLines, booked in the open period of
+ * the payment date. Returns null when no open period covers it.
+ */
+export async function createInvoiceCashEntry(
+  supabase: SupabaseClient,
+  companyId: string,
+  userId: string,
+  invoice: Invoice,
+  paymentDate: string,
+  entityType: EntityType = 'enskild_firma',
+  customerName?: string,
+  settlementAccountNumber: string = '1930',
+  bankTransaction?: Pick<Transaction, 'id' | 'cash_account_id' | 'date' | 'amount' | 'currency'>
+): Promise<JournalEntry | null> {
+  const fiscalPeriodId = await findFiscalPeriod(supabase, companyId, paymentDate)
+  if (!fiscalPeriodId) {
+    log.warn('No open fiscal period found for payment date:', paymentDate)
+    return null
+  }
+
+  const { description, lines } = buildInvoiceCashLines(
+    invoice,
+    entityType,
+    customerName,
+    settlementAccountNumber,
+  )
+
   const input: CreateJournalEntryInput = {
     fiscal_period_id: fiscalPeriodId,
     entry_date: paymentDate,
-    description: buildInvoiceDescription('Kontantbetalning kundfaktura', invoice.invoice_number, customerName, invoice.id),
+    description,
     source_type: 'invoice_cash_payment',
     source_id: invoice.id,
     ...(bankTransaction ? { bank_booking_context: [bankBookingContext(bankTransaction, settlementAccountNumber)] } : {}),

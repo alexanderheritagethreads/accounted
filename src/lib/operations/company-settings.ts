@@ -258,8 +258,9 @@ const AT_LEAST_ONE = 'At least one company setting must be supplied'
 /**
  * Runs a settings write through the shared service and maps its outcome to
  * public names. A dry run answers the proposed resource (so
- * `preview.<field>` reads like the resource), plus what changes, what it was
- * and whether the save will regenerate the tax deadlines.
+ * `preview.<field>` reads like the resource), plus what changes, what it was,
+ * whether the save will regenerate the tax deadlines and whether it turns
+ * dimensions on (and so registers the codes already on journal lines).
  */
 async function runSettingsWrite(
   ctx: OperationContext,
@@ -278,6 +279,7 @@ async function runSettingsWrite(
         changes: publicKeys(preview.changes),
         previous: publicKeys(preview.previous),
         deadlines_will_regenerate: preview.deadlines_will_regenerate,
+        dimension_codes_will_import: preview.dimension_codes_will_import,
         warnings: preview.warnings,
       },
     }
@@ -386,6 +388,7 @@ export const settingsUpdate = defineOperation({
       'reminder_days_level_1 < _2 < _3 must hold after the change (stored values fill in the ones not sent).',
       'The booking engine reads default_voucher_series_per_source_type, not default_voucher_series: send the map to move bookings to another series.',
       'salary_vacation_year_basis cannot change while open vacation balances exist.',
+      'Turning dimensions_enabled on also registers the dimension codes already on journal lines as archived registry values, as the settings page does; the warning DIMENSION_CODES_IMPORTED says how many.',
     ],
     example: {
       request: { bankgiro: '991-2346', contact_person: 'Anna Andersson' },

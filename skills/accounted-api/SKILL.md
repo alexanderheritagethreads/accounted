@@ -8,7 +8,7 @@ description: >-
   transactions and reconciliation, payroll (lön), VAT/moms and financial
   reports, SIE import/export, documents, webhooks. Covers auth with
   gnubok_sk_ API keys, conventions (dry-run, idempotency, cursor
-  pagination, scopes), and all 285 endpoints.
+  pagination, scopes), and all 291 endpoints.
 ---
 
 <!-- GENERATED FILE, do not edit. Source: lib/api/v1 registry + scripts/api-skill/overlays. Regenerate with `npm run apiskill:generate`. -->
@@ -123,6 +123,13 @@ endpoint). If an expansion fails the response still succeeds and names the
 failed parts in `meta.partial_expansions`; check it before trusting expanded
 fields.
 
+**Report query parameters.** A report read never answers an unfiltered report
+to a dimension filter it cannot apply: `dim_no`, `dim_code`, `dimensions`,
+`project` or `cost_center` on a report that does not document them is
+`400 VALIDATION_ERROR`. Any other query parameter a report does not document
+is not applied, and the response names it in the `X-Ignored-Query-Params`
+header: check that header when a filter seems to have had no effect.
+
 **Async operations.** Long-running actions (fiscal-period lock/close/year-end,
 imports) return `202` with an operation id; poll `GET /api/v1/operations/{id}`
 until `status` is `succeeded`/`failed`. The response shape is identical
@@ -142,7 +149,7 @@ call can undo it, e.g. invoice credit).
 
 ## Endpoint index
 
-API version `2026-05-12`, 285 operations. Paths are shown without
+API version `2026-05-12`, 291 operations. Paths are shown without
 their `/api/v1` prefix (full base URL: `https://app.gnubok.se/api/v1`).
 
 ### Core (11)
@@ -188,7 +195,7 @@ POST /companies/{companyId}/journal-entries/no-document-required : Mark many pos
 POST /companies/{companyId}/voucher-gap-explanations : Document a gap in the verifikationsserie (BFL 5 kap 6-7 §§) [scope:bookkeeping:write risk:low idempotent dry-run]
 ```
 
-### Periods and registers (41)
+### Periods and registers (47)
 
 Full detail: [references/periods.md](references/periods.md)
 
@@ -207,6 +214,12 @@ DELETE /companies/{companyId}/dimensions/{id} : Delete a custom dimension nobody
 POST /companies/{companyId}/dimensions/{id}/values : Create a dimension value (kostnadsställe/projekt code) [scope:bookkeeping:write risk:low idempotent dry-run reversible]
 PATCH /companies/{companyId}/dimensions/{id}/values/{valueId} : Update a dimension value (rename, archive, set start/end date) [scope:bookkeeping:write risk:low idempotent dry-run reversible]
 DELETE /companies/{companyId}/dimensions/{id}/values/{valueId} : Delete an unreferenced dimension value [scope:bookkeeping:write risk:medium idempotent]
+POST /companies/{companyId}/dimensions/retag : Change the dimension tags (kostnadsställe, projekt) on posted journal lines [scope:bookkeeping:write risk:medium idempotent dry-run reversible]
+GET /companies/{companyId}/dimensions/retag-log : Read the history of dimension tag changes on posted lines, newest first [scope:reports:read risk:low idempotent]
+GET /companies/{companyId}/dimensions/rules : List the account dimension rules (required, default or fixed dimension per account) [scope:reports:read risk:low idempotent]
+POST /companies/{companyId}/dimensions/rules : Require, pre-fill or pin a dimension value on an account [scope:bookkeeping:write risk:low idempotent dry-run reversible]
+PATCH /companies/{companyId}/dimensions/rules/{id} : Change, pause or resume an account dimension rule [scope:bookkeeping:write risk:low idempotent dry-run reversible]
+DELETE /companies/{companyId}/dimensions/rules/{id} : Delete an account dimension rule [scope:bookkeeping:write risk:low idempotent dry-run reversible]
 GET /companies/{companyId}/fiscal-periods : List fiscal periods (räkenskapsår) [scope:reports:read risk:low idempotent]
 POST /companies/{companyId}/fiscal-periods : Create a fiscal year (räkenskapsår) [scope:bookkeeping:write risk:medium idempotent dry-run]
 PATCH /companies/{companyId}/fiscal-periods/{id} : Rename or re-date an open fiscal year [scope:bookkeeping:write risk:medium idempotent dry-run reversible]
@@ -318,7 +331,7 @@ Full detail: [references/documents.md](references/documents.md)
 GET /companies/{companyId}/documents : List documents in the archive, linked or not, newest upload first [scope:documents:read risk:low idempotent]
 POST /companies/{companyId}/documents : Upload a document to the WORM archive [scope:documents:write risk:medium idempotent]
 GET /companies/{companyId}/documents/{id} : Read one document's metadata and what holds it [scope:documents:read risk:low idempotent]
-DELETE /companies/{companyId}/documents/{id} : Delete a document that is not linked to any verifikat [scope:documents:write risk:medium idempotent dry-run]
+DELETE /companies/{companyId}/documents/{id} : Delete a document that no verifikat or registered record holds [scope:documents:write risk:medium idempotent dry-run]
 GET /companies/{companyId}/documents/{id}/download : Get a time-limited signed download URL for a document [scope:documents:read risk:low idempotent]
 POST /companies/{companyId}/documents/{id}/link : Link a document to a journal entry [scope:documents:write risk:medium idempotent dry-run]
 GET /companies/{companyId}/inbox-items : List invoice-inbox items (Underlag) with a summary of what was read from each [scope:documents:read risk:low idempotent]

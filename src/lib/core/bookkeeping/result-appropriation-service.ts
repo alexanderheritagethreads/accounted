@@ -1,10 +1,17 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { resolveCompanyEntityType, resultClosingAccounts } from '@/lib/company/entity-type'
 import { createJournalEntry } from '@/lib/bookkeeping/engine'
-import { roundOre } from '@/lib/bokslut/rounding'
+import { roundOre, ORE_TOLERANCE } from '@/lib/bokslut/rounding'
+import { addDaysIso } from '@/lib/dates/iso'
 import { createLogger } from '@/lib/logger'
-import type { JournalEntry, CreateJournalEntryLineInput } from '@/types'
-import { priorResultCarry } from './prior-result-carry'
+import type {
+  CreateJournalEntryLineInput,
+  EntityType,
+  JournalEntry,
+  ResultAppropriationPreview,
+} from '@/types'
+import { carryAfterDispositions, priorResultCarry, type PriorResultCarry } from './prior-result-carry'
+import { findNextPeriod } from './period-service'
 
 const log = createLogger('result-appropriation-service')
 
@@ -72,23 +79,8 @@ export async function planResultAppropriation(
   // closes straight into 2010 and has nothing to reclassify.
   const accounts = resultClosingAccounts(entityType)
   if (!accounts.priorYearCarry) return null
-  const resultAccount = accounts.closing
-  const priorResultAccount = accounts.priorYearCarry
 
-  // Idempotency: never plan a second omföring for a period that already has a
-  // LIVE one. Deliberately posted-only: a reversed omföring is storno-cancelled
-  // (net zero effect on 2099), so it must not block the re-run after an
-  // administrative year-end undo (scripts/undo-year-end-closing.ts).
-  const { data: existing } = await supabase
-    .from('journal_entries')
-    .select('id')
-    .eq('company_id', companyId)
-    .eq('fiscal_period_id', periodId)
-    .eq('source_type', 'result_appropriation')
-    .eq('status', 'posted')
-    .limit(1)
-    .maybeSingle()
-  if (existing) return null
+  if (await hasLiveAppropriation(supabase, companyId, periodId)) return null
 
   const { data: period } = await supabase
     .from('fiscal_periods')
@@ -116,8 +108,26 @@ export async function planResultAppropriation(
     }
     return null
   }
-  const net = carry.remaining
 
+  return {
+    periodId,
+    periodName: period.name,
+    periodStart: period.period_start,
+    ...omforingFor(carry),
+  }
+}
+
+/**
+ * The omföring that moves what is still carried (`carry.remaining`, non-zero)
+ * off the result account onto the carry account. Pure: the close posts it
+ * (planResultAppropriation) and the year-end previews disclose it
+ * (previewResultAppropriation), so the two cannot differ.
+ */
+function omforingFor(
+  carry: PriorResultCarry,
+): Pick<ResultAppropriationPlan, 'resultAccount' | 'priorResultAccount' | 'net' | 'amount' | 'direction' | 'lines'> {
+  const { resultAccount, priorResultAccount } = carry
+  const net = carry.remaining
   const amount = roundOre(Math.abs(net))
   const lines: CreateJournalEntryLineInput[] =
     net > 0
@@ -151,18 +161,76 @@ export async function planResultAppropriation(
             line_description: 'Omföring av föregående års resultat',
           },
         ]
+  return { resultAccount, priorResultAccount, net, amount, direction: net > 0 ? 'profit' : 'loss', lines }
+}
 
-  return {
-    periodId,
-    periodName: period.name,
-    periodStart: period.period_start,
-    resultAccount,
-    priorResultAccount,
-    net,
-    amount,
-    direction: net > 0 ? 'profit' : 'loss',
-    lines,
+/**
+ * Idempotency: whether the period already has a LIVE omföring. Deliberately
+ * posted-only: a reversed omföring is storno-cancelled (net zero effect on
+ * 2099), so it must not block the re-run after an administrative year-end undo
+ * (scripts/undo-year-end-closing.ts).
+ */
+async function hasLiveAppropriation(
+  supabase: SupabaseClient,
+  companyId: string,
+  periodId: string,
+): Promise<boolean> {
+  const { data: existing } = await supabase
+    .from('journal_entries')
+    .select('id')
+    .eq('company_id', companyId)
+    .eq('fiscal_period_id', periodId)
+    .eq('source_type', 'result_appropriation')
+    .eq('status', 'posted')
+    .limit(1)
+    .maybeSingle()
+  return Boolean(existing)
+}
+
+/**
+ * The omföring the year-end close will book in the next period, disclosed
+ * before the close (feedback seq 707985: run_year_end booked one the owner's
+ * migrated books had already made, and no preview had said it would).
+ *
+ * Same rule as planResultAppropriation, applied to the next period's ingående
+ * balans as the close will write it: `projectedIbNet` is this period's closing
+ * balance on the result account after the closing entry. The next period may
+ * not exist yet (the close creates it); when it does, a disposition already
+ * booked there counts exactly as it will after the close. Null for forms that
+ * close straight into equity (enskild firma) and when there is nothing to move.
+ */
+export async function previewResultAppropriation(
+  supabase: SupabaseClient,
+  companyId: string,
+  closing: { periodId: string; periodEnd: string; entityType: EntityType; projectedIbNet: number },
+): Promise<ResultAppropriationPreview | null> {
+  const accounts = resultClosingAccounts(closing.entityType)
+  if (!accounts.priorYearCarry || Math.abs(closing.projectedIbNet) < ORE_TOLERANCE) return null
+
+  const next = await findNextPeriod(supabase, companyId, closing.periodId)
+  const base = {
+    from_account: accounts.closing,
+    to_account: accounts.priorYearCarry,
+    direction: closing.projectedIbNet > 0 ? ('profit' as const) : ('loss' as const),
+    // The close creates a missing next period starting the day after this one.
+    entry_date: next?.period_start ?? addDaysIso(closing.periodEnd, 1),
   }
+  if (next && (await hasLiveAppropriation(supabase, companyId, next.id))) {
+    return { ...base, amount: 0, skipped_reason: 'already_booked', disposed_by: [] }
+  }
+
+  const carry = await carryAfterDispositions(
+    supabase,
+    companyId,
+    next?.id ?? null,
+    closing.entityType,
+    closing.projectedIbNet,
+  )
+  if (!carry || carry.ibNet === 0) return null
+  if (carry.remaining === 0) {
+    return { ...base, amount: 0, skipped_reason: 'already_disposed', disposed_by: carry.movedBy }
+  }
+  return { ...base, amount: omforingFor(carry).amount, skipped_reason: null, disposed_by: carry.movedBy }
 }
 
 /**

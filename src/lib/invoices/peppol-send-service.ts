@@ -26,13 +26,27 @@
  * placeholder number, since the real one is allocated on commit.
  *
  * A draft is numbered before the document is built (the number is in the
- * XML) and issued with the mark-sent semantics after the network accepted
- * it, exactly as the dashboard always did.
+ * XML) and issued (status sent + its verifikat, fail closed) before the
+ * network gets the document, through the same markInvoiceSentAndBook every
+ * other issue path runs: a refused verifikat submits nothing and leaves the
+ * draft. The mark-sent tail (PDF archived as underlag, delivery recorded,
+ * invoice.sent) follows once the network accepted it.
+ *
+ * A send after a failed delivery is a resend: the same document stages a new
+ * delivery (one live delivery per document, 20260930100000) and replaces the
+ * failed submission at the access point (replacesSubmissionId). The buyer's
+ * business rejection is final: credit the invoice and issue a new one.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getErrorEntry } from '@/lib/errors/structured-errors'
 import { ensureInvoiceNumber } from '@/lib/invoices/ensure-invoice-number'
-import { issueAndBookInvoice, type IssueAndBookResult } from '@/lib/invoices/issue-and-book-invoice'
+import {
+  finishIssuedInvoice,
+  markInvoiceSentAndBook,
+  restoreUnbookedDraft,
+  type MarkSentAndBookResult,
+} from '@/lib/invoices/issue-and-book-invoice'
+import { isBookkeepingError } from '@/lib/bookkeeping/errors'
 import { hasRequiredInvoicePaymentAccount } from '@/lib/invoices/payment-accounts'
 import { snapshotInvoicePayee } from '@/lib/invoices/invoice-payee'
 import {
@@ -45,6 +59,7 @@ import {
   type PeppolAccessSummary,
 } from '@/lib/invoices/peppol-access'
 import {
+  findReplaceableSubmission,
   isFiscalPeriodMissingError,
   listPeppolDeliveriesForInvoice,
   persistVerifiedPeppolEvent,
@@ -66,6 +81,7 @@ import {
   getPeppolTransport,
   getPeppolTransportAvailability,
   isPeppolTransportError,
+  PEPPOL_DUPLICATE_INVOICE_NUMBER_CODE,
   type PeppolDeliveryStatus,
   type PeppolParticipant,
   type PeppolRecipientLookup,
@@ -74,13 +90,11 @@ import {
   type PeppolVerifiedEvent,
 } from '@/lib/invoices/peppol-transport'
 import { isSandboxCompany } from '@/lib/sandbox/guard'
-import type { OperationContext, OperationOutcome, OperationWarning } from '@/lib/operations/types'
+import type { OperationContext, OperationOutcome } from '@/lib/operations/types'
 import type { CompanySettings, Invoice } from '@/types'
 
 /** Invoice states that may still be handed to the network. */
 const SENDABLE_STATUSES = new Set<Invoice['status']>(['draft', 'sent', 'overdue'])
-
-const TERMINAL_FAILURE_STATUSES = new Set(['failed', 'no_route', 'business_rejected'])
 
 /**
  * Stands in for the number a numberless draft gets on commit, so the dry run
@@ -128,28 +142,70 @@ export function peppolSendFailureMessageEn(
     const issues = outcome.details?.issues as Array<{ message_en?: string }> | undefined
     return issues?.[0]?.message_en
   }
-  return undefined
+  return peppolAfterIssueMessages(outcome.code, outcome.details)?.messageEn
+}
+
+const REJECTED_AFTER_ISSUE = 'PEPPOL_SUBMISSION_REJECTED_AFTER_ISSUE'
+const FAILED_AFTER_ISSUE = 'PEPPOL_SUBMISSION_FAILED_AFTER_ISSUE'
+
+/**
+ * What a submission that failed after the invoice was issued answers, in
+ * both languages, from the failure's details: the invoice stays issued (and
+ * booked, when its verifikat exists), and a refusal carries the access
+ * point's own reason. The send answers the Swedish; the dashboard route
+ * derives the English from the same details. Without a verifikat and a
+ * reason it is the registry's static text, which holds for every case.
+ */
+export function peppolAfterIssueMessages(
+  code: string,
+  details: Record<string, unknown> | undefined,
+): { messageSv: string; messageEn: string } | null {
+  if (code !== REJECTED_AFTER_ISSUE && code !== FAILED_AFTER_ISSUE) return null
+  const booked = typeof details?.journal_entry_id === 'string' && details.journal_entry_id !== ''
+  const issuedSv = booked ? 'Fakturan är utfärdad och bokförd' : 'Fakturan är utfärdad'
+  const issuedEn = booked ? 'The invoice is issued and booked' : 'The invoice is issued'
+  if (code === FAILED_AFTER_ISSUE) {
+    return {
+      messageSv: `${issuedSv}, men kunde inte skickas via Peppol just nu. Försök igen om en stund, eller skicka PDF:en via e-post.`,
+      messageEn: `${issuedEn}, but could not be sent via Peppol right now. Try again shortly, or send the PDF by email.`,
+    }
+  }
+  const raw = typeof details?.reason === 'string' ? details.reason : ''
+  const reason = raw.replace(/\s+/g, ' ').trim().replace(/[\s.!?:;,]+$/, '')
+  const because = reason ? `: ${reason}` : ''
+  return {
+    messageSv: `${issuedSv}, men Peppol-operatören tog inte emot den${because}. Rätta och skicka igen, eller skicka PDF:en via e-post.`,
+    messageEn: `${issuedEn}, but the Peppol access point did not accept it${because}. Correct it and send again, or send the PDF by email.`,
+  }
 }
 
 /**
  * How a failed submission is classified. A verdict on the document arrives
  * only as the access point's own answer: the direct adapter throws a
- * non-retryable error without a code, and the connector wraps the access
- * point's refusal as a non-retryable CONNECTOR_UPSTREAM_ERROR. Every other
- * coded answer is about the sender, the key, the route or the service:
- * transient ones (unreachable, rate limited, ledger, upstream unconfigured,
- * HTTP 429/5xx) are a plain failure; permanent ones (sender not registered,
- * not allowed, quota, scope, key, HTTP 4xx, protocol) are a precondition.
- * Neither is terminal: the delivery stays resendable.
+ * non-retryable error without a code, the connector wraps the access point's
+ * refusal as a non-retryable CONNECTOR_UPSTREAM_ERROR, and an invoice number
+ * the access point already holds for the receiver is its non-retryable
+ * PEPPOL_DUPLICATE_INVOICE_NUMBER. A verdict ends the delivery (failed); a
+ * resend stages a new one. Every other coded answer is about the sender, the
+ * key, the route or the service: transient ones (unreachable, rate limited,
+ * ledger, upstream unconfigured, HTTP 429/5xx) are a plain failure; permanent
+ * ones (sender not registered, not allowed, quota, scope, key, HTTP 4xx,
+ * protocol, an answer in an unknown shape) are a precondition. Neither is
+ * terminal: the delivery stays resendable.
  */
 type SubmitVerdict = 'rejected' | 'precondition' | 'failed'
 
 function classifySubmitFailure(err: unknown): { verdict: SubmitVerdict; code: string | null } {
   if (!isPeppolTransportError(err)) return { verdict: 'failed', code: null }
   if (err.retryable) return { verdict: 'failed', code: err.code }
-  const documentVerdict = err.code === null || err.code === 'CONNECTOR_UPSTREAM_ERROR'
+  const documentVerdict = err.code === null
+    || err.code === 'CONNECTOR_UPSTREAM_ERROR'
+    || err.code === PEPPOL_DUPLICATE_INVOICE_NUMBER_CODE
   return { verdict: documentVerdict ? 'rejected' : 'precondition', code: err.code }
 }
+
+/** Connect's refusal of a resend whose replaced submission has not failed at the access point. */
+const RESEND_NOT_FAILED_CODE = 'CONNECTOR_PEPPOL_RESEND_NOT_FAILED'
 
 /** Provider-source lifecycle events written by the send (service role). */
 function sendEvent(args: {
@@ -285,9 +341,9 @@ export async function sendInvoiceViaPeppol(
   }
 
   const wasDraft = invoice.status === 'draft'
-  // A draft is issued (numbered, marked sent, booked) after the network
-  // accepts it. Refuse up front what issuance would refuse afterwards, so an
-  // invoice never reaches the buyer and then fails to book.
+  // A draft is issued (numbered, marked sent, booked) before the network gets
+  // it (submitStagedDocument). Refuse up front what issuance would refuse,
+  // before any number is taken.
   if (wasDraft) {
     const payeeSnapshot = await snapshotInvoicePayee(supabase, companyId, invoice, { persist: !dryRun })
     if (!payeeSnapshot.ok) return refuse(payeeSnapshot.code, { details: payeeSnapshot.details })
@@ -374,11 +430,10 @@ async function submitStagedDocument(args: {
   const { supabase, companyId, userId, log } = ctx
   const invoiceId = invoice.id
   const provider = transport.provider
-  // Consolidated Qvalia setup: one provider account for every company. The
-  // adapter resolves the account; the lifecycle only needs a stable label.
-  const tenantId = process.env.QVALIA_ACCOUNT_REG_NO?.trim()
-    || process.env.QVALIA_PARTNER_REG_NO?.trim()
-    || provider
+  // The transport's own label: the first event writes it on the row for
+  // good, and the lifecycle RPC refuses a later event (a poll, a webhook)
+  // that carries another one.
+  const tenantId = transport.tenantId
   const result = (
     delivery: PeppolDeliverySummary,
     rest: Partial<PeppolSendResult> = {},
@@ -407,18 +462,36 @@ async function submitStagedDocument(args: {
       throw err
     }
 
+    // The stage RPC answers the live delivery of this exact document, or a
+    // new one after a failed or no_route delivery (those are history). A
+    // live delivery is terminal only as the buyer's business response, and
+    // that is read before "already submitted": a refused invoice is never
+    // sent again (credit it and issue a new one), an accepted one is
+    // delivered. A failed or no_route row comes back only from a database
+    // without 20260930100000; it is refused as before, never sent over.
+    if (delivery.terminal_at && delivery.status !== 'business_accepted') {
+      return {
+        ok: false,
+        code: delivery.status === 'business_rejected' ? 'PEPPOL_BUSINESS_REJECTED' : 'PEPPOL_SUBMISSION_REJECTED',
+        details: { status: delivery.status, detail: delivery.status_detail },
+      }
+    }
     if (delivery.provider_submission_id) {
       // Exact XML already handed to the network: idempotent replay, never a
       // second transmission.
       return { ok: true, data: result(delivery, { already_submitted: true }) }
     }
-    if (delivery.terminal_at && TERMINAL_FAILURE_STATUSES.has(delivery.status)) {
-      return {
-        ok: false,
-        code: 'PEPPOL_SUBMISSION_REJECTED',
-        details: { status: delivery.status, detail: delivery.status_detail },
-      }
-    }
+
+    // A resend after a failed delivery replaces that submission at the access
+    // point, which would otherwise refuse the same invoice number for the
+    // same receiver as a duplicate. Read before anything is issued or sent.
+    const replacesSubmissionId = await findReplaceableSubmission({
+      service,
+      companyId,
+      invoiceId,
+      provider,
+      recipient: document.recipient,
+    })
 
     // A lookup that cannot be performed is not a lookup that answered "not
     // registered" and never a verdict on the document: the delivery stays
@@ -461,6 +534,53 @@ async function submitStagedDocument(args: {
       }
     }
 
+    // Issue a draft BEFORE the network gets it: status sent + the verifikat,
+    // fail closed. A refused verifikat (a required dimension, an archived
+    // dimension value, a locked period) submits nothing and leaves the draft,
+    // so the buyer never holds an invoice the ledger does not have.
+    let issued: Extract<MarkSentAndBookResult, { ok: true }> | null = null
+    if (wasDraft) {
+      const issue = await markInvoiceSentAndBook({ supabase, companyId, userId, invoice, settings: company, log })
+      if (!issue.ok) {
+        if (isBookkeepingError(issue.bookingError)) {
+          return { ok: false, code: (issue.bookingError as { code: string }).code, error: issue.bookingError }
+        }
+        return {
+          ok: false,
+          code: issue.errorCode,
+          ...(issue.reason ? { details: { reason: issue.reason } } : {}),
+        }
+      }
+      issued = issue
+    }
+    // The network did not take the document after the draft was issued.
+    // Nothing booked: the draft is put back, and nothing was issued. A posted
+    // verifikat is never undone: the invoice stays issued (a Peppol resend of
+    // a sent invoice is allowed), finished like mark-sent minus the delivery
+    // record. An invoice issued before this send stays as it was. Whatever
+    // stays issued is answered with its status and verifikat, and the
+    // failure says so (the _AFTER_ISSUE codes).
+    const settleIssueAfterFailedSubmit = async (): Promise<{
+      invoice_status?: Invoice['status']
+      journal_entry_id?: string | null
+    }> => {
+      if (!issued) return { invoice_status: invoice.status, journal_entry_id: invoice.journal_entry_id ?? null }
+      if (!issued.journalEntryId && (await restoreUnbookedDraft(supabase, companyId, invoiceId, log))) {
+        return {}
+      }
+      await finishIssuedInvoice({
+        supabase,
+        companyId,
+        userId,
+        invoice,
+        settings: company,
+        log,
+        journalEntryId: issued.journalEntryId,
+        recordDelivery: false,
+      })
+      return { invoice_status: 'sent', journal_entry_id: issued.journalEntryId }
+    }
+
     delivery = await persistVerifiedPeppolEvent({
       supabase: service,
       companyId,
@@ -491,6 +611,7 @@ async function submitStagedDocument(args: {
         terminal: false,
         statusDetail: null,
         occurredAt: new Date().toISOString(),
+        ...(replacesSubmissionId ? { payload: { replaces_submission_id: replacesSubmissionId } } : {}),
       }),
     })
 
@@ -508,22 +629,22 @@ async function submitStagedDocument(args: {
         contentType: 'application/xml',
         document: document.xml,
         documentSha256: delivery.xml_sha256,
+        ...(replacesSubmissionId ? { replacesSubmissionId } : {}),
       })
       providerSubmissionId = receipt.providerSubmissionId
       acceptedAt = receipt.acceptedAt
     } catch (err) {
       const { verdict, code: transportCode } = classifySubmitFailure(err)
-      // Only the access point's own verdict (provider `rejected`/`duplicate`)
-      // is terminal; a precondition or a transient failure leaves the
-      // delivery resendable.
+      // Only the access point's own verdict (a refusal, a duplicate invoice
+      // number) is terminal; a precondition or a transient failure leaves
+      // the delivery resendable.
       const retryable = verdict !== 'rejected'
       // The provider's own explanation (validation rule, duplicate notice) is
-      // what the user can act on; the adapter's error message stays in the
-      // event log and never reaches the response.
-      const providerReason = isPeppolTransportError(err) ? err.detail : null
-      const eventDetail = isPeppolTransportError(err)
-        ? [err.message, providerReason].filter(Boolean).join(': ').slice(0, 500)
-        : (err instanceof Error ? err.message : 'unknown transport error')
+      // what the user can act on: it is the delivery's status_detail, which
+      // the invoice page shows as the reason. The adapter's error message
+      // stays in the event's raw payload and never reaches the response.
+      const providerReason = isPeppolTransportError(err) && err.detail ? err.detail.slice(0, 500) : null
+      const adapterMessage = (err instanceof Error ? err.message : 'unknown transport error').slice(0, 500)
       log.error('Peppol submission failed', err as Error, {
         invoiceId,
         retryable,
@@ -541,10 +662,19 @@ async function submitStagedDocument(args: {
           code: retryable ? 'submit_failed' : 'submit_rejected',
           status: retryable ? 'retryable_failure' : 'failed',
           terminal: !retryable,
-          statusDetail: eventDetail,
+          statusDetail: providerReason,
           occurredAt: new Date().toISOString(),
+          payload: { error: adapterMessage, code: transportCode },
         }),
       })
+      const issueState = await settleIssueAfterFailedSubmit()
+      const details = { reason: providerReason, code: transportCode, ...issueState }
+      // The connector refused a resend because the access point has not
+      // reported the replaced delivery as failed: its own code, so no client
+      // is told to check its Peppol settings.
+      if (transportCode === RESEND_NOT_FAILED_CODE) {
+        return { ok: false, code: RESEND_NOT_FAILED_CODE, details }
+      }
       if (verdict === 'precondition' && transportCode !== null) {
         return {
           ok: false,
@@ -552,13 +682,24 @@ async function submitStagedDocument(args: {
           ...(peppolPreconditionMessages(transportCode).messageSv
             ? { messageSv: peppolPreconditionMessages(transportCode).messageSv }
             : {}),
-          details: { reason: providerReason, code: transportCode },
+          details,
         }
       }
+      if (transportCode === PEPPOL_DUPLICATE_INVOICE_NUMBER_CODE) {
+        return { ok: false, code: 'PEPPOL_DUPLICATE_INVOICE_NUMBER', details }
+      }
+      // The old codes say the invoice was not sent, which holds only when
+      // the draft was put back; an invoice that stays issued is told so.
+      const stillIssued = issueState.invoice_status !== undefined
+      const code = verdict === 'failed'
+        ? (stillIssued ? FAILED_AFTER_ISSUE : 'PEPPOL_SUBMISSION_FAILED')
+        : (stillIssued ? REJECTED_AFTER_ISSUE : 'PEPPOL_SUBMISSION_REJECTED')
+      const afterIssue = peppolAfterIssueMessages(code, details)
       return {
         ok: false,
-        code: verdict === 'failed' ? 'PEPPOL_SUBMISSION_FAILED' : 'PEPPOL_SUBMISSION_REJECTED',
-        details: { reason: providerReason, code: transportCode },
+        code,
+        ...(afterIssue ? { messageSv: afterIssue.messageSv } : {}),
+        details,
       }
     }
 
@@ -579,42 +720,34 @@ async function submitStagedDocument(args: {
       }),
     })
 
-    // The network has the document. A draft now becomes an issued invoice
-    // with exactly the mark-sent semantics (number, status, verifikat under
-    // faktureringsmetoden, PDF archived as underlag).
-    let issuance: IssueAndBookResult | null = null
-    let invoiceStatus: Invoice['status'] = invoice.status
-    const warnings: OperationWarning[] = []
-    if (wasDraft) {
-      issuance = await issueAndBookInvoice({ supabase, companyId, userId, invoice, settings: company, log })
-      if (issuance.ok) {
-        invoiceStatus = 'sent'
-      } else {
-        log.error('Peppol send accepted but issuance failed', { invoiceId, errorCode: issuance.errorCode })
-        warnings.push({
-          code: 'PEPPOL_SENT_NOT_ISSUED',
-          message_sv:
-            'Fakturan skickades via Peppol men kunde inte markeras som skickad. Slutför utfärdandet med mark-sent; numret återanvänds.',
-          message_en:
-            'The invoice was sent via Peppol but could not be marked as sent. Complete the issuance with mark-sent; the number is reused.',
-        })
-      }
-    }
+    // The network has the document. The draft was issued before it left;
+    // finish it with the mark-sent tail (PDF archived as underlag, delivery
+    // recorded, invoice.sent).
+    const partialFailures = issued
+      ? [
+          ...issued.partialFailures,
+          ...(await finishIssuedInvoice({
+            supabase,
+            companyId,
+            userId,
+            invoice,
+            settings: company,
+            log,
+            journalEntryId: issued.journalEntryId,
+            recordDelivery: true,
+          })),
+        ]
+      : []
 
     return {
       ok: true,
       created: true,
       data: result(delivery, {
-        invoice_status: invoiceStatus,
+        invoice_status: issued ? 'sent' : invoice.status,
         recipient: { scheme: lookup.participant.scheme, identifier: lookup.participant.identifier },
-        journal_entry_id: issuance?.ok ? issuance.journalEntryId : null,
-        issuance: issuance === null
-          ? null
-          : issuance.ok
-            ? { ok: true, partial_failures: issuance.partialFailures }
-            : { ok: false, error_code: issuance.errorCode },
+        journal_entry_id: issued?.journalEntryId ?? null,
+        issuance: issued ? { ok: true, partial_failures: partialFailures } : null,
       }),
-      ...(warnings.length > 0 ? { warnings } : {}),
     }
   } catch (err) {
     return { ok: false, code: 'INTERNAL_ERROR', error: err }

@@ -160,6 +160,7 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
           debit_amount: number
           credit_amount: number
           line_description?: string
+          dimensions?: Record<string, string>
         }[]
       | undefined
     let force = false
@@ -481,6 +482,9 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
               debit_amount: l.debit_amount,
               credit_amount: l.credit_amount,
               line_description: l.line_description ?? undefined,
+              // The line's own tags (DimensionsBagSchema-validated), as the
+              // dashboard mark-paid passes them through.
+              dimensions: l.dimensions,
             })),
           }
           const entry = await createJournalEntry(

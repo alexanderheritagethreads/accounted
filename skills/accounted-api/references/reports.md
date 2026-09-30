@@ -2,7 +2,7 @@
 
 # Reports endpoints
 
-Read-only statutory and management reports: trial balance, balance sheet, income statement, general ledger, VAT declaration, AR/AP ledgers, salary journal, and SIE export.
+Read-only statutory and management reports: trial balance, balance sheet, income statement, general ledger, VAT declaration, AR/AP ledgers, salary journal, and SIE export. Only income-statement, general-ledger, monthly-breakdown and kpi take the dim_no + dim_code filter; every other report answers a dimension filter with 400 VALIDATION_ERROR, never an unfiltered report. Any other query parameter a report does not list is not applied and is named in the X-Ignored-Query-Params response header.
 
 Conventions (auth, envelope, pagination, dry-run, idempotency, standard errors)
 are in SKILL.md and are not repeated per endpoint.
@@ -501,21 +501,23 @@ Example response `200`:
 **Resultat per projekt or kostnadsställe: the income statement with one column per dimension value.**
 `scope:reports:read · risk:low · idempotent`
 
-A value-as-column P&L matrix over one SIE dimension (dim_no 6 projekt by default, 1 kostnadsställe, or a custom dimension): each result account's amount per dimension value, an "(Utan dimension)" column for untagged amounts, and a Totalt column that equals the resultatrapport. Cumulative from the period start to to_date (default the period end). Read-only.
+A value-as-column P&L matrix over one SIE dimension (dim_no 6 projekt by default, 1 kostnadsställe, or a custom dimension): each result account's amount per dimension value, an "(Utan dimension)" column for untagged amounts, and a Totalt column that equals the resultatrapport for the same window. The window is from_date to to_date (defaults: the period start and end), so one quarter per project is one call. Read-only.
 
-**Use when:** Following up profitability per project or cost centre.
-**Do not use for:** One value only (GET /reports/income-statement with a dimension filter) or balance accounts (dimensions are P&L-side).
+**Use when:** Following up profitability per project or cost centre, for the year or for one quarter or month.
+**Do not use for:** One value only (GET /reports/income-statement with dim_no and dim_code) or balance accounts (dimensions are P&L-side).
 
 **Pitfalls:**
-- No from_date: the matrix uses closing-balance semantics so its Totalt reconciles with the resultatrapport.
+- from_date and to_date must lie inside the period. Amounts are the activity inside that window, not balances accumulated from the period start.
 - Amounts booked without a tag on the dimension land in "(Utan dimension)", not spread over the values.
+- What the bokslut run posts (source year_end: tax, bokslut depreciation, dispositions, resultatavslut) is left out, tagged or not, exactly as in the resultatrapport.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
 | `companyId` | path | `string` | yes |  |
 | `period_id` | query | `string` | yes | The fiscal period (räkenskapsår) id, from GET /fiscal-periods. |
 | `dim_no` | query | `string` | no | SIE dimension number. Default "6" (projekt). |
-| `to_date` | query | `string` | no | YYYY-MM-DD inside the period. Default: the period end. |
+| `from_date` | query | `string` | no | YYYY-MM-DD inside the period. Default: the period start. |
+| `to_date` | query | `string` | no | YYYY-MM-DD inside the period, not before from_date. Default: the period end. |
 
 Response `200`:
 ```ts
@@ -556,8 +558,8 @@ Example response `200`:
     ],
     "net_total": 184200,
     "period": {
-      "start": "2026-01-01",
-      "end": "2026-12-31"
+      "start": "2026-07-01",
+      "end": "2026-09-30"
     }
   },
   "meta": {
@@ -574,7 +576,7 @@ Example response `200`:
 **General ledger (huvudbok) for a fiscal period.**
 `scope:reports:read · risk:low · idempotent`
 
-Returns every posted journal line in the period grouped by account, with opening / running / closing balances. Supports optional `account_from` and `account_to` query parameters to limit the report to an account range (e.g. ?account_from=3000&account_to=3999 for revenue-only).
+Returns every posted journal line in the period grouped by account, with opening / running / closing balances. Supports optional `account_from` and `account_to` query parameters to limit the report to an account range (e.g. ?account_from=3000&account_to=3999 for revenue-only), and `dim_no` + `dim_code` to keep only the lines tagged with one dimension value (the answer then carries `dimension_filter` and `partial_view`).
 
 **Use when:** You're reconciling a specific account or range (bank account drilldown, revenue audit, expense investigation) and need every voucher-line that hit the account.
 **Do not use for:** Period totals only (use /reports/trial-balance). Specific transaction lookup (use /journal-entries/{id}).
@@ -583,6 +585,8 @@ Returns every posted journal line in the period grouped by account, with opening
 - `period_id` is required.
 - Account ranges are inclusive on both bounds. `account_from=3000` includes 3000; `account_to=3999` includes 3999.
 - Lines with `status != 'posted'` (drafts, reversed) are excluded.
+- With `dim_no` + `dim_code` (always together) every opening_balance is 0: IB is company-wide and cannot be scoped to a dimension, so running and closing balances are the tagged lines' movements only (`partial_view.opening_balances_included` is false).
+- A query parameter it does not document (e.g. from_date) is not applied: the answer names it in the X-Ignored-Query-Params header. A dimension filter is always applied or refused, never ignored.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -590,6 +594,8 @@ Returns every posted journal line in the period grouped by account, with opening
 | `period_id` | query | `string` | yes | Fiscal period id (from GET /fiscal-periods). Required. |
 | `account_from` | query | `string` | no | Lowest account number to include (inclusive), 3-8 digits, e.g. 3000. |
 | `account_to` | query | `string` | no | Highest account number to include (inclusive), 3-8 digits, e.g. 3999. |
+| `dim_no` | query | `string` | no | SIE dimension number to filter on: "1" kostnadsställe, "6" projekt, 20+ custom. Send with dim_code. |
+| `dim_code` | query | `string` | no | The dimension value code, e.g. "P001". Send with dim_no. |
 
 Response `200`:
 ```ts
@@ -628,7 +634,7 @@ Example response `200`:
 **Income statement (resultatrapport) for a fiscal period or a custom date range.**
 `scope:reports:read · risk:low · idempotent`
 
-Returns the period's revenue and expenses grouped by BAS class with subtotals (gross margin, operating result, net result). Optional `from_date` / `to_date` (YYYY-MM-DD, inside the fiscal period) narrow the report to a custom range, e.g. January 1 to July 31 for month-end bank reporting. The net result flows into the balance-sheet equity for the same period.
+Returns the period's revenue and expenses grouped by BAS class with subtotals (gross margin, operating result, net result). Optional `from_date` / `to_date` (YYYY-MM-DD, inside the fiscal period) narrow the report to a custom range, e.g. January 1 to July 31 for month-end bank reporting. Optional `dim_no` + `dim_code` narrow it to the lines tagged with one dimension value (a project, a cost centre): the answer then carries `dimension_filter` and `partial_view`. The net result flows into the balance-sheet equity for the same period.
 
 **Use when:** You need the company's profit/loss for a period or partial period: month-end management reporting, K2/K3 årsredovisning resultaträkning, or feeding KPI dashboards.
 **Do not use for:** Per-account drill (use /reports/general-ledger). VAT figures (use /reports/vat-declaration). Balance position (use /reports/balance-sheet).
@@ -639,6 +645,7 @@ Returns the period's revenue and expenses grouped by BAS class with subtotals (g
 - `period_id` is required; `from_date`/`to_date` are optional and must lie within that fiscal period.
 - Unknown query parameters are rejected with VALIDATION_ERROR, not silently ignored.
 - Net result on the income statement equals the period's equity-line delta on the balance sheet: they're derived from the same posted entries.
+- With `dim_no` + `dim_code` (always together) the figures cover only lines tagged with that value, `partial_view.complete` is false: never present them as the company's result. Statutory reports (balance sheet, VAT, INK2, NE, SIE) refuse the pair with 400.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -646,6 +653,8 @@ Returns the period's revenue and expenses grouped by BAS class with subtotals (g
 | `period_id` | query | `string` | yes | Fiscal period id (from GET /fiscal-periods). Required. |
 | `from_date` | query | `string` | no | YYYY-MM-DD, inside the fiscal period. Omit with to_date for the whole period. |
 | `to_date` | query | `string` | no | YYYY-MM-DD, inside the fiscal period and not before from_date. |
+| `dim_no` | query | `string` | no | SIE dimension number to filter on: "1" kostnadsställe, "6" projekt, 20+ custom. Send with dim_code. |
+| `dim_code` | query | `string` | no | The dimension value code, e.g. "P001". Send with dim_no. |
 
 Response `200`:
 ```ts
@@ -889,13 +898,13 @@ Example response `200`:
 **Kassaflödesanalys (cash flow statement, indirect method) for a räkenskapsår.**
 `scope:reports:read · risk:low · idempotent`
 
-Derives the cash flow statement from the trial balance: löpande verksamhet (result after financial items, avskrivningar, changes in receivables, inventory and short-term liabilities, tax paid), investeringsverksamhet and finansieringsverksamhet, with a reconciliation of the calculated change against the actual change in cash (1xxx liquid funds). Read-only.
+Derives the cash flow statement from the trial balance, with every account in exactly one line: löpande verksamhet (result after financial items, avskrivningar and other non-cash items, changes in receivables, inventory and short-term liabilities, tax paid, koncernbidrag), investeringsverksamhet (acquisitions, disposals at their proceeds, kortfristiga placeringar) and finansieringsverksamhet, reconciled against the actual change in cash (19xx). Read-only.
 
 **Use when:** Preparing the årsredovisning for a K3 company (or a larger K2 one that includes it), or analysing where the year's cash went.
 **Do not use for:** Liquidity forecasts or bank balances (GET /reports/trial-balance for 19xx).
 
 **Pitfalls:**
-- reconciliation.is_reconciled false means an account the analysis cannot classify moved; it does not by itself mean the books are wrong.
+- lopande.ovriga_poster is the change on accounts outside every BAS range the analysis classifies, named in unclassified_accounts. reconciliation.is_reconciled false means the period's postings do not balance.
 - A year whose income tax cannot be separated from other taxes answers 422 CASH_FLOW_TAX_ALLOCATION_REQUIRED.
 
 | Parameter | In | Type | Required | Notes |
@@ -914,6 +923,7 @@ Response `200`:
     investerings: Record<string, number>,
     finansierings: Record<string, number>,
     total_cash_flow: number,
+    unclassified_accounts: string[],
     reconciliation: Record<string, number | boolean>
   },
   meta: {
@@ -945,6 +955,7 @@ Example response `200`:
       "total": -50000
     },
     "total_cash_flow": 117000,
+    "unclassified_accounts": [],
     "reconciliation": {
       "is_reconciled": true,
       "mismatch_amount": 0
@@ -1045,18 +1056,22 @@ Example response `200`:
 **Income statement broken down by month for a fiscal period.**
 `scope:reports:read · risk:low · idempotent`
 
-Returns revenue + expenses + net result per calendar month inside the fiscal period. The sum across all months equals the period's full income-statement totals.
+Returns revenue + expenses + net result per calendar month inside the fiscal period. The sum across all months equals the period's full income-statement totals. Optional `dim_no` + `dim_code` keep only the lines tagged with one dimension value (the answer then carries `dimension_filter` and `partial_view`).
 
 **Use when:** Building a trend chart, computing rolling KPIs, or producing a månadsrapport for management.
 **Do not use for:** Single-month snapshot only (call /reports/income-statement with a month-sized period). Cash flow analysis (a dedicated cash-flow report is not yet on v1).
 
 **Pitfalls:**
 - `period_id` is required.
+- With `dim_no` + `dim_code` (always together) the months cover only the tagged lines: they sum to the filtered income statement, not the company's.
+- A query parameter it does not document is not applied: the answer names it in the X-Ignored-Query-Params header.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
 | `companyId` | path | `string` | yes |  |
 | `period_id` | query | `string` | yes | Fiscal period id (from GET /fiscal-periods). Required. |
+| `dim_no` | query | `string` | no | SIE dimension number to filter on: "1" kostnadsställe, "6" projekt, 20+ custom. Send with dim_code. |
+| `dim_code` | query | `string` | no | The dimension value code, e.g. "P001". Send with dim_no. |
 
 Response `200`:
 ```ts
@@ -1467,6 +1482,7 @@ Returns the per-account opening balance + period debit/credit + closing balance 
 - `period_id` is required as a query parameter.
 - `isBalanced=false` means the period has unbalanced postings: a data-integrity red flag. The lib generator rounds at the source so a true imbalance is rare; investigate immediately.
 - Closed/locked periods are still queryable: the report is read-only.
+- No dimension filter: the saldobalans is company-wide, so dim_no/dim_code answer 400 VALIDATION_ERROR rather than an unfiltered report. For one project or cost centre use /reports/income-statement or /reports/general-ledger with dim_no + dim_code.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -1532,7 +1548,8 @@ Returns per-employee semesterlöneskuld balances as of year-end based on their v
 **Do not use for:** Real-time accrual posting (handled per salary run). Vacation request management (not in scope for v1).
 
 **Pitfalls:**
-- `year` is required.
+- `year` is required. The report is as of December 31 of that year.
+- Amounts specify what is booked on 2920/2940: the latest closed vacation year's computed liability plus every accrual booked after its year end (before any close: the cutover opening liability plus every accrual booked so far). Day columns describe the vacation year containing December 31 under the company's vacation-year basis.
 - Employees with vacation_rule = none or semesterersattning are excluded: they have no semesterlöneskuld liability.
 - advanceVacationDebt (per row and in totals) is the förskottsskuld loaded as a cutover opening balance (SemL 29 a §): a receivable on the employee. totalLiability stays the booked 2920 + 2940 liability and is what bokslut and reconciliation use; netLiability subtracts the förskottsskuld for information only.
 
