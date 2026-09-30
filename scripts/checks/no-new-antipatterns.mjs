@@ -782,18 +782,21 @@ const PINNED_DEPS = [
   },
   {
     name: 'nodemailer',
-    version: '9.1.1',
+    version: '10.0.13',
     reason:
-      'SMTP mailer for self-hosts (extensions/general/email/lib/smtp-service.ts). Zero-dependency MIT-0 ' +
-      'package on the outbound-mail path; bumps are deliberate, reviewed PRs (audit surface), never silent.',
+      'SMTP mailer for self-hosts (extensions/general/email/lib/smtp-service.ts), and the addressparser ' +
+      'mailparser uses on inbound mail. Zero-dependency MIT-0 package; 10.x requires Node >= 20. Bumps are ' +
+      'deliberate, reviewed PRs (audit surface), never silent (#3298).',
   },
   {
     name: 'mailparser',
-    version: '3.9.20',
+    version: '3.9.32',
     reason:
-      'Inbound-mail parser (extensions/general/invoice-inbox). 3.9.20 is the last release that depends on ' +
-      'nodemailer 9.x; 3.9.21+ pull nodemailer 10 as a second nested copy, which this guard cannot see ' +
-      '(it checks the top-level nodemailer only). Bump both pins together, on purpose (#2490).',
+      'Inbound-mail parser (extensions/general/invoice-inbox). Each mailparser release depends on an EXACT ' +
+      'nodemailer version; 3.9.32 depends on exactly nodemailer 10.0.13, so its nested copy dedupes with the ' +
+      'top-level pin. This guard checks the top-level nodemailer only, so a future mailparser bump must move ' +
+      'the nodemailer pin in the same PR, or a second nested copy appears. Bump both pins together, on ' +
+      'purpose (#2490, #3298).',
   },
 ]
 
