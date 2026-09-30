@@ -4551,6 +4551,7 @@ const BANK_FILE_FORMAT_IDS = [
   'skandia',
   'lunar',
   'northmill',
+  'avanza',
   'wise',
   'wise_statement',
   'generic_csv',
