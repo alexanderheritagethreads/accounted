@@ -124,7 +124,7 @@ import {
   getArticleVatRateAdoptionSet,
   type InvoiceVatWarning,
 } from '@/lib/invoices/vat-rules'
-import { validateDeductionLines } from '@/lib/invoices/rot-rut-rules'
+import { DEDUCTION_TYPES, isDeductionType, validateDeductionLines, type DeductionType } from '@/lib/invoices/rot-rut-rules'
 import { computeLineNet } from '@/lib/invoices/line-amounts'
 import { resolveSupplierInvoiceExchangeRate } from '@/lib/currency/supplier-invoice-rate'
 import { getBranding } from '@/lib/branding/service'
@@ -491,10 +491,11 @@ type StagedInvoiceLineInput = {
   vat_rate?: number
   article_id?: string
   revenue_account?: string | null
-  // ROT/RUT claim fields (CreateInvoiceItemSchema parity). The housing
-  // columns are property identifiers, never the personnummer: the stored
-  // personnummer exists only as ciphertext and never crosses the MCP surface.
-  deduction_type?: 'rot' | 'rut' | null
+  // Deduction claim fields (CreateInvoiceItemSchema parity: ROT, RUT, grön
+  // teknik). The housing columns are property identifiers, never the
+  // personnummer: the stored personnummer exists only as ciphertext and
+  // never crosses the MCP surface.
+  deduction_type?: DeductionType | null
   labor_hours?: number | null
   work_type?: string | null
   housing_designation?: string | null
@@ -8454,7 +8455,7 @@ export const tools: McpTool[] = [
         revenue_account: { type: 'string', description: 'Optional BAS class-3 revenue account (e.g. 3041). Omit to derive from VAT.' },
         cost_price: { type: 'number', description: 'Optional cost price (margin only; never booked).' },
         ean: { type: 'string', description: 'Barcode / EAN.' },
-        housework_type: { type: 'string', description: 'ROT/RUT flag for service articles: a Skatteverket arbetstypskod (ROT: BYGG, EL, GLAS_PLAT, MARK_DRAN, MURNING, MALNING, VVS; RUT: STAD, KLAD, SNOSKOTTNING, TRADGARD, BARNPASS, PERSONLIG_OMS, FLYTT, IT, REPARATION, MOBLERING, TILLSYN, TRANSPORT, TVATT) or the bare kind ROT / RUT. Picking the article on an invoice line pre-fills the skattereduktion (and the arbetstyp when a code is given). Any other value is rejected.' },
+        housework_type: { type: 'string', description: 'Skattereduktion flag: a Skatteverket arbetstypskod (ROT: BYGG, EL, GLAS_PLAT, MARK_DRAN, MURNING, MALNING, VVS; RUT: STAD, KLAD, SNOSKOTTNING, TRADGARD, BARNPASS, PERSONLIG_OMS, FLYTT, IT, REPARATION, MOBLERING, TILLSYN, TRANSPORT, TVATT; grön teknik, goods too: INSTALLATION_SOLCELLER, INSTALLATION_LAGRING, INSTALLATION_LADDPUNKT) or bare ROT / RUT. Pre-fills the line deduction (and arbetstyp for a code); other values are rejected.' },
         name_en: { type: 'string', description: 'English name for English-language invoices.' },
         notes: { type: 'string' },
         article_number: { type: 'string', description: 'Optional manual number; omit to auto-generate.' },
@@ -8748,7 +8749,7 @@ export const tools: McpTool[] = [
               vat_amount: { type: 'number' },
               article_id: { type: ['string', 'null'] },
               revenue_account: { type: ['string', 'null'], description: 'Posting-account override; null books by VAT treatment' },
-              deduction_type: { type: ['string', 'null'], description: 'rot, rut or null' },
+              deduction_type: { type: ['string', 'null'], description: 'rot, rut, gron_teknik or null' },
               labor_hours: { type: ['number', 'null'] },
               work_type: { type: ['string', 'null'] },
               housing_designation: { type: ['string', 'null'], description: 'Fastighetsbeteckning (ROT); property id, not personal data' },
@@ -19732,6 +19733,7 @@ export const tools: McpTool[] = [
         file_name: { type: ['string', 'null'] },
         xml: { type: ['string', 'null'], description: 'File content: save as UTF-8 .xml and upload on skatteverket.se' },
         requested_total: { type: 'number' },
+        other_type_counts: { type: 'object', description: 'Grön teknik invoices, counted not listed' },
         arenden: { type: 'array', items: { type: 'object' } },
         warnings: { type: 'array', items: { type: 'string' } },
         upload_url: { type: 'string' },
@@ -19746,7 +19748,13 @@ export const tools: McpTool[] = [
     },
     async execute(args, companyId, userId, supabase) {
       const type = args.deduction_type as 'rot' | 'rut'
-      if (type !== 'rot' && type !== 'rut') throw new Error('deduction_type must be rot or rut')
+      if (type !== 'rot' && type !== 'rut') {
+        throw new Error(
+          args.deduction_type === 'gron_teknik'
+            ? 'deduction_type must be rot or rut: grön teknik has no begäran file yet. The payout is requested in Skatteverket\'s e-tjänst for grön teknik; the invoice page shows what to enter.'
+            : 'deduction_type must be rot or rut',
+        )
+      }
       const uploadUrl = 'https://www7.skatteverket.se/portal/rotrut/begar-utbetalning/fil'
 
       const candidates = await listRotRutCandidates(supabase, companyId, type)
@@ -19762,6 +19770,7 @@ export const tools: McpTool[] = [
           file_name: null,
           xml: null,
           requested_total: candidates.eligible.reduce((sum, e) => sum + e.begart_belopp, 0),
+          other_type_counts: candidates.other_type_counts,
           warnings: [],
           upload_url: uploadUrl,
         }
@@ -19780,6 +19789,7 @@ export const tools: McpTool[] = [
           file_name: null,
           xml: null,
           requested_total: 0,
+          other_type_counts: candidates.other_type_counts,
           warnings: ['Inga fakturor är redo att begäras. Se blocked för orsaker per faktura.'],
           upload_url: uploadUrl,
         }
@@ -19812,6 +19822,7 @@ export const tools: McpTool[] = [
         xml: result.file.xml,
         requested_total: result.file.requested_total,
         arenden: result.file.arenden,
+        other_type_counts: candidates.other_type_counts,
         warnings: result.file.warnings,
         upload_url: uploadUrl,
       }
@@ -19828,7 +19839,7 @@ export const tools: McpTool[] = [
       type: 'object',
       additionalProperties: false,
       properties: {
-        deduction_type: { type: 'string', enum: ['rot', 'rut'] },
+        deduction_type: { type: 'string', enum: [...DEDUCTION_TYPES] },
         status: {
           type: 'string',
           enum: ['generated', 'submitted', 'paid', 'partially_paid', 'rejected', 'cancelled'],
@@ -19846,7 +19857,7 @@ export const tools: McpTool[] = [
       properties: {
         request_id: { type: 'string' },
         name: { type: 'string', description: 'NamnPaBegaran as shown in Skatteverkets e-tjänst' },
-        deduction_type: { type: 'string', enum: ['rot', 'rut'] },
+        deduction_type: { type: 'string', enum: [...DEDUCTION_TYPES] },
         status: { type: 'string' },
         requested_total: { type: 'number' },
         decided_total: { type: ['number', 'null'], description: 'Godkänt belopp per Skatteverkets beslut; null until recorded' },
@@ -19894,7 +19905,7 @@ export const tools: McpTool[] = [
           { count: 'exact' },
         )
         .eq('company_id', companyId)
-      if (deductionType === 'rot' || deductionType === 'rut') query = query.eq('deduction_type', deductionType)
+      if (isDeductionType(deductionType)) query = query.eq('deduction_type', deductionType)
       if (status) query = query.eq('status', status)
       if (openOnly) {
         query = query.in('status', [...OPEN_ROT_RUT_PAYOUT_STATUSES]).is('settlement_journal_entry_id', null)
@@ -19909,7 +19920,7 @@ export const tools: McpTool[] = [
       type Row = {
         id: string
         name: string
-        deduction_type: 'rot' | 'rut'
+        deduction_type: DeductionType
         status: string
         requested_total: number | string
         decided_total: number | string | null
@@ -21629,10 +21640,10 @@ export const tools: McpTool[] = [
                 type: ['string', 'null'],
                 description: 'BAS class 1-3 posting override; null books by VAT treatment. Pass back to keep.',
               },
-              deduction_type: { type: ['string', 'null'], description: 'rot or rut; pass back to keep the avdrag.' },
+              deduction_type: { type: ['string', 'null'], description: 'rot, rut or gron_teknik; pass back to keep it.' },
               labor_hours: { type: ['number', 'null'] },
               work_type: { type: ['string', 'null'], description: 'Skatteverket arbetstypskod for the deduction line.' },
-              housing_designation: { type: ['string', 'null'], description: 'Fastighetsbeteckning; required on ROT lines.' },
+              housing_designation: { type: ['string', 'null'], description: 'Fastighetsbeteckning; required on rot and gron_teknik lines.' },
               apartment_number: { type: ['string', 'null'] },
               brf_org_number: { type: ['string', 'null'] },
               accrual_period_start: { type: ['string', 'null'], description: 'YYYY-MM-DD; with accrual_period_end defers the revenue. Pass back to keep.' },
@@ -21825,7 +21836,7 @@ export const tools: McpTool[] = [
           if (claimErrors.length > 0) {
             throw codedRefusal(
               'INVOICE_CREATE_ROT_RUT_VALIDATION',
-              `ROT/RUT: ${claimErrors.join(' ')} Read the current lines with gnubok_get_invoice and pass the deduction fields back.`,
+              `Skattereduktion: ${claimErrors.join(' ')} Read the current lines with gnubok_get_invoice and pass the deduction fields back.`,
             )
           }
           // Commit derives the invoice-level property info from the FIRST
@@ -21834,10 +21845,15 @@ export const tools: McpTool[] = [
           const housingProvided =
             Boolean(firstDeduction.housing_designation?.trim()) ||
             (Boolean(firstDeduction.apartment_number?.trim()) && Boolean(firstDeduction.brf_org_number?.trim()))
-          if (deductionLines.some((item) => item.deduction_type === 'rot') && !housingProvided) {
+          // ROT and grön teknik both name the property (Skatteverket); RUT
+          // does not.
+          if (
+            deductionLines.some((item) => item.deduction_type === 'rot' || item.deduction_type === 'gron_teknik') &&
+            !housingProvided
+          ) {
             throw codedRefusal(
               'INVOICE_CREATE_ROT_RUT_VALIDATION',
-              'ROT lines need housing_designation (fastighetsbeteckning), or apartment_number + brf_org_number, on the first deduction line. ' +
+              'ROT and grön teknik lines need housing_designation (fastighetsbeteckning), or apartment_number + brf_org_number, on the first deduction line. ' +
               'gnubok_get_invoice returns them; pass them back or the update will fail at approval.',
             )
           }
@@ -21850,7 +21866,7 @@ export const tools: McpTool[] = [
           if (!personnummerAvailable) {
             throw codedRefusal(
               'INVOICE_CREATE_ROT_RUT_VALIDATION',
-              'ROT/RUT lines need a personnummer, which cannot be passed through MCP. ' +
+              'Deduction lines (ROT, RUT, grön teknik) need a personnummer, which cannot be passed through MCP. ' +
               'Add it on the invoice in the web UI or on the customer card first, then retry.',
             )
           }
