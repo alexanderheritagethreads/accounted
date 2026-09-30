@@ -146,6 +146,26 @@ describe('computeDeduction: grön teknik on arbete och material incl. moms', () 
   })
 })
 
+describe("Skatteverket's worked example (Sol AB, solceller)", () => {
+  // "Så fungerar skattereduktionen för grön teknik" (företag, checked
+  // 2026-10-01): arbetskostnad 20 000, materialkostnad 174 000 and övriga
+  // kostnader 6 000 kr, all incl. 25 % moms, total 200 000 kr of which moms
+  // 40 000. Skattereduktion 15 % of arbete och material incl. moms: 29 100;
+  // the customer pays 170 900.
+  it('gives a 29 100 kr reduction and 170 900 kr to pay', () => {
+    const lines: ItemForDeduction[] = [
+      solar({ unit_price: 16000 }),
+      solar({ unit_price: 139200 }),
+      { unit_price: 4800, quantity: 1, vat_rate: 25, deduction_type: null },
+    ]
+    const totalInclVat = lines.reduce((sum, line) => sum + line.unit_price * line.quantity * 1.25, 0)
+    const reduction = computeInvoiceDeductionTotal(lines)
+    expect(totalInclVat).toBe(200000)
+    expect(reduction).toBe(29100)
+    expect(totalInclVat - reduction).toBe(170900)
+  })
+})
+
 describe('computeDeductionTotalsByKind', () => {
   it('keeps the ROT/RUT shape when no grön teknik line exists', () => {
     expect(computeDeductionTotalsByKind([{ unit_price: 10000, quantity: 1, deduction_type: 'rot' }])).toStrictEqual({
