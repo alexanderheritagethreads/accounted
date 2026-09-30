@@ -318,8 +318,9 @@ export function deductionTypeForWorkType(code: string | null | undefined): Deduc
 
 /** Human label for a Skatteverket work-type code, or null for unknown codes. */
 export function workTypeLabel(code: string | null | undefined): string | null {
-  if (!code) return null
-  const hit = [...ROT_WORK_TYPES, ...RUT_WORK_TYPES, ...GRON_TEKNIK_WORK_TYPES].find((w) => w.code === code)
+  const trimmed = code?.trim()
+  if (!trimmed) return null
+  const hit = [...ROT_WORK_TYPES, ...RUT_WORK_TYPES, ...GRON_TEKNIK_WORK_TYPES].find((w) => w.code === trimmed)
   return hit ? hit.label : null
 }
 
@@ -556,7 +557,7 @@ export const DEDUCTION_LINE_ERRORS = {
   gronTeknikWorkTypeMismatch:
     'Typen av installation hör inte till grön teknik: välj solceller, lagring av egenproducerad elenergi eller laddningspunkt till elfordon.',
   gronTeknikHoursMissing:
-    'Antal arbetstimmar krävs på minst en rad per typ av installation (grön teknik). Materialrader kan lämnas utan timmar.',
+    'Antal arbetstimmar krävs på minst en rad per typ av installation (grön teknik). Materialrader kan lämnas utan timmar. Säljs bara material ges ingen skattereduktion: ta bort grön teknik från raden.',
   gronTeknikMixed:
     'Grön teknik kan inte kombineras med ROT- eller RUT-rader på samma faktura: Skatteverket prövar dem i olika e-tjänster och ger inte båda för samma arbete. Dela upp i separata fakturor.',
 } as const
@@ -767,12 +768,20 @@ export function deductionCapWarnings(
   const rotSek = toSek ? toSek(totals.rot) : null
   const rutSek = toSek ? toSek(totals.rut) : null
 
-  // `subject` is the kind's DEDUCTION_TYPE_LABELS.capSubject, so the ROT and
-  // RUT sentences read exactly as they always have.
-  const pushCapWarning = (subject: string, amount: number, amountSek: number | null, prior: number, max: number): void => {
+  // `subject` is the kind's DEDUCTION_TYPE_LABELS.capSubject and `wording`
+  // defaults to the ROT/RUT one, so the ROT and RUT sentences read exactly as
+  // they always have.
+  const pushCapWarning = (
+    subject: string,
+    amount: number,
+    amountSek: number | null,
+    prior: number,
+    max: number,
+    wording: CapWording = HUS_CAP_WORDING,
+  ): void => {
     if (amount <= 0) return
     const maxText = maxTextOf(max)
-    const priorText = prior > 0 ? ` plus tidigare avdrag i år (${svAmount(prior)} kr)` : ''
+    const priorText = prior > 0 ? ` plus ${wording.prior} (${svAmount(prior)} kr)` : ''
 
     if (amountSek === null) {
       // No booking rate: we cannot know whether the ceiling is breached.
@@ -787,8 +796,11 @@ export function deductionCapWarnings(
     const figure = currencyLabel === 'SEK'
       ? `${svAmount(amount)} kr`
       : `${svAmount(amount)} ${currencyLabel} = ${svAmount(amountSek)} kr`
+    // Over the ceiling on its own: no remaining headroom can absorb it, so
+    // "check your headroom" would be the wrong advice.
+    const kindAdvice = amountSek > max && wording.overOnItsOwn ? wording.overOnItsOwn : advice
     warnings.push(
-      `${subject} på denna faktura (${figure})${priorText} överstiger årsmaximum ${maxText}. ` + advice,
+      `${subject} på denna faktura (${figure})${priorText} överstiger årsmaximum ${maxText}. ` + kindAdvice,
     )
   }
 
@@ -824,7 +836,30 @@ export function deductionCapWarnings(
     toSek ? toSek(gronTeknik) : null,
     priorGronTeknik,
     GRON_TEKNIK_MAX,
+    GRON_TEKNIK_CAP_WORDING,
   )
 
   return warnings
+}
+
+/** The words a ceiling warning uses for what came before and what to do. */
+interface CapWording {
+  /** What the prior amount is: 'tidigare avdrag i år'. */
+  prior: string
+  /** Advice when this invoice alone is above the ceiling; null keeps the general advice. */
+  overOnItsOwn: string | null
+}
+
+const HUS_CAP_WORDING: CapWording = { prior: 'tidigare avdrag i år', overOnItsOwn: null }
+
+/**
+ * Grön teknik speaks of skattereduktion, not avdrag. A single installation
+ * above the ceiling (a battery at 50 % reaches it at 100 000 kr incl. moms) is
+ * common, and Skatteverkets e-tjänst refuses a Begärt belopp above the limit,
+ * so the part above it is the customer's to pay.
+ */
+const GRON_TEKNIK_CAP_WORDING: CapWording = {
+  prior: 'tidigare skattereduktion för grön teknik i år',
+  overOnItsOwn:
+    'Skatteverket betalar inte ut mer än så per person och år, så den del som överstiger det får kunden betala.',
 }

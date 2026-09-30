@@ -173,6 +173,35 @@ describe('invoice PDF: grön teknik', () => {
     expect(text).not.toContain('Endast arbetskostnad har inkluderats')
   })
 
+  it('says the seller requests the payout, never the buyer (fakturamodellen)', () => {
+    const text = render(gronInvoice(), gronItems())
+    expect(text).toContain('Säljaren begär utbetalningen från Skatteverket när köparen har betalat sin del')
+    expect(text).not.toContain('Köparen ansöker')
+    expect(render(gronInvoice(), gronItems(), 'en')).toContain('The seller requests the payout from Skatteverket')
+  })
+
+  it('separates the cost per installation type when there are several', () => {
+    const items = [
+      ...gronItems(),
+      item({
+        id: 'item-battery',
+        sort_order: 3,
+        description: 'Batterilager',
+        unit_price: 40000,
+        line_total: 40000,
+        vat_amount: 10000,
+        deduction_amount: 25000,
+        labor_hours: 8,
+        work_type: 'INSTALLATION_LAGRING',
+      }),
+    ]
+    const text = render(gronInvoice({ deduction_total: 40000 }), items)
+    expect(text).toMatch(/Installation av solceller: 100\s000,00 SEK inkl\. moms/)
+    expect(text).toMatch(/Installation av system för lagring av egenproducerad elenergi: 50\s000,00 SEK inkl\. moms/)
+    // One installation type keeps the single sum.
+    expect(render(gronInvoice(), gronItems())).not.toMatch(/Installation av solceller: 100/)
+  })
+
   it('prints the förening orgnr with the lägenhetsnummer for a bostadsrätt', () => {
     const items = gronItems().map((i) =>
       i.deduction_type ? { ...i, housing_designation: null, apartment_number: '1201', brf_org_number: '799900-0040' } : i,
@@ -180,7 +209,7 @@ describe('invoice PDF: grön teknik', () => {
     const text = render(gronInvoice(), items)
     expect(text).toContain('Lägenhetsnummer:')
     expect(text).toContain('1201')
-    expect(text).toContain('Bostadsrättsförening:')
+    expect(text).toContain('Bostadsrättsföreningens org.nr:')
     expect(text).toContain('799900-0040')
   })
 
@@ -188,7 +217,7 @@ describe('invoice PDF: grön teknik', () => {
     const text = render(gronInvoice(), gronItems(), 'en')
     expect(text).toContain('Total incl. VAT:')
     expect(text).toContain('Green technology tax reduction:')
-    expect(text).toContain('Labour and material:')
+    expect(text).toContain('Labor and material:')
     expect(text).toContain('Green technology, Installation av solceller: Montage solceller')
   })
 
@@ -199,7 +228,7 @@ describe('invoice PDF: grön teknik', () => {
     const text = render(gronInvoice({ deduction_total: 7500, subtotal: 20000, vat_amount: 5000, total: 25000 }), rotItems)
     expect(text).toContain('Skattereduktion ROT/RUT:')
     expect(text).not.toContain('Totalt inkl. moms:')
-    expect(text).not.toContain('Bostadsrättsförening:')
+    expect(text).not.toContain('Bostadsrättsföreningens org.nr:')
     expect(text).not.toContain('Arbete och material:')
     expect(text).toContain('Endast arbetskostnad har inkluderats')
     expect(text).toContain('ROT, EL: Montage solceller')

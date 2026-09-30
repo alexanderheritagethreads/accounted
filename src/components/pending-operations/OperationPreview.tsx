@@ -239,7 +239,7 @@ function InvoiceLineRows({ items, currency }: { items: PreviewInvoiceLine[]; cur
             {item.deduction_type && (
               <span className="text-muted-foreground">
                 {' · '}
-                {isDeductionType(item.deduction_type) ? DEDUCTION_TYPE_LABELS[item.deduction_type].ledger : 'RUT-avdrag'}
+                {isDeductionType(item.deduction_type) ? DEDUCTION_TYPE_LABELS[item.deduction_type].ledger : 'skattereduktion'}
               </span>
             )}
             {item.accrual_period_start && item.accrual_period_end && (

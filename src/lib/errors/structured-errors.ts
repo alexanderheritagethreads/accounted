@@ -2135,8 +2135,8 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
   },
   SALES_ORDER_SOURCE_UNSUPPORTED_LINES: {
     httpStatus: 400,
-    message_sv: 'Underlaget innehåller rader som inte kan föras över till en kundorder (ROT/RUT-avdrag, periodisering eller negativt antal). Skapa kundordern manuellt.',
-    message_en: 'The source document has lines that cannot be carried into a sales order (ROT/RUT deduction, accrual period or negative quantity). Create the sales order manually.',
+    message_sv: 'Underlaget innehåller rader som inte kan föras över till en kundorder (skattereduktion som ROT, RUT eller grön teknik, periodisering eller negativt antal). Skapa kundordern manuellt.',
+    message_en: 'The source document has lines that cannot be carried into a sales order (a tax reduction such as ROT, RUT or green technology, an accrual period or a negative quantity). Create the sales order manually.',
   },
   SALES_ORDER_CUSTOMER_VAT_CHANGED: {
     httpStatus: 409,

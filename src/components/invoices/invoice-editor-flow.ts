@@ -1,5 +1,6 @@
 import { addDays, differenceInCalendarDays, format, isValid, parseISO } from 'date-fns'
 import { foldText } from '@/lib/bookkeeping/account-search'
+import { gronTeknikWorkType } from '@/lib/invoices/rot-rut-rules'
 
 /**
  * Pure derivations behind the invoice editor's snabbflöde shell:
@@ -88,6 +89,26 @@ export function deriveRequiresHousing(input: {
  * customer -> dates -> first incomplete line -> payment link -> ROT/RUT claim
  * fields -> self-billed extras -> ready.
  */
+/**
+ * The installation type a row starts with when it is flagged grön teknik: the
+ * one the invoice's other grön teknik rows already carry (the first valid
+ * one), so an installer picks "solceller" once per invoice instead of on
+ * every labour and material row. Null when no other row has one: the user
+ * chooses.
+ */
+export function defaultGronTeknikWorkType(
+  items: ReadonlyArray<{ deduction_type?: string | null; work_type?: string | null } | undefined>,
+  index: number,
+): string | null {
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]
+    if (i === index || item?.deduction_type !== 'gron_teknik') continue
+    const type = gronTeknikWorkType(item.work_type)
+    if (type) return type.code
+  }
+  return null
+}
+
 export function deriveNextStep(input: NextStepInput): NextStep {
   if (!input.customerSelected) return { kind: 'customer' }
   if (!input.invoiceDate) return { kind: 'invoice_date' }

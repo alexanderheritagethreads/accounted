@@ -19736,7 +19736,7 @@ export const tools: McpTool[] = [
       if (type !== 'rot' && type !== 'rut') {
         throw new Error(
           args.deduction_type === 'gron_teknik'
-            ? 'deduction_type must be rot or rut: grön teknik has no begäran file yet. The payout is requested in Skatteverkets e-tjänst Grön teknik: företag; the invoice page shows what to enter.'
+            ? 'deduction_type must be rot or rut: grön teknik has no begäran file yet. The payout is requested in Skatteverket\'s e-tjänst for grön teknik; the invoice page shows what to enter.'
             : 'deduction_type must be rot or rut',
         )
       }

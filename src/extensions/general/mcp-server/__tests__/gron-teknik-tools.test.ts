@@ -156,7 +156,7 @@ describe('gnubok_generate_rot_rut_file stays a ROT/RUT (HUS) file', () => {
     const { supabase } = createQueuedMockSupabase()
     await expect(
       tool('gnubok_generate_rot_rut_file').execute({ deduction_type: 'gron_teknik' }, 'company-1', 'user-1', supabase as never),
-    ).rejects.toThrow(/Grön teknik: företag/)
+    ).rejects.toThrow(/e-tjänst for grön teknik/)
     expect(supabase.from).not.toHaveBeenCalled()
   })
 

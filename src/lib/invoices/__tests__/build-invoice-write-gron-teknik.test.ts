@@ -134,6 +134,13 @@ describe('buildInvoiceWriteData: grön teknik', () => {
     })
   })
 
+  it('stores the installation type trimmed, as the rate and the claim read it', async () => {
+    const result = await build({ items: [{ ...labour, work_type: '  INSTALLATION_SOLCELLER ' }] })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.items[0]).toMatchObject({ work_type: 'INSTALLATION_SOLCELLER', deduction_amount: 3375 })
+  })
+
   it('never books a deduction on a quote, even when a line says grön teknik', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
     enqueue({ data: { vat_registered: true }, error: null })

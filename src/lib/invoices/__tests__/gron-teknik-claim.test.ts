@@ -145,6 +145,31 @@ describe('evaluateGronTeknikClaim', () => {
     expect(result.value.installations[0]).toMatchObject({ kostnad: 10004, begart_belopp: 1500, betalt_belopp: 8504 })
   })
 
+  it('never requests more than the rate of the whole-krona kostnad', () => {
+    // 33 333.49 kr incl. moms at 15 % books 5 000.02 on 1513, but the ärende
+    // states kostnad 33 333, and 15 % of that is 4 999.95.
+    const items = [line({ unit_price: 26666.79, line_total: 26666.79, vat_amount: 6666.7, deduction_amount: 5000.02 })]
+    const result = evaluateGronTeknikClaim(gronInvoice({ deduction_total: 5000.02 }, items), { today: TODAY })
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.installations[0]).toMatchObject({ kostnad: 33333, begart_belopp: 4999, betalt_belopp: 28334 })
+    expect(result.value.begart_belopp).toBe(4999)
+  })
+
+  it('says the e-tjänst refuses a request above the ceiling, not that Skatteverket grants less', () => {
+    const over = evaluateGronTeknikClaim(
+      gronInvoice({ deduction_total: 60000 }, [
+        line({ work_type: 'INSTALLATION_LAGRING', unit_price: 96000, line_total: 96000, vat_amount: 24000, deduction_amount: 60000 }),
+      ]),
+      { today: TODAY },
+    )
+    expect(over.ok).toBe(true)
+    if (!over.ok) return
+    expect(over.value.warnings[0]).toContain('e-tjänsten tar inte emot')
+    expect(over.value.warnings[0]).not.toContain('beviljar')
+  })
+
   it('reads a bostadsrätt as lägenhetsnummer plus the förening orgnr', () => {
     const items = solarItems().map((i) =>
       i.deduction_type ? { ...i, housing_designation: null, apartment_number: '1201', brf_org_number: '799900-0040' } : i,

@@ -171,15 +171,18 @@ describe('deductionCapWarnings: the grön teknik ceiling is its own', () => {
   it('warns above 50 000 kr and not at exactly 50 000 kr', () => {
     expect(deductionCapWarnings({ rot: 0, rut: 0, gron_teknik: 50000 })).toEqual([])
     const warnings = deductionCapWarnings({ rot: 0, rut: 0, gron_teknik: 50000.01 })
+    // Above the ceiling on its own: no remaining headroom can absorb it, so
+    // the advice names the consequence instead of "check your headroom".
     expect(warnings).toEqual([
       `${subject} på denna faktura (${sv(50000.01)} kr) överstiger årsmaximum ${GRON_TEKNIK_MAX.toLocaleString('sv-SE')} kr. ` +
-        'Kunden behöver kontrollera sitt återstående utrymme själv.',
+        'Skatteverket betalar inte ut mer än så per person och år, så den del som överstiger det får kunden betala.',
     ])
   })
 
   it('adds prior grön teknik of the year, and only grön teknik', () => {
     expect(deductionCapWarnings({ rot: 0, rut: 0, gron_teknik: 20000 }, undefined, { rot: 0, rut: 0, gron_teknik: 35000 })).toEqual([
-      expect.stringContaining(`plus tidigare avdrag i år (${sv(35000)} kr)`),
+      `${subject} på denna faktura (${sv(20000)} kr) plus tidigare skattereduktion för grön teknik i år (${sv(35000)} kr) ` +
+        `överstiger årsmaximum ${GRON_TEKNIK_MAX.toLocaleString('sv-SE')} kr. Kunden behöver kontrollera sitt återstående utrymme själv.`,
     ])
     // Prior ROT/RUT does not eat into the grön teknik headroom.
     expect(deductionCapWarnings({ rot: 0, rut: 0, gron_teknik: 45000 }, undefined, { rot: 50000, rut: 25000 })).toEqual([])

@@ -46,10 +46,14 @@ import {
  *   - kostnad: the flagged lines of the type incl. moms, to the nearest krona
  *     (the same rule as PrisForArbete in the HUS file).
  *   - begart_belopp: the deduction the invoice credited for the type (the
- *     1513 debit), truncated to whole kronor: never ask for more than the
- *     invoice booked, and the only direction that cannot breach "Begärt
- *     belopp får inte vara större än Betalt belopp". The öre remainder clears
- *     against 3740 when the payout is settled, as for ROT/RUT.
+ *     1513 debit), truncated to whole kronor, and never above the type's
+ *     rate of the whole-krona kostnad: never ask for more than the invoice
+ *     booked, the only direction that cannot breach "Begärt belopp får inte
+ *     vara större än Betalt belopp", and never more than the rate allows on
+ *     the kostnad the begäran states (33 333.49 kr incl. moms at 15 % books
+ *     5 000.02, but the ärende states kostnad 33 333, so 4 999 is the most it
+ *     can ask). The remainder clears against 3740 when the payout is settled,
+ *     as for ROT/RUT.
  *   - betalt_belopp: kostnad - begart_belopp, what the buyer paid for the
  *     installation (Skatteverket's example: 50 000 SOLCELLER, 7 500 begärt,
  *     42 500 betalt).
@@ -207,7 +211,8 @@ export function evaluateGronTeknikClaim(
     const typeLines = linesByType.get(def.code)
     if (!typeLines) continue
     const kostnad = Math.round(typeLines.reduce((sum, l) => sum + sekLineTotalInclVat(l, toSek), 0))
-    const begart = truncateToWholeKronor(typeLines.reduce((sum, l) => sum + toSek(l.deduction_amount ?? 0), 0))
+    const booked = truncateToWholeKronor(typeLines.reduce((sum, l) => sum + toSek(l.deduction_amount ?? 0), 0))
+    const begart = Math.min(booked, truncateToWholeKronor(def.percent * kostnad))
     const betalt = kostnad - begart
     if (begart > betalt) {
       return block(
@@ -240,10 +245,13 @@ export function evaluateGronTeknikClaim(
   )
 
   const warnings: string[] = []
+  // The e-tjänst refuses the request itself ("Begärt belopp får inte
+  // överstiga gränsen för skattereduktion"), so this is not a matter of
+  // Skatteverket granting less.
   if (begartTotal > GRON_TEKNIK_MAX) {
     warnings.push(
-      `Begärt belopp (${begartTotal} kr) överstiger årsmaximum ${GRON_TEKNIK_MAX.toLocaleString('sv-SE')} kr per person: ` +
-        'Skatteverket beviljar inte mer än köparens återstående utrymme.',
+      `Begärt belopp (${begartTotal} kr) överstiger årsmaximum ${GRON_TEKNIK_MAX.toLocaleString('sv-SE')} kr per person och år för grön teknik, ` +
+        'och e-tjänsten tar inte emot ett begärt belopp över gränsen. Begär högst köparens återstående utrymme; den överskjutande delen får kunden betala.',
     )
   }
   if (options.today && isPastRequestDeadline(paidDate, options.today)) {

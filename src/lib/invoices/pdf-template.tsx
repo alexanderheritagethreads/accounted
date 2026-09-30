@@ -22,7 +22,7 @@ import { CUSTOM_INVOICE_FONT_RENDER_PREFIX } from '@/lib/invoices/pdf-fonts'
 import { getAmountToPay } from '@/lib/invoices/rounding'
 import { isTextLikeLine } from '@/lib/invoices/display'
 import { maskedDeductionPersonnummer } from '@/lib/invoices/deduction-personnummer'
-import { workTypeLabel } from '@/lib/invoices/rot-rut-rules'
+import { GRON_TEKNIK_WORK_TYPES, workTypeLabel } from '@/lib/invoices/rot-rut-rules'
 import { getCountryName } from '@/lib/vat/country-codes'
 import { EXPORT_NOTICE_SV } from '@/lib/invoices/vat-rules'
 import { unitLabel } from '@/lib/invoices/unit-labels'
@@ -225,11 +225,14 @@ const LABELS = {
     // (fastighetsbeteckning, or the förening's orgnr + lägenhetsnummer).
     deductionRowGronTeknik: 'Skattereduktion grön teknik:',
     totalInclVat: 'Totalt inkl. moms:',
-    deductionBrfOrgNumber: 'Bostadsrättsförening:',
+    deductionBrfOrgNumber: 'Bostadsrättsföreningens org.nr:',
     gronTeknikKind: 'Grön teknik',
     gronTeknikEligibleCost: 'Arbete och material:',
     gronTeknikOtherCost: 'Övriga kostnader:',
     inclVatSuffix: 'inkl. moms',
+    // Fakturamodellen: the seller requests the payout ("Det är du som
+    // företagare som ansöker om utbetalning", Skatteverket, grön teknik).
+    gronTeknikPayoutNotice: 'Säljaren begär utbetalningen från Skatteverket när köparen har betalat sin del (fakturamodellen).',
     toCredit: 'Att kreditera:',
     toPay: 'Att betala:',
     // A quote is not a payment request, so its grand total is a neutral sum.
@@ -318,11 +321,12 @@ const LABELS = {
     deductionNotice: 'The customer claims the deduction via fakturamodellen at Skatteverket. The seller requests payment from the agency for the portion not paid by the customer.',
     deductionRowGronTeknik: 'Green technology tax reduction:',
     totalInclVat: 'Total incl. VAT:',
-    deductionBrfOrgNumber: 'Housing cooperative:',
+    deductionBrfOrgNumber: 'Housing cooperative org. no.:',
     gronTeknikKind: 'Green technology',
-    gronTeknikEligibleCost: 'Labour and material:',
+    gronTeknikEligibleCost: 'Labor and material:',
     gronTeknikOtherCost: 'Other costs:',
     inclVatSuffix: 'incl. VAT',
+    gronTeknikPayoutNotice: 'The seller requests the payout from Skatteverket once the customer has paid their share (fakturamodellen).',
     toCredit: 'To credit:',
     toPay: 'Total due:',
     totalQuote: 'Total:',
@@ -393,9 +397,13 @@ const DEDUCTION_LABOR_ONLY_NOTICE =
 // Grön teknik counterpart, Swedish-only for the same reason. Skatteverket
 // gives the reduction "för kostnaden för arbete och material", while
 // "resor, utrustning eller projektering i samband med installationen" do not
-// qualify (Så fungerar skattereduktionen för grön teknik, företag).
+// qualify (Så fungerar skattereduktionen för grön teknik, företag). The box
+// already prints both sums ("Arbete och material", "Övriga kostnader"), so
+// the notice only states the rule, once, after the per-line breakdown and
+// joined with the payout sentence: every line here can push the payment
+// details onto a second page.
 export const GRON_TEKNIK_BASE_NOTICE =
-  'Underlaget för skattereduktion för grön teknik är kostnaden för arbete och material för installationen, inklusive moms. Övriga kostnader, till exempel resor, frakt, maskiner och projektering, ingår inte.'
+  'Skattereduktionen för grön teknik räknas på arbete och material för installationen, inklusive moms; övriga kostnader ingår inte.'
 
 // Resolved branding values used by the stylesheet. Keeping the resolved shape
 // distinct from the prop shape lets us validate the font allowlist in one
@@ -984,6 +992,22 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
   const gronTeknikEligibleCost = hasGronTeknik
     ? roundOre(billableItems.filter((item) => item.deduction_type === 'gron_teknik').reduce((sum, item) => sum + lineInclVat(item), 0))
     : 0
+  // Several installation types on one invoice: Skatteverket asks for their
+  // costs apart ("ska du särskilja kostnader för de olika
+  // installationstyperna"), one row per type in its list order.
+  const gronTeknikCostByType = hasGronTeknik
+    ? GRON_TEKNIK_WORK_TYPES.map((type) => ({
+        label: type.label,
+        amount: roundOre(
+          billableItems
+            .filter((item) => item.deduction_type === 'gron_teknik' && item.work_type?.trim() === type.code)
+            .reduce((sum, item) => sum + lineInclVat(item), 0),
+        ),
+        present: billableItems.some(
+          (item) => item.deduction_type === 'gron_teknik' && item.work_type?.trim() === type.code,
+        ),
+      })).filter((type) => type.present)
+    : []
   const gronTeknikOtherCost = hasGronTeknik
     ? roundOre(billableItems.filter((item) => !item.deduction_type).reduce((sum, item) => sum + lineInclVat(item), 0))
     : 0
@@ -1462,12 +1486,23 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
             })()}
             {hasGronTeknik && (
               <>
-                <View style={styles.deductionRow}>
-                  <Text style={styles.deductionLabel}>{L.gronTeknikEligibleCost}</Text>
-                  <Text style={styles.deductionValue}>
-                    {`${formatPdfCurrency(gronTeknikEligibleCost, invoice.currency, lang)} ${L.inclVatSuffix}`}
-                  </Text>
-                </View>
+                {gronTeknikCostByType.length > 1 ? (
+                  gronTeknikCostByType.map((type, idx) => (
+                    <View key={type.label} style={styles.deductionRow}>
+                      <Text style={styles.deductionLabel}>{idx === 0 ? L.gronTeknikEligibleCost : ''}</Text>
+                      <Text style={styles.deductionValue}>
+                        {`${type.label}: ${formatPdfCurrency(type.amount, invoice.currency, lang)} ${L.inclVatSuffix}`}
+                      </Text>
+                    </View>
+                  ))
+                ) : (
+                  <View style={styles.deductionRow}>
+                    <Text style={styles.deductionLabel}>{L.gronTeknikEligibleCost}</Text>
+                    <Text style={styles.deductionValue}>
+                      {`${formatPdfCurrency(gronTeknikEligibleCost, invoice.currency, lang)} ${L.inclVatSuffix}`}
+                    </Text>
+                  </View>
+                )}
                 <View style={styles.deductionRow}>
                   <Text style={styles.deductionLabel}>{L.gronTeknikOtherCost}</Text>
                   <Text style={styles.deductionValue}>
@@ -1477,11 +1512,11 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
               </>
             )}
             {/* What the base covers (Skatteverket fakturamodellen): labor
-                only for ROT/RUT, material invoiced separately; labor and
-                material for grön teknik, övriga kostnader excluded. */}
-            <Text style={styles.deductionNotice}>
-              {hasGronTeknik ? GRON_TEKNIK_BASE_NOTICE : DEDUCTION_LABOR_ONLY_NOTICE}
-            </Text>
+                only for ROT/RUT, material invoiced separately. Grön teknik
+                prints its base once, after the breakdown (below). */}
+            {!hasGronTeknik && (
+              <Text style={styles.deductionNotice}>{DEDUCTION_LABOR_ONLY_NOTICE}</Text>
+            )}
             {/* Per-line breakdown: one row per eligible item with kind,
                 work type if present and the deducted amount. */}
             {items
@@ -1499,7 +1534,12 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
                   </Text>
                 )
               })}
-            <Text style={styles.deductionNotice}>{L.deductionNotice}</Text>
+            {/* Grön teknik: labor and material, övriga kostnader excluded,
+                and the seller requests the payout: one notice. ROT/RUT keep
+                their own notice as it was. */}
+            <Text style={styles.deductionNotice}>
+              {hasGronTeknik ? `${GRON_TEKNIK_BASE_NOTICE} ${L.gronTeknikPayoutNotice}` : L.deductionNotice}
+            </Text>
           </View>
         )}
 

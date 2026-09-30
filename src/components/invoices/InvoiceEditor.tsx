@@ -35,6 +35,7 @@ import {
 import { VatTreatmentNotice } from '@/components/invoices/VatTreatmentNotice'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
+  defaultGronTeknikWorkType,
   deriveNextStep,
   deriveForvalChips,
   deriveRequiresHousing,
@@ -1662,6 +1663,9 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
   // Grön teknik names the property like ROT does, and never shares the
   // invoice with ROT/RUT (the form refuses the mix).
   const hasAnyGronTeknikLine = isInvoiceDoc && watchItems.some((i) => i.deduction_type === 'gron_teknik')
+  // The grön teknik base hint (what counts, fixed price, hours) is long, so
+  // it shows once, under the first grön teknik row, not on every flagged row.
+  const firstGronTeknikIndex = isInvoiceDoc ? watchItems.findIndex((i) => i.deduction_type === 'gron_teknik') : -1
   // The kundkort's personnummer reaches this component as ciphertext (direct
   // table read) or as the masked display form (rows from the API), so the
   // editor can only know THAT the customer has one, never render it. Presence
@@ -2800,7 +2804,12 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                                               next !== null &&
                                               deductionTypeForWorkType(item?.work_type) !== next
                                             ) {
-                                              setValue(`items.${index}.work_type`, null)
+                                              // Grön teknik starts on the installation
+                                              // type the invoice already uses.
+                                              setValue(
+                                                `items.${index}.work_type`,
+                                                next === 'gron_teknik' ? defaultGronTeknikWorkType(watchItems, index) : null,
+                                              )
                                             }
                                             if (next === null) {
                                               setValue(`items.${index}.work_type`, null)
@@ -3067,16 +3076,21 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                                 {/* What the base covers (Skatteverket
                                     fakturamodellen), muted: the page's single
                                     ochre line is the next-step line. ROT/RUT:
-                                    labor only. Grön teknik: labor and
-                                    material, hours on one row per installation. */}
-                                <div className="mt-2 flex items-start gap-2 text-xs text-muted-foreground">
-                                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                                  <p>
-                                    {item?.deduction_type === 'gron_teknik'
-                                      ? t('deduction_gron_teknik_base_hint')
-                                      : t('deduction_labor_only_warning')}
-                                  </p>
-                                </div>
+                                    labor only, on every flagged row as
+                                    before. Grön teknik: labor and material
+                                    on rows of their own, the 97 % fixed-price
+                                    rule and the hours, once, under the first
+                                    grön teknik row. */}
+                                {(item?.deduction_type !== 'gron_teknik' || index === firstGronTeknikIndex) && (
+                                  <div className="mt-2 flex items-start gap-2 text-xs text-muted-foreground">
+                                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                    <p>
+                                      {item?.deduction_type === 'gron_teknik'
+                                        ? t('deduction_gron_teknik_base_hint')
+                                        : t('deduction_labor_only_warning')}
+                                    </p>
+                                  </div>
+                                )}
                               </div>
                             )}
 

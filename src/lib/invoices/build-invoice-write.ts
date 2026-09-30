@@ -766,7 +766,9 @@ export async function buildInvoiceWriteData(params: {
       deduction_type: deductionType,
       deduction_amount: deductionAmount,
       labor_hours: documentType === 'invoice' ? (item.labor_hours ?? null) : null,
-      work_type: documentType === 'invoice' ? (item.work_type ?? null) : null,
+      // Trimmed: the rate and the claim read the code trimmed, so the stored
+      // code (printed on the PDF, sent to Skatteverket) must be the same.
+      work_type: documentType === 'invoice' ? (item.work_type?.trim() || null) : null,
       // Property info: per-line value wins, else the invoice-level claim-card
       // value is stamped onto every deduction line so the Skatteverket file
       // generator can read it off the line later. Non-deduction lines carry
