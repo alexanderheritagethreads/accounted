@@ -102,6 +102,7 @@ RUN addgroup --system --gid 1001 nodejs && \
 # /app at runtime is split across the read-only image layer and writable mounts
 # (docker-compose.yml):
 #   /app/server.js, /app/node_modules/, /app/package.json   : image (read-only)
+#   /app/packs/                                              : image (read-only)
 #   /app/.next/                                              : named volume (writable)
 #   /app/public/                                             : tmpfs (writable)
 # The entrypoint runs UNPRIVILEGED as nextjs: it empties the nextjs-owned mounts,
