@@ -2905,7 +2905,7 @@ describe('Avanza format', () => {
     expect(result.issues).toEqual([expect.objectContaining({ row: 2, severity: 'warning' })])
   })
 
-  it('warns when one export spans several Avanza accounts', () => {
+  it('refuses an export that spans several Avanza accounts', () => {
     const content = [
       AVANZA_HEADER,
       '2026-07-31;1234567;Inlåningsränta;;;;548,7;SEK;;;;;',
@@ -2915,7 +2915,22 @@ describe('Avanza format', () => {
     const result = parseBankFile(content, 'transaktioner.csv')
     expect(result.transactions).toHaveLength(2)
     expect(result.issues).toEqual([
-      expect.objectContaining({ severity: 'warning', message: expect.stringContaining('1234567, 7654321') }),
+      expect.objectContaining({ severity: 'error', message: expect.stringContaining('1234567, 7654321') }),
+    ])
+  })
+
+  it('keeps a quoted description with a semicolon in one column', () => {
+    const content = [
+      AVANZA_HEADER,
+      '2026-05-04;1234567;Insättning;"Faktura 12; maj";;;1500,5;SEK;;;;;',
+      '2026-05-05;1234567;Insättning;"Säger ""hej""";;;10;SEK;;;;;',
+    ].join('\n')
+
+    const result = parseBankFile(content, 'transaktioner.csv')
+    expect(result.issues).toEqual([])
+    expect(result.transactions.map((t) => [t.description, t.amount, t.currency])).toEqual([
+      ['Insättning, Faktura 12; maj', 1500.5, 'SEK'],
+      ['Insättning, Säger "hej"', 10, 'SEK'],
     ])
   })
 

@@ -15,16 +15,20 @@
  *   Uttag, Intern överföring); "Värdepapper/beskrivning" is empty on interest
  *   rows. The description joins the two so interest rows are never blank.
  * - One export can span several Avanza accounts (the "Konto" column). The
- *   import books every row to one bank account, so a mixed file is flagged.
+ *   import books every row to one bank account, so a mixed file is refused:
+ *   merging two accounts' flows would break that account's reconciliation.
+ * - Fields are split quote-aware, so a quoted description holding a
+ *   semicolon cannot shift Belopp into another column.
  */
 
 import type { BankFileFormat, BankFileParseResult, ParsedBankTransaction, BankFileParseIssue } from '../types'
 import { prepareContent } from '../../shared/encoding'
 import { normalizeDate } from '../date-utils'
 import { normalizeMinusSign } from './generic-csv'
+import { parseCSVLine } from './nordea'
 
 function splitHeader(line: string): string[] {
-  return line.split(';').map((h) => h.trim().toLowerCase().replace(/"/g, ''))
+  return parseCSVLine(line, ';').map((h) => h.trim().toLowerCase())
 }
 
 function isAvanzaHeader(fields: string[]): boolean {
@@ -105,7 +109,7 @@ export const avanzaFormat: BankFileFormat = {
       const line = lines[i].trim()
       if (!line) continue
 
-      const fields = line.split(';').map((f) => f.trim().replace(/^"|"$/g, ''))
+      const fields = parseCSVLine(line, ';').map((f) => f.trim())
 
       const date = normalizeDate(dateIdx >= 0 ? fields[dateIdx] : undefined)
       if (!date) {
@@ -144,8 +148,8 @@ export const avanzaFormat: BankFileFormat = {
     if (accounts.size > 1) {
       issues.push({
         row: 0,
-        message: `Filen innehåller flera Avanza-konton (${[...accounts].join(', ')}). Alla rader importeras till samma bankkonto; exportera ett konto i taget.`,
-        severity: 'warning',
+        message: `Filen innehåller flera Avanza-konton (${[...accounts].join(', ')}). En import bokförs mot ett bankkonto; exportera ett konto i taget.`,
+        severity: 'error',
       })
     }
 
