@@ -85,7 +85,7 @@ describe('generatePeppolDocumentOrResponse', () => {
 
   it('answers a missing customer with its own bilingual sentence', async () => {
     const result = generatePeppolDocumentOrResponse({
-      invoice: { ...makeInvoice(), customer: null, items: [] },
+      invoice: { ...makeInvoice(), customer: undefined, items: [] },
       company: makeCompanySettings(),
       log: log as never,
       requestId: 'req-1',

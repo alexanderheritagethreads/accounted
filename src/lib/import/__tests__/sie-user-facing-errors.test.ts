@@ -90,7 +90,7 @@ describe('ensureFiscalPeriod refusals reach the reader', () => {
     const { status, body } = await envelope(err)
     expect(status).toBe(400)
     expect(body.error.code).toBe('VALIDATION_ERROR')
-    expect(body.error.message).toMatch(/omfattar 19 månader.*högst 18 månader \(BFL 3 kap\.\)/s)
+    expect(body.error.message).toMatch(/omfattar 19 månader[\s\S]*högst 18 månader \(BFL 3 kap\.\)/)
   })
 })
 
