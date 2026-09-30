@@ -174,7 +174,7 @@ function SortableHeader({
           className={cn('h-3.5 w-3.5 shrink-0', !active && 'text-muted-foreground/60')}
         />
         {active && stack.length > 1 && (
-          <span className="text-[10px] font-medium tabular-nums text-muted-foreground" aria-hidden="true">
+          <span className="text-[11px] font-medium tabular-nums text-muted-foreground" aria-hidden="true">
             {index + 1}
           </span>
         )}
@@ -301,8 +301,9 @@ export default function JournalEntryList({
   // Verifikat (committed) vs Utkast (drafts) view. Drafts are excluded from the
   // committed list server-side and surfaced here behind a count badge.
   const [listMode, setListMode] = useState<'committed' | 'drafts'>('committed')
-  // Collapse correction groups to the live correction (hide storno + reversed
-  // original). Toggled off via the filter dialog to reveal the full chain.
+  // Collapse correction groups to the live correction (hide the storno and
+  // reversed original a correction replaced; a pure storno stays visible).
+  // Toggled off via the filter dialog to reveal the full chain.
   const [collapseCorrections, setCollapseCorrections] = useState(true)
   const [draftCount, setDraftCount] = useState(0)
   // All-years emptiness, resolved only when the scoped list comes back empty:
@@ -1149,7 +1150,7 @@ export default function JournalEntryList({
             <button
               type="button"
               onClick={() => setSearchInput('')}
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded-sm hover:bg-muted text-muted-foreground"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded-sm hover:bg-secondary/60 text-muted-foreground"
               title={t('clear_search')}
               aria-label={t('clear_search')}
             >
@@ -1163,7 +1164,7 @@ export default function JournalEntryList({
             <Button
               variant="outline"
               size="sm"
-              className="h-8 gap-2 text-xs shrink-0"
+              className="gap-2 shrink-0"
               aria-label={
                 dialogFilterCount > 0
                   ? t('filter_with_count', { count: dialogFilterCount })
@@ -1175,7 +1176,7 @@ export default function JournalEntryList({
               {dialogFilterCount > 0 && (
                 <Badge
                   variant="secondary"
-                  className="h-4 min-w-4 justify-center px-1 text-[10px] tabular-nums"
+                  className="h-4 min-w-4 justify-center px-1 text-[11px] tabular-nums"
                 >
                   {dialogFilterCount}
                 </Badge>
@@ -1272,7 +1273,7 @@ export default function JournalEntryList({
                     <button
                       type="button"
                       onClick={() => { setDateFrom(''); setDateTo(''); setDateFromInput(''); setDateToInput(''); setPage(0) }}
-                      className="p-1 rounded-sm hover:bg-muted text-muted-foreground shrink-0"
+                      className="p-1 rounded-sm hover:bg-secondary/60 text-muted-foreground shrink-0"
                       title={t('clear_date_filter')}
                       aria-label={t('clear_date_filter')}
                     >
@@ -1307,7 +1308,8 @@ export default function JournalEntryList({
               </div>
 
               {/* Reveal the storno + reversed-original rows the default view folds
-                  into the surviving correction (3 rows → 1). */}
+                  into the surviving correction (3 rows → 1). A storno that no
+                  correction replaced is always shown. */}
               <div className="flex items-center gap-2">
                 <Switch
                   id="show-correction-chain"
@@ -1444,8 +1446,7 @@ export default function JournalEntryList({
               <option value={t('no_doc_required_suggestion_tax_payment')} />
               <option value={t('no_doc_required_suggestion_salary')} />
             </datalist>
-            <Button size="sm" onClick={handleBatchExempt} disabled={batchSubmitting}>
-              {batchSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            <Button size="sm" onClick={handleBatchExempt} loading={batchSubmitting}>
               {t('batch_mark_no_doc')}
             </Button>
             {!allEligibleSelected && (
@@ -1672,15 +1673,14 @@ export default function JournalEntryList({
                             <Button
                               size="sm"
                               variant="outline"
-                              className="h-7 px-3.5 text-xs"
-                              disabled={!canWrite || committingId === entry.id}
+                              disabled={!canWrite}
+                              loading={committingId === entry.id}
                               title={!canWrite ? t('read_only_tooltip') : undefined}
                               onClick={(e) => {
                                 e.stopPropagation()
                                 openCommitConfirm(entry)
                               }}
                             >
-                              {committingId === entry.id && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
                               {t('post')}
                             </Button>
                           )}
@@ -1709,7 +1709,7 @@ export default function JournalEntryList({
                           )}
                           <ChevronRight
                             className={cn(
-                              'h-3.5 w-3.5 text-muted-foreground transition-all duration-200',
+                              'h-3.5 w-3.5 text-muted-foreground transition-[transform,opacity] duration-150',
                               isExpanded
                                 ? 'rotate-90 opacity-100'
                                 : 'opacity-0 group-hover:opacity-100',
@@ -1832,10 +1832,11 @@ export default function JournalEntryList({
                                   <Button
                                     size="sm"
                                     onClick={() => openCommitConfirm(entry)}
-                                    disabled={!canWrite || committingId === entry.id}
+                                    disabled={!canWrite}
+                                    loading={canWrite && committingId === entry.id}
                                     title={!canWrite ? t('read_only_tooltip') : undefined}
                                   >
-                                    {!canWrite ? <Lock className="mr-2 h-4 w-4" /> : committingId === entry.id && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                                    {!canWrite && <Lock className="mr-2 h-4 w-4" />}
                                     {t('post')}
                                   </Button>
                                 )}
@@ -1929,8 +1930,7 @@ export default function JournalEntryList({
             <Button variant="outline" size="sm" onClick={() => setBulkOpen(false)} disabled={bulkSubmitting}>
               {t('bulk_cancel')}
             </Button>
-            <Button size="sm" onClick={handleBulkConfirm} disabled={bulkSubmitting || !bulkCount}>
-              {bulkSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            <Button size="sm" onClick={handleBulkConfirm} disabled={!bulkCount} loading={bulkSubmitting}>
               {t('bulk_mark_confirm', { count: bulkCount ?? 0 })}
             </Button>
           </DialogFooter>
@@ -2045,8 +2045,7 @@ export default function JournalEntryList({
             <div className="flex items-center gap-1">
               <Button
                 variant="outline"
-                size="icon"
-                className="h-8 w-8"
+                size="icon-sm"
                 disabled={page === 0}
                 onClick={() => setPage(0)}
                 aria-label={t('first_page')}
@@ -2056,8 +2055,7 @@ export default function JournalEntryList({
               </Button>
               <Button
                 variant="outline"
-                size="icon"
-                className="h-8 w-8"
+                size="icon-sm"
                 disabled={page === 0}
                 onClick={() => setPage(page - 1)}
                 aria-label={t('previous')}
@@ -2070,8 +2068,7 @@ export default function JournalEntryList({
               </span>
               <Button
                 variant="outline"
-                size="icon"
-                className="h-8 w-8"
+                size="icon-sm"
                 disabled={(page + 1) * pageSize >= count}
                 onClick={() => setPage(page + 1)}
                 aria-label={t('next')}
@@ -2081,8 +2078,7 @@ export default function JournalEntryList({
               </Button>
               <Button
                 variant="outline"
-                size="icon"
-                className="h-8 w-8"
+                size="icon-sm"
                 disabled={(page + 1) * pageSize >= count}
                 onClick={() => setPage(Math.ceil(count / pageSize) - 1)}
                 aria-label={t('last_page')}

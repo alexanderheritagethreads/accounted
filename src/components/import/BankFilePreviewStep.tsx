@@ -193,11 +193,11 @@ export default function BankFilePreviewStep({
 
       {/* Navigation */}
       <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
-        <Button variant="outline" className="min-h-11" onClick={onBack}>
+        <Button variant="outline" onClick={onBack}>
           <ArrowLeft className="mr-2 h-4 w-4" />
           Tillbaka
         </Button>
-        <Button className="min-h-11" onClick={onContinue} disabled={hasIssues || transactions.length === 0}>
+        <Button onClick={onContinue} disabled={hasIssues || transactions.length === 0}>
           Fortsätt
           <ArrowRight className="ml-2 h-4 w-4" />
         </Button>

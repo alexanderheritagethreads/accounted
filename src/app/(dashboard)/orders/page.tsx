@@ -605,8 +605,8 @@ function OrderRow({
                 <Button
                   type="button"
                   variant="ghost"
-                  size="icon"
-                  className={cn('h-8 w-8 shrink-0', HOVER_REVEAL_CLASS, 'data-[state=open]:opacity-100')}
+                  size="icon-sm"
+                  className={cn('shrink-0', HOVER_REVEAL_CLASS, 'data-[state=open]:opacity-100')}
                   aria-label={t('row_menu_aria', { number: order.order_number })}
                 >
                   <MoreHorizontal className="h-4 w-4 text-muted-foreground" />

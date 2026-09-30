@@ -49,9 +49,17 @@ const NOW_CATEGORIES: Partial<Record<RegistrySkillId, readonly WorklistCategory[
   'reconcile-month': ['reconciliation_due'],
 }
 
-/** Whether the skill has an Att göra signal at all, so an empty count means "all done". */
+/**
+ * Skills whose zero count does not mean done. reconciliation_due answers 0
+ * until the company's first sign-off (the adoption gate in
+ * countReconciliationDue), so a company that never reconciled would read
+ * "Allt klart".
+ */
+const ZERO_IS_NOT_DONE: ReadonlySet<RegistrySkillId> = new Set(['reconcile-month'])
+
+/** Whether an empty count for the skill means "all done". */
 export function hasTodoSignal(id: RegistrySkillId): boolean {
-  return id in NOW_CATEGORIES
+  return id in NOW_CATEGORIES && !ZERO_IS_NOT_DONE.has(id)
 }
 
 /** The skills with waiting work, and how many Att göra items each would clear. */

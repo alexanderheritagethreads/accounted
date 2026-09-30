@@ -18,7 +18,6 @@ import {
   EyeOff,
   FileSearch,
   Link2,
-  Loader2,
   MoreHorizontal,
   Paperclip,
   Pencil,
@@ -429,7 +428,7 @@ export default function TransactionInboxCard({
               </span>
             )}
             {skvCounterpartDate && (
-              <Badge variant="warning" className="hidden h-4 shrink-0 gap-1 px-1.5 py-0 text-[10px] md:inline-flex">
+              <Badge variant="warning" className="hidden h-4 shrink-0 gap-1 px-1.5 py-0 text-[11px] md:inline-flex">
                 <AlertCircle className="h-3 w-3" />
                 Möjlig 1930↔1630
               </Badge>
@@ -492,14 +491,13 @@ export default function TransactionInboxCard({
             <Button
               size="sm"
               variant="outline"
-              className="h-7 px-3.5 text-xs"
               onClick={(e) => {
                 e.stopPropagation()
                 runPrimary(e.currentTarget)
               }}
-              disabled={isProcessing || isDisabled}
+              disabled={isDisabled}
+              loading={isProcessing}
             >
-              {isProcessing && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
               {primaryLabel}
             </Button>
             {showOverflowMenu && (
@@ -509,8 +507,8 @@ export default function TransactionInboxCard({
                       the middle of the STATUS header, not at the page edge. */}
                   <Button
                     variant="ghost"
-                    size="icon"
-                    className={cn('mr-2 h-7 w-7 text-muted-foreground hover:text-foreground data-[state=open]:opacity-100', HOVER_REVEAL_CLASS)}
+                    size="icon-sm"
+                    className={cn('mr-2 text-muted-foreground hover:text-foreground data-[state=open]:opacity-100', HOVER_REVEAL_CLASS)}
                     onClick={(e) => e.stopPropagation()}
                     aria-label={t('more_actions_aria')}
                     title={t('more_actions_aria')}

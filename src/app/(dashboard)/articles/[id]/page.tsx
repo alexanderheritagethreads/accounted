@@ -17,7 +17,7 @@ import {
 } from '@/lib/hooks/use-submit-with-account-activation'
 import { getErrorMessage, type ErrorLocale } from '@/lib/errors/get-error-message'
 import { DestructiveConfirmDialog, useDestructiveConfirm } from '@/components/ui/destructive-confirm-dialog'
-import { Loader2, Lock } from 'lucide-react'
+import { Lock } from 'lucide-react'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
 import { formatCurrency } from '@/lib/utils'
 import { parseArticleHouseworkType, workTypeLabel } from '@/lib/invoices/rot-rut-rules'
@@ -241,7 +241,7 @@ export default function ArticleDetailPage({
             variant="ghost"
             size="sm"
             onClick={() => setIsEditOpen(true)}
-            className="min-h-10 text-muted-foreground hover:text-foreground"
+            className="text-muted-foreground hover:text-foreground"
             disabled={!canWrite}
             title={!canWrite ? t('viewer_disabled_tooltip') : undefined}
           >
@@ -252,30 +252,24 @@ export default function ArticleDetailPage({
             variant="ghost"
             size="sm"
             onClick={handleToggleActive}
-            className="min-h-10 text-muted-foreground hover:text-foreground"
-            disabled={isTogglingActive || !canWrite}
+            className="text-muted-foreground hover:text-foreground"
+            disabled={!canWrite}
+            loading={isTogglingActive}
             title={!canWrite ? t('viewer_disabled_tooltip') : undefined}
           >
-            {isTogglingActive ? (
-              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-            ) : !canWrite ? (
-              <Lock className="h-4 w-4 mr-1" />
-            ) : null}
+            {!isTogglingActive && !canWrite && <Lock className="h-4 w-4 mr-1" />}
             {article.active ? t('deactivate') : t('activate')}
           </Button>
           <Button
             variant="ghost"
             size="sm"
             onClick={handleDelete}
-            className="min-h-10 text-muted-foreground hover:text-destructive"
-            disabled={isDeleting || !canWrite}
+            className="text-muted-foreground hover:text-destructive"
+            disabled={!canWrite}
+            loading={isDeleting}
             title={!canWrite ? t('viewer_disabled_tooltip') : undefined}
           >
-            {isDeleting ? (
-              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-            ) : !canWrite ? (
-              <Lock className="h-4 w-4 mr-1" />
-            ) : null}
+            {!isDeleting && !canWrite && <Lock className="h-4 w-4 mr-1" />}
             {t('delete')}
           </Button>
         </div>

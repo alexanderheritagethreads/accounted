@@ -185,8 +185,8 @@ export default function RulesList() {
                       <DropdownMenuTrigger asChild>
                         <Button
                           variant="ghost"
-                          size="icon"
-                          className={cn('h-7 w-7 text-muted-foreground hover:text-foreground data-[state=open]:opacity-100', HOVER_REVEAL_CLASS)}
+                          size="icon-sm"
+                          className={cn('text-muted-foreground hover:text-foreground data-[state=open]:opacity-100', HOVER_REVEAL_CLASS)}
                           aria-label={t('more')}
                           disabled={busyId === r.id}
                         >

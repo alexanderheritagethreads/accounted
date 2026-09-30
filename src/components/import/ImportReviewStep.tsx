@@ -568,11 +568,10 @@ export default function ImportReviewStep({
 
       {/* Actions */}
       <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
-        <Button variant="outline" className="min-h-11" onClick={onBack}>
+        <Button variant="outline" onClick={onBack}>
           Tillbaka
         </Button>
         <Button
-          className="min-h-11"
           onClick={handleExecute}
           disabled={!canWrite || isLoading}
           title={!canWrite ? 'Du har endast läsbehörighet i detta företag' : undefined}

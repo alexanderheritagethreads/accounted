@@ -59,6 +59,7 @@ import {
   singleActionWarning,
   REJECTION_CATEGORY_LABELS,
 } from '@/components/pending-operations/vocabulary'
+import { describeRetrievedSkills } from '@/lib/agent-skills/retrieved-skills'
 
 // Terse per-type labels used in the bulk confirmation dialog list. Phrased so
 // they read naturally under the heading "Genom att bekräfta utförs följande:".
@@ -237,6 +238,7 @@ type ViewTab = 'pending' | 'history'
 
 export default function PendingOperationsPage() {
   const t = useTranslations('pending')
+  const tSkills = useTranslations('skills_registry')
   const router = useRouter()
   const accountNames = useAccountNamesSource()
   const [operations, setOperations] = useState<PendingOperation[]>([])
@@ -694,6 +696,14 @@ export default function PendingOperationsPage() {
     return Array.from(counts.entries()).map(([type, count]) => ({ type, count }))
   }, [bulkEligible, selectedIds])
 
+  // The instructions the agent retrieved, by the names the Instruktioner page uses: never raw slugs or uuids.
+  const retrievedNames = (slugs: readonly string[]) => [...new Set(describeRetrievedSkills(slugs).map((item) => {
+    if (item.kind === 'workflow') return tSkills(`skills.${item.id}.name`)
+    if (item.kind === 'own') return tSkills('retrieved_own')
+    const key = item.kind === 'knowledge' ? `knowledge_names.${item.id.split('/')[1]}` : item.kind === 'analysis' ? `analyses.${item.slug}.name` : null
+    return key && tSkills.has(key) ? tSkills(key) : item.kind === 'knowledge' ? item.id.split('/')[1] : item.slug
+  }))].join(', ')
+
   // Source/kicker line for a row and the detail panel: operation type,
   // origin (when an agent staged it) and relative age.
   const sourceLine = (op: PendingOperation) => {
@@ -701,7 +711,7 @@ export default function PendingOperationsPage() {
     return [
       operationLabel(op.operation_type, t),
       isAgent ? (originLabel(op, t) ?? op.actor_label ?? op.actor_type) : null,
-      op.agent_metadata?.skills_loaded?.length ? t('skills_retrieved', { skills: op.agent_metadata.skills_loaded.join(', ') }) : null,
+      op.agent_metadata?.skills_loaded?.length ? t('skills_retrieved', { skills: retrievedNames(op.agent_metadata.skills_loaded) }) : null,
       formatRelativeTime(op.created_at),
     ]
       .filter(Boolean)
@@ -727,7 +737,7 @@ export default function PendingOperationsPage() {
       <div className="page-header flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="page-header-title font-display text-2xl leading-8 tracking-tight">{t('title')}</h1>
         {activeTab === 'pending' && bulkEligible.length > 0 && (
-          <Button
+          <Button size="sm"
             disabled={isBulkCommitting || isRejecting}
             onClick={() => {
               setSelectedIds(new Set(bulkEligibleIds))
@@ -752,7 +762,6 @@ export default function PendingOperationsPage() {
           <Button
             size="sm"
             variant="ghost"
-            className="h-7 px-2 text-xs"
             onClick={() => {
               setConversationFilter(null)
               if (typeof window !== 'undefined') {
@@ -783,7 +792,7 @@ export default function PendingOperationsPage() {
           <Button
             size="sm"
             variant="ghost"
-            className="h-8 gap-1.5 px-2 text-xs text-muted-foreground"
+            className="gap-1.5 text-muted-foreground"
             onClick={toggleSortOrder}
             aria-pressed={sortOrder === 'asc'}
             title={sortOrder === 'asc' ? t('sort_oldest_first') : t('sort_newest_first')}
@@ -961,7 +970,7 @@ export default function PendingOperationsPage() {
                       </Badge>
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="text-[13.5px] leading-snug">{op.title}</div>
+                      <div className="text-[13px] leading-snug">{op.title}</div>
                       <div className="mt-0.5 text-xs text-muted-foreground">
                         {sub}
                         {op.status === 'rejected' && op.rejection_reason
@@ -979,7 +988,7 @@ export default function PendingOperationsPage() {
                     </div>
                     <ChevronRight
                       className={cn(
-                        'mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-all duration-200',
+                        'mt-1 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-opacity',
                         detailOpId === op.id ? 'opacity-100' : HOVER_REVEAL_CLASS,
                       )}
                     />
@@ -1040,7 +1049,7 @@ export default function PendingOperationsPage() {
                     <div className="pt-0.5 text-[11px] uppercase tracking-[0.07em] text-muted-foreground">
                       {sourceLine(op)}
                     </div>
-                    <div className="mt-1 text-[13.5px] leading-snug">{op.title}</div>
+                    <div className="mt-1 text-[13px] leading-snug">{op.title}</div>
                     {showHighRiskWarning && (
                       <p className="mt-1 flex items-start gap-1 text-xs text-destructive">
                         <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
@@ -1309,10 +1318,8 @@ export default function PendingOperationsPage() {
             <Button variant="outline" onClick={() => setRejectTarget(null)} disabled={isRejecting}>
               Avbryt
             </Button>
-            <Button variant="destructive" onClick={handleReject} disabled={isRejecting}>
-              {isRejecting ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : rejectTarget === 'bulk' ? (
+            <Button variant="destructive" onClick={handleReject} loading={isRejecting}>
+              {rejectTarget === 'bulk' ? (
                 t('reject_count', { count: selectedCount })
               ) : (
                 'Avvisa'

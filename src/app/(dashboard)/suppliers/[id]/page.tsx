@@ -215,7 +215,7 @@ export default function SupplierDetailPage() {
               variant="ghost"
               size="sm"
               onClick={() => setIsEditOpen(true)}
-              className="min-h-10 text-muted-foreground hover:text-foreground"
+              className="text-muted-foreground hover:text-foreground"
               disabled={!canWrite}
               title={!canWrite ? t('viewer_disabled_tooltip') : undefined}
             >
@@ -226,7 +226,7 @@ export default function SupplierDetailPage() {
               variant="ghost"
               size="sm"
               onClick={handleDelete}
-              className="min-h-10 text-muted-foreground hover:text-destructive"
+              className="text-muted-foreground hover:text-destructive"
               disabled={!canWrite}
               title={!canWrite ? t('viewer_disabled_tooltip') : undefined}
             >

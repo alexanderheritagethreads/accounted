@@ -65,14 +65,15 @@ const LINE_ITEM_TYPE_KEYS: Record<SalaryLineItemType, string> = {
 
 // Same chip vocabulary as the Löner list and the run header (chips mark
 // exceptions): booked renders as muted text, everything else as a chip.
-const STATUS_VARIANTS: Record<string, 'default' | 'secondary' | 'success' | 'warning' | 'destructive' | 'outline'> = {
+// paid and booked are the normal outcome, so they render as muted text
+// (MUTED_STATUSES) and never reach the chip.
+const STATUS_VARIANTS: Record<string, 'default' | 'secondary' | 'warning' | 'destructive' | 'outline'> = {
   draft: 'secondary',
   review: 'secondary',
   approved: 'secondary',
-  paid: 'success',
-  booked: 'success',
   corrected: 'outline',
 }
+const MUTED_STATUSES = new Set(['paid', 'booked'])
 
 /** A line as the detail route returns it: the source columns say where it came from. */
 type LineRow = SalaryLineItem & {
@@ -303,7 +304,7 @@ export default function SalaryRunEmployeeDetailPage({
             <h1 className="page-header-title font-display text-2xl leading-8 tracking-tight">
               {employee.first_name} {employee.last_name}
             </h1>
-            {run.status === 'booked' ? (
+            {MUTED_STATUSES.has(run.status) ? (
               <span className="text-sm text-muted-foreground">{statusLabel}</span>
             ) : (
               <Badge variant={STATUS_VARIANTS[run.status] || 'secondary'}>{statusLabel}</Badge>
@@ -333,12 +334,8 @@ export default function SalaryRunEmployeeDetailPage({
         </div>
         {run.status === 'draft' && (
           <div className="page-header-action flex shrink-0 items-center gap-2">
-            <Button onClick={handleCalculate} disabled={calculating}>
-              {calculating ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Calculator className="mr-2 h-4 w-4" />
-              )}
+            <Button size="sm" onClick={handleCalculate} loading={calculating}>
+              {!calculating && <Calculator className="mr-2 h-4 w-4" />}
               {t('calculate')}
             </Button>
           </div>
@@ -477,18 +474,14 @@ export default function SalaryRunEmployeeDetailPage({
                         {isRemovableLine(li) && (
                           <Button
                             variant="ghost"
-                            size="icon"
-                            className={cn('-my-1 h-8 w-8 text-muted-foreground hover:text-foreground', HOVER_REVEAL_CLASS)}
+                            size="icon-sm"
+                            className={cn('-my-1 text-muted-foreground hover:text-foreground', HOVER_REVEAL_CLASS)}
                             onClick={() => handleRemoveLine(li.id)}
-                            disabled={removingLineId === li.id}
+                            loading={removingLineId === li.id}
                             aria-label={li.source_expense_claim_id ? t('remove_expense_claim_line_aria') : t('remove_line_aria')}
                             title={li.source_expense_claim_id ? t('remove_expense_claim_line_aria') : t('remove_line_aria')}
                           >
-                            {removingLineId === li.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <X className="h-4 w-4" />
-                            )}
+                            {removingLineId !== li.id && <X className="h-4 w-4" />}
                           </Button>
                         )}
                       </td>

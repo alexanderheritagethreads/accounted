@@ -40,7 +40,6 @@ import {
   Plus,
   Pencil,
   Trash2,
-  Loader2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { BASAccount } from '@/types'
@@ -576,7 +575,7 @@ export default function ChartOfAccountsManager() {
         <button type="button" className={QUIET_LINK_CLASS} onClick={() => setPruneDialogOpen(true)}>
           {t('prune_button')}
         </button>
-        <Button onClick={() => setAddDialogOpen(true)}>
+        <Button size="sm" onClick={() => setAddDialogOpen(true)}>
           <Plus className="mr-2 h-4 w-4" />
           {t('add_own')}
         </Button>
@@ -608,9 +607,9 @@ export default function ChartOfAccountsManager() {
           type="button"
           onClick={onToggle}
           aria-expanded={open}
-          className="flex w-full items-center gap-1.5 bg-muted/40 px-3 py-[7px] text-left text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground transition-colors duration-150 hover:bg-muted/60"
+          className="flex w-full items-center gap-1.5 bg-muted/40 px-3 py-[7px] text-left text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground transition-colors duration-150 hover:bg-secondary/35"
         >
-          <ChevronRight className={cn('h-3 w-3 shrink-0 transition-transform duration-200', open && 'rotate-90')} />
+          <ChevronRight className={cn('h-3 w-3 shrink-0 transition-transform duration-150', open && 'rotate-90')} />
           {t('class_heading', { cls, label: classLabel(cls) })}
         </button>
       </td>
@@ -680,8 +679,7 @@ export default function ChartOfAccountsManager() {
                   <strong className="font-semibold tabular-nums">{selectedNumbers.size}</strong>{' '}
                   {t('bulkbar_selected', { count: selectedNumbers.size })}
                 </span>
-                <Button size="sm" onClick={bulkDeactivate} disabled={bulkDeactivating}>
-                  {bulkDeactivating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                <Button size="sm" onClick={bulkDeactivate} loading={bulkDeactivating}>
                   {t('deactivate_confirm_action')}
                 </Button>
                 {!allVisibleSelected && (
@@ -793,12 +791,12 @@ export default function ChartOfAccountsManager() {
                                 <span className="flex min-w-0 items-center gap-1.5">
                                   <span className="truncate">{account.account_name}</span>
                                   {account.is_system_account && (
-                                    <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground">
+                                    <span className="shrink-0 text-[11px] uppercase tracking-wider text-muted-foreground">
                                       {t('system_badge')}
                                     </span>
                                   )}
                                   {!isStandardBASAccountNumber(account.account_number) && (
-                                    <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground">
+                                    <span className="shrink-0 text-[11px] uppercase tracking-wider text-muted-foreground">
                                       {t('own_badge')}
                                     </span>
                                   )}
@@ -842,8 +840,7 @@ export default function ChartOfAccountsManager() {
                                   </button>
                                   <Button
                                     variant="ghost"
-                                    size="icon"
-                                    className="h-8 w-8"
+                                    size="icon-sm"
                                     aria-label={tCommon('edit')}
                                     onClick={() => setEditAccount(account)}
                                   >
@@ -852,15 +849,13 @@ export default function ChartOfAccountsManager() {
                                   {!account.is_system_account && (
                                     <Button
                                       variant="ghost"
-                                      size="icon"
-                                      className="h-8 w-8 text-destructive hover:text-destructive"
+                                      size="icon-sm"
+                                      className="text-destructive hover:text-destructive"
                                       aria-label={t('delete_confirm_action')}
                                       onClick={() => deleteAccount(account)}
-                                      disabled={deletingAccount === account.account_number}
+                                      loading={deletingAccount === account.account_number}
                                     >
-                                      {deletingAccount === account.account_number ? (
-                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                      ) : (
+                                      {deletingAccount !== account.account_number && (
                                         <Trash2 className="h-3.5 w-3.5" />
                                       )}
                                     </Button>
@@ -947,15 +942,12 @@ export default function ChartOfAccountsManager() {
                                       variant="outline"
                                       size="sm"
                                       className={cn(
-                                        'h-7 px-3.5 text-xs',
                                         !activatingAccounts.has(account.account_number) && HOVER_REVEAL_CLASS,
                                       )}
                                       onClick={() => activateBASAccount(account.account_number)}
-                                      disabled={activatingAccounts.has(account.account_number)}
+                                      loading={activatingAccounts.has(account.account_number)}
                                     >
-                                      {activatingAccounts.has(account.account_number) ? (
-                                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                                      ) : (
+                                      {!activatingAccounts.has(account.account_number) && (
                                         <Plus className="mr-1 h-3 w-3" />
                                       )}
                                       {account.is_activated ? t('reactivate') : t('add')}

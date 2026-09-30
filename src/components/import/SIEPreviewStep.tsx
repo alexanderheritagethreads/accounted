@@ -189,7 +189,7 @@ export default function SIEPreviewStep({
             <div>
               <p className="text-sm text-muted-foreground">Status</p>
               {preview.trialBalance.isBalanced ? (
-                <Badge variant="success">Balanserar</Badge>
+                <span className="text-xs text-muted-foreground">Balanserar</span>
               ) : (
                 <Badge variant="secondary">
                   Diff: {formatCurrency(ibDiff)}
@@ -456,10 +456,10 @@ export default function SIEPreviewStep({
 
       {/* Actions */}
       <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
-        <Button variant="outline" className="min-h-11" onClick={onBack}>
+        <Button variant="outline" onClick={onBack}>
           Tillbaka
         </Button>
-        <Button className="min-h-11" onClick={onContinue} disabled={blockContinue}>
+        <Button onClick={onContinue} disabled={blockContinue}>
           {preview.mappingStatus.lowConfidence > 0 || preview.mappingStatus.unmapped > 0
             ? 'Granska mappningar'
             : 'Fortsätt'}

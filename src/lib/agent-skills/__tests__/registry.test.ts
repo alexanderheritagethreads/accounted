@@ -26,4 +26,9 @@ describe('hasTodoSignal', () => {
     expect(hasTodoSignal('bookkeep')).toBe(true)
     expect(hasTodoSignal('year-end-close')).toBe(false)
   })
+
+  it('never calls reconciliation done: its count is 0 before the first sign-off', () => {
+    expect(hasTodoSignal('reconcile-month')).toBe(false)
+    expect(skillsToDoNow({ reconciliation_due: 2 }).get('reconcile-month')).toBe(2)
+  })
 })

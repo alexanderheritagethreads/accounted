@@ -113,7 +113,7 @@ export default function SIEUploadStep({ onFileSelect, isLoading, error, errorTyp
                   {selectedFile.name} ({(selectedFile.size / 1024).toFixed(1)} KB)
                 </p>
               </div>
-              <Progress value={phase.progress} className="w-64 mx-auto transition-all duration-1000" />
+              <Progress value={phase.progress} className="w-64 mx-auto" />
               <p className="text-xs text-muted-foreground">
                 Lämna inte sidan förrän analysen är klar
               </p>
@@ -241,7 +241,7 @@ export default function SIEUploadStep({ onFileSelect, isLoading, error, errorTyp
                   <p className="text-sm text-muted-foreground">{error}</p>
 
                   {/* Actionable guidance */}
-                  <div className="text-sm text-muted-foreground pt-1 border-t border-border/50 mt-2">
+                  <div className="text-sm text-muted-foreground pt-1 border-t border-border mt-2">
                     {(errorType === 'duplicate' || errorType === 'duplicate_period') && (
                       <div className="space-y-2">
                         <p>Den befintliga importens verifikationer kommer att makuleras (status ändras till &quot;makulerad&quot;). De finns kvar som spårbar historik.</p>
@@ -249,15 +249,15 @@ export default function SIEUploadStep({ onFileSelect, isLoading, error, errorTyp
                           <Button
                             variant="outline"
                             size="sm"
-                            className="border-border text-warning hover:bg-muted/30"
-                            disabled={isReplacing}
+                            className="border-border text-warning hover:bg-secondary/60"
+                            loading={isReplacing}
                             onClick={(e) => {
                               e.stopPropagation()
                               onReplace(duplicateImportId)
                             }}
                           >
                             {isReplacing ? (
-                              <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Ersätter...</>
+                              'Ersätter...'
                             ) : (
                               <><RefreshCw className="h-4 w-4 mr-2" />Ersätt befintlig import</>
                             )}

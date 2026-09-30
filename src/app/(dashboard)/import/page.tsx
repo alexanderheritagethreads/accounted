@@ -12,7 +12,6 @@ import { useTranslations } from 'next-intl'
 import { Card, CardContent } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { PageHeader } from '@/components/ui/page-header'
 import { HelpPopover } from '@/components/ui/help-popover'
 import { AttnLine } from '@/components/ui/attn-line'
@@ -2300,7 +2299,7 @@ function CSVDataImportWizard() {
                   'relative h-9 rounded-lg border px-4 text-sm font-medium transition-colors',
                   selected
                     ? 'border-foreground bg-foreground text-background'
-                    : 'border-border bg-card text-foreground hover:border-foreground/30 hover:bg-muted',
+                    : 'border-border bg-card text-foreground hover:border-foreground/30 hover:bg-secondary/60',
                 )}
               >
                 {opt.label}
@@ -2496,7 +2495,7 @@ export default function ImportPage() {
                     sub={t('psd2_description')}
                     chip={
                       hasBankSync ? (
-                        <Badge variant="success" className="font-normal">{t('psd2_recommended')}</Badge>
+                        <span className="text-xs text-muted-foreground">{t('psd2_recommended')}</span>
                       ) : (
                         <span className="rounded-full bg-secondary px-2 py-0.5 text-[11px] font-medium leading-none text-muted-foreground">
                           {t('psd2_requires_subscription')}
@@ -2856,7 +2855,7 @@ function ImportRow({
 // so "Beta" reads identically wherever it appears.
 function BetaChip({ label }: { label: string }) {
   return (
-    <span className="rounded-full bg-muted/60 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-muted-foreground/70">
+    <span className="rounded-full bg-muted/60 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
       {label}
     </span>
   )

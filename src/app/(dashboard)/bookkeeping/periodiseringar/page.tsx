@@ -334,7 +334,7 @@ export default function AccrualSchedulesPage() {
                                   </thead>
                                   <tbody>
                                     {schedule.installments.map((installment) => (
-                                      <tr key={installment.id} className="border-t border-border/60">
+                                      <tr key={installment.id} className="border-t border-border">
                                         <td className="py-1.5 tabular-nums">
                                           {monthLabel(installment.period_month)}
                                         </td>

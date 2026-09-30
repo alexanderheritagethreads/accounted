@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Check, Search, X } from 'lucide-react'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
+import { POPOVER_SURFACE_CLASS, POPOVER_ENTER_CLASS } from '@/components/ui/popover-surface'
 import { formatVoucher } from '@/lib/bookkeeping/voucher-series-resolver'
 import { matchesVoucherSearch } from '@/lib/reconciliation/voucher-search'
 
@@ -161,7 +162,7 @@ export function MatchVerifikationPicker({
         <span className="truncate text-muted-foreground flex-1 min-w-0">{line.entry_description}</span>
         {strength && (
           strength.variant ? (
-            <Badge variant={strength.variant} className="shrink-0 text-[10px]">
+            <Badge variant={strength.variant} className="shrink-0 text-[11px]">
               {strength.label}
             </Badge>
           ) : (
@@ -169,15 +170,15 @@ export function MatchVerifikationPicker({
           )
         )}
         {(line.linked_transaction_count ?? 0) > 0 && (
-          <Badge variant="secondary" className="shrink-0 text-[10px]">
+          <Badge variant="secondary" className="shrink-0 text-[11px]">
             Redan matchad
           </Badge>
         )}
         <Button
           type="button"
-          size="icon"
+          size="icon-sm"
           variant="ghost"
-          className="h-6 w-6 shrink-0"
+          className="shrink-0"
           onClick={onRemove}
           disabled={disabled}
           aria-label="Avmarkera verifikation"
@@ -247,7 +248,7 @@ export function MatchVerifikationPicker({
               </span>
               {strength && (
                 strength.variant ? (
-                  <Badge variant={strength.variant} className="shrink-0 text-[10px]">
+                  <Badge variant={strength.variant} className="shrink-0 text-[11px]">
                     {strength.label}
                   </Badge>
                 ) : (
@@ -255,7 +256,7 @@ export function MatchVerifikationPicker({
                 )
               )}
               {(line.linked_transaction_count ?? 0) > 0 && (
-                <Badge variant="secondary" className="shrink-0 text-[10px]">
+                <Badge variant="secondary" className="shrink-0 text-[11px]">
                   Matchad
                 </Badge>
               )}
@@ -320,7 +321,7 @@ export function MatchVerifikationPicker({
       {chips}
       {searchBox}
       {open && (
-        <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-lg border border-border bg-popover shadow-[var(--shadow-md)]">
+        <div className={cn('absolute z-20 mt-1 w-full overflow-hidden', POPOVER_SURFACE_CLASS, POPOVER_ENTER_CLASS)}>
           {listContent}
         </div>
       )}

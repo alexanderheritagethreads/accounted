@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useLocale, useTranslations } from 'next-intl'
 import dynamic from 'next/dynamic'
-import { AlertTriangle, Download, FileDown, FileUp, Loader2, Receipt } from 'lucide-react'
+import { AlertTriangle, Download, FileDown, FileUp, Receipt } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/ui/page-header'
@@ -409,17 +409,18 @@ export default function RotRutOverviewPage() {
                 if (file) void importBeslut(file)
               }}
             />
-            <Button
+            <Button size="sm"
               type="button"
               variant="outline"
-              disabled={!canWrite || importing}
+              disabled={!canWrite}
+              loading={importing}
               onClick={() => fileInputRef.current?.click()}
               title={!canWrite ? t('viewer_disabled_tooltip') : t('import_beslut_help')}
             >
-              {importing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileUp className="mr-2 h-4 w-4" />}
+              {!importing && <FileUp className="mr-2 h-4 w-4" />}
               {t('import_beslut')}
             </Button>
-            <Button type="button" onClick={openNewRequest} disabled={!canWrite}>
+            <Button size="sm" type="button" onClick={openNewRequest} disabled={!canWrite}>
               <FileDown className="mr-2 h-4 w-4" />
               {t('new_request')}
             </Button>
@@ -590,8 +591,7 @@ export default function RotRutOverviewPage() {
                             <Button type="button" size="sm" variant="outline" className={HOVER_REVEAL_CLASS} disabled={isBusy} onClick={() => void patchRequest(request, 'cancelled')}>
                               {t('cancel_request')}
                             </Button>
-                            <Button type="button" size="sm" disabled={isBusy} onClick={() => void patchRequest(request, 'submitted')}>
-                              {isBusy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                            <Button type="button" size="sm" loading={isBusy} onClick={() => void patchRequest(request, 'submitted')}>
                               {t('mark_uploaded')}
                             </Button>
                           </>
@@ -606,8 +606,7 @@ export default function RotRutOverviewPage() {
                             </Button>
                           )}
                         {state.needsReclaim && canWrite && (
-                          <Button type="button" size="sm" disabled={isBusy} onClick={() => void reclaim(request)}>
-                            {isBusy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                          <Button type="button" size="sm" loading={isBusy} onClick={() => void reclaim(request)}>
                             {t('book_refused')}
                           </Button>
                         )}

@@ -436,12 +436,12 @@ export default function ImportResultStep({
       {/* Actions */}
       <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-between">
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Button variant="outline" className="min-h-11" onClick={onNewImport}>
+          <Button variant="outline" onClick={onNewImport}>
             <RotateCcw className="mr-2 h-4 w-4" />
             Ny import
           </Button>
           {result.success && result.importId && onUndo && (
-            <Button variant="outline" className="min-h-11 text-destructive hover:text-destructive" onClick={handleUndoClick}>
+            <Button variant="outline" className="text-destructive hover:text-destructive" onClick={handleUndoClick}>
               <Undo2 className="mr-2 h-4 w-4" />
               Ångra import
             </Button>
@@ -450,13 +450,13 @@ export default function ImportResultStep({
         <div className="flex flex-col gap-2 sm:flex-row">
           {result.success && (
             <>
-              <Button variant="outline" className="min-h-11" asChild>
+              <Button variant="outline" asChild>
                 <Link href="/bookkeeping">
                   Visa bokföring
                   <ExternalLink className="ml-2 h-4 w-4" />
                 </Link>
               </Button>
-              <Button className="min-h-11" asChild>
+              <Button asChild>
                 <Link href="/reports">
                   Visa rapporter
                   <ExternalLink className="ml-2 h-4 w-4" />

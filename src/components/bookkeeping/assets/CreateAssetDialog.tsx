@@ -18,7 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Loader2, Plus, X } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 import { useTranslations } from 'next-intl'
 import { useToast } from '@/components/ui/use-toast'
 import { useCompanyOptional } from '@/contexts/CompanyContext'
@@ -550,11 +550,9 @@ export function CreateAssetDialog({ open, onOpenChange, onCreated }: CreateAsset
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
             Avbryt
           </Button>
-          <Button onClick={handleSubmit} disabled={submitting}>
+          <Button onClick={handleSubmit} loading={submitting}>
             {submitting ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Sparar…
-              </>
+              'Sparar…'
             ) : (
               'Spara'
             )}

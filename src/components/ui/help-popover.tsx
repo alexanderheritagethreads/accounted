@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback, useId } from 'react'
 import { createPortal } from 'react-dom'
 import { useTranslations } from 'next-intl'
 import { cn } from '@/lib/utils'
+import { POPOVER_ENTER_CLASS, POPOVER_SURFACE_CLASS } from '@/components/ui/popover-surface'
 
 interface HelpPopoverProps {
   /** Popover body: the page's help text (i18n `help_*` keys per namespace). */
@@ -107,7 +108,7 @@ export function HelpPopover({ children, className }: HelpPopoverProps) {
             data-dialog-companion=""
             // data-ph-unmask: page help is static i18n chrome in session replays.
             data-ph-unmask=""
-            className="pointer-events-auto fixed z-[60] w-[300px] rounded-lg border border-border bg-popover p-4 outline-none text-[13px] leading-relaxed text-foreground shadow-lg animate-in fade-in slide-in-from-top-1 duration-150"
+            className={cn('pointer-events-auto fixed z-[60] w-[300px] p-4 outline-none text-[13px] leading-relaxed', POPOVER_SURFACE_CLASS, POPOVER_ENTER_CLASS)}
             style={{ top: pos.top, left: pos.left }}
           >
             {children}

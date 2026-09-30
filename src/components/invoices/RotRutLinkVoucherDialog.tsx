@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react'
 import { useLocale, useTranslations } from 'next-intl'
-import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -176,8 +175,7 @@ export default function RotRutLinkVoucherDialog({
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={linking}>
             {t('link_voucher_cancel')}
           </Button>
-          <Button type="button" onClick={() => void link()} disabled={!selected || linking}>
-            {linking && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          <Button type="button" onClick={() => void link()} disabled={!selected} loading={linking}>
             {t('link_voucher_confirm')}
           </Button>
         </DialogFooter>

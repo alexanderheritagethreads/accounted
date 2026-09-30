@@ -4,6 +4,7 @@ import * as React from 'react'
 import * as TooltipPrimitive from '@radix-ui/react-tooltip'
 import { Info, HelpCircle } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { POPOVER_SURFACE_CLASS, RADIX_POPOVER_MOTION_CLASS } from '@/components/ui/popover-surface'
 
 const TooltipProvider = TooltipPrimitive.Provider
 
@@ -26,7 +27,9 @@ const TooltipContent = React.forwardRef<
       sideOffset={sideOffset}
       data-ph-unmask=""
       className={cn(
-        'z-50 overflow-hidden rounded-lg border border-border/60 bg-popover px-3 py-2 text-sm text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2',
+        'z-50 overflow-hidden px-3 py-2 text-sm',
+        POPOVER_SURFACE_CLASS,
+        RADIX_POPOVER_MOTION_CLASS,
         className
       )}
       {...props}
@@ -106,7 +109,7 @@ function InfoTooltip({
             <button
               type="button"
               className={cn(
-                'inline-flex items-center justify-center rounded-full p-0.5 text-muted-foreground/70 hover:text-muted-foreground hover:bg-muted/50 transition-colors cursor-help',
+                'inline-flex items-center justify-center rounded-full p-0.5 text-muted-foreground/70 hover:text-muted-foreground hover:bg-secondary/60 transition-colors cursor-help',
                 className
               )}
             >

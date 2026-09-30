@@ -12,6 +12,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { addDays, format } from 'date-fns'
 import { Button } from '@/components/ui/button'
+import { POPOVER_SURFACE_CLASS, POPOVER_ENTER_CLASS } from '@/components/ui/popover-surface'
 import { Input } from '@/components/ui/input'
 import { TagInput } from '@/components/ui/tag-input'
 import { Label } from '@/components/ui/label'
@@ -82,10 +83,10 @@ import { ENABLED_EXTENSION_IDS } from '@/lib/extensions/_generated/enabled-exten
 import {
   ROT_WORK_TYPES,
   RUT_WORK_TYPES,
+  articleDeductionPrefill,
   computeDeduction,
   deductionCapWarnings,
   deductionTypeForWorkType,
-  parseArticleHouseworkType,
   SCHABLON_WORK_TYPES,
   type PriorYearDeductions,
 } from '@/lib/invoices/rot-rut-rules'
@@ -153,7 +154,7 @@ export type InvoiceEditorProps = (
 // Subset of Article fields the line picker needs to pre-fill a row.
 type ArticleOption = Pick<
   Article,
-  'id' | 'article_number' | 'name' | 'unit' | 'price_excl_vat' | 'vat_rate' | 'revenue_account' | 'currency' | 'housework_type'
+  'id' | 'article_number' | 'name' | 'type' | 'unit' | 'price_excl_vat' | 'vat_rate' | 'revenue_account' | 'currency' | 'housework_type'
 >
 
 function RequiredMark() {
@@ -172,12 +173,12 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 // Borderless in-table cell input: quiet at rest, beige on hover, ringed on
 // focus. rounded-sm: nested leaf inside the rows surface (radius ladder).
 const CELL_INPUT_CLASS =
-  'rounded-sm border border-transparent bg-transparent px-2 py-1 text-[13px] transition-colors duration-150 hover:bg-secondary/40 focus-visible:bg-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring placeholder:text-muted-foreground/60'
+  'rounded-sm border border-transparent bg-transparent px-2 py-1 text-[13px] transition-colors duration-150 hover:bg-secondary/60 focus-visible:bg-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring placeholder:text-muted-foreground/60'
 
 // Ghost cell in the entry row: previews the append default in the italic
 // muted tone, hovers like a cell input so it reads as clickable.
 const ENTRY_GHOST_CLASS =
-  'rounded-sm border border-transparent bg-transparent px-2 py-1 text-[13px] italic text-muted-foreground/50 tabular-nums transition-colors duration-150 hover:bg-secondary/40 cursor-text'
+  'rounded-sm border border-transparent bg-transparent px-2 py-1 text-[13px] italic text-muted-foreground/50 tabular-nums transition-colors duration-150 hover:bg-secondary/60 cursor-text'
 
 // The add-row links under the table. Quiet links on desktop, inflated to a
 // 40px touch target on coarse pointers: on Android they are the only way into
@@ -194,7 +195,7 @@ const ROW_ICON_BUTTON_CLASS =
 
 // Compact borderless Select trigger for in-table cells (unit, VAT).
 const CELL_SELECT_TRIGGER_CLASS =
-  'h-7 w-auto gap-1 rounded-sm border-transparent bg-transparent px-2 py-1 text-[13px] shadow-none hover:bg-secondary/40 tabular-nums'
+  'h-7 w-auto gap-1 rounded-sm border-transparent bg-transparent px-2 py-1 text-[13px] shadow-none hover:bg-secondary/60 tabular-nums'
 
 // Förval settings row: flat hairline rows, label left, control right.
 const SETTINGS_ROW_CLASS =
@@ -804,8 +805,6 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
   const watchValidUntil = watch('valid_until')
   const watchReceivedDate = watch('received_date')
   const watchDeliveryDate = watch('delivery_date')
-  const watchYourReference = watch('your_reference')
-  const watchInvoiceMarking = watch('invoice_marking')
   const watchPaymentLinkUrl = watch('payment_link_url')
   const watchPaymentLinkAuto = watch('payment_link_auto')
   const watchPersonnummer = watch('deduction_personnummer')
@@ -888,14 +887,15 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
     // and, when it is a Skatteverket arbetstypskod, its work type too. Legacy
     // articles carry only the kind (`ROT`/`RUT`): those pre-fill the deduction
     // and keep a same-kind arbetstyp already chosen on the row. An article
-    // WITHOUT any housework flag re-defaults the row to no deduction, the same
-    // overwrite semantics as description/price above: a material article
-    // picked onto a previously RUT-flagged row must not keep claiming a
-    // deduction on material. Proformas/delivery notes/self-billing have no
+    // WITHOUT any housework flag, and every goods (vara) article whatever its
+    // flag says (ROT/RUT is labor only), re-defaults the row to no deduction,
+    // the same overwrite semantics as description/price above: a material
+    // article picked onto a previously RUT-flagged row must not keep claiming
+    // a deduction on material. Proformas/delivery notes/self-billing have no
     // deduction model (their rows keep no ⋮ menu either), so they are left
     // untouched.
     if (isInvoiceDoc) {
-      const { deductionType: kind, workType } = parseArticleHouseworkType(a.housework_type)
+      const { deductionType: kind, workType } = articleDeductionPrefill(a)
       const currentWorkType = getValues(`items.${index}.work_type`) ?? null
       const keepCurrentWorkType =
         kind != null && !workType && deductionTypeForWorkType(currentWorkType) === kind
@@ -2292,8 +2292,6 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
     validUntil: watchValidUntil || '',
     receivedDate: watchReceivedDate || '',
     deliveryDate: watchDeliveryDate || '',
-    yourReference: watchYourReference || '',
-    invoiceMarking: watchInvoiceMarking || '',
     paymentLink: paymentLinkMode,
     oreRounding,
     dims: hasDimensionValues(defaultDims) ? compactDims(defaultDims) : null,
@@ -2320,10 +2318,6 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
         return t('chip_received', { date: chip.date })
       case 'delivery':
         return t('chip_delivery', { date: chip.date })
-      case 'your_reference':
-        return t('chip_your_reference', { reference: chip.reference })
-      case 'invoice_marking':
-        return t('chip_invoice_marking', { marking: chip.marking })
       case 'payment_link':
         return chip.mode === 'auto' ? t('chip_stripe_auto') : t('chip_payment_link')
       case 'ore_off':
@@ -2456,6 +2450,60 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
             >
               + {t('create_customer')}
             </button>
+
+            {/* References are per-invoice data, not defaults: they sit in the
+                visible head next to the customer (crm#136, crm#187), where a
+                draft never hides them behind Ändra förval. Self-billed mode
+                keeps not rendering them, as before. */}
+            {!isSelfBilled && (
+              <div className="mt-5 grid gap-4 sm:grid-cols-3">
+                <div className="min-w-0 space-y-1.5">
+                  <Label className="text-[13px] font-normal">{t('our_reference_label')}</Label>
+                  <Controller
+                    name="our_reference"
+                    control={control}
+                    render={({ field }) => (
+                      <TagInput
+                        value={field.value ?? ''}
+                        onChange={field.onChange}
+                        placeholder={t('our_reference_placeholder')}
+                        className="text-[13px]"
+                      />
+                    )}
+                  />
+                </div>
+                <div className="min-w-0 space-y-1.5">
+                  <Label className="text-[13px] font-normal">{t('your_reference_label')}</Label>
+                  <Controller
+                    name="your_reference"
+                    control={control}
+                    render={({ field }) => (
+                      <TagInput
+                        value={field.value ?? ''}
+                        onChange={field.onChange}
+                        placeholder={t('your_reference_placeholder')}
+                        className="text-[13px]"
+                      />
+                    )}
+                  />
+                </div>
+                {/* Fakturamärkning: one buyer-required marking string
+                    (kostnadsställe/projekt/PO), separate from Er referens.
+                    Plain input, never comma-split. */}
+                <div className="min-w-0 space-y-1.5">
+                  <Label htmlFor="invoice_marking" className="text-[13px] font-normal">
+                    {t('invoice_marking_label')}
+                  </Label>
+                  <Input
+                    id="invoice_marking"
+                    maxLength={200}
+                    placeholder={t('invoice_marking_placeholder')}
+                    className="h-9 px-3 text-[13px]"
+                    {...register('invoice_marking')}
+                  />
+                </div>
+              </div>
+            )}
 
             {isSelfBilled && (
               <div className="mt-4 grid gap-4 sm:grid-cols-2">
@@ -3209,7 +3257,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
               {/* Suggestion popover: anchored below the whole table wrap so it
                   never clips inside the horizontal scroll container. */}
               {entryOpen && (
-                <div className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-lg border border-input bg-card shadow-md">
+                <div className={cn('absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden', POPOVER_SURFACE_CLASS, POPOVER_ENTER_CLASS)}>
                   {/* The hint is a sibling of the listbox (listbox children
                       must be options); the input references it via
                       aria-describedby. */}
@@ -3224,7 +3272,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                         tabIndex={-1}
                         className={cn(
                           'flex w-full items-baseline justify-between gap-3 px-3 py-2 text-left',
-                          i === entryActiveIdx ? 'bg-secondary/60' : 'hover:bg-secondary/40',
+                          i === entryActiveIdx ? 'bg-secondary/60' : 'hover:bg-secondary/60',
                         )}
                         onPointerDown={(e) => {
                           // pointerdown, not mousedown: on touch the
@@ -3363,7 +3411,7 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
             </div>
             <div
               id={settingsPanelId}
-              className="grid transition-[grid-template-rows] duration-200 motion-reduce:transition-none"
+              className="grid transition-[grid-template-rows] duration-300 motion-reduce:transition-none"
               style={{ gridTemplateRows: settingsOpen ? '1fr' : '0fr' }}
             >
               <div className={cn('min-h-0 overflow-hidden', !settingsOpen && 'invisible')} aria-hidden={!settingsOpen}>
@@ -3535,56 +3583,6 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
 
                   {!isSelfBilled && (
                     <>
-                      <div className={SETTINGS_ROW_CLASS}>
-                        <Label className="text-[13px] font-normal">{t('our_reference_label')}</Label>
-                        <div className="w-56">
-                          <Controller
-                            name="our_reference"
-                            control={control}
-                            render={({ field }) => (
-                              <TagInput
-                                value={field.value ?? ''}
-                                onChange={field.onChange}
-                                placeholder={t('our_reference_placeholder')}
-                              />
-                            )}
-                          />
-                        </div>
-                      </div>
-                      <div className={SETTINGS_ROW_CLASS}>
-                        <Label className="text-[13px] font-normal">{t('your_reference_label')}</Label>
-                        <div className="w-56">
-                          <Controller
-                            name="your_reference"
-                            control={control}
-                            render={({ field }) => (
-                              <TagInput
-                                value={field.value ?? ''}
-                                onChange={field.onChange}
-                                placeholder={t('your_reference_placeholder')}
-                              />
-                            )}
-                          />
-                        </div>
-                      </div>
-                      {/* Fakturamärkning: one buyer-required marking string
-                          (kostnadsställe/projekt/PO), separate from Er
-                          referens. Plain input, never comma-split. */}
-                      <div className={SETTINGS_ROW_CLASS}>
-                        <Label htmlFor="invoice_marking" className="text-[13px] font-normal">
-                          {t('invoice_marking_label')}
-                        </Label>
-                        <div className="w-56">
-                          <Input
-                            id="invoice_marking"
-                            maxLength={200}
-                            placeholder={t('invoice_marking_placeholder')}
-                            className="h-8 text-[13px]"
-                            {...register('invoice_marking')}
-                          />
-                        </div>
-                      </div>
-
                       {/* Online payment link: manual paste or the Stripe auto
                           toggle. Only real invoices; hidden unless the company
                           opted in, except when the draft already carries a link. */}
@@ -3796,24 +3794,21 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
                 <Button
                   type="button"
                   variant="outline"
-                  disabled={isPreviewing || inFlight}
+                  disabled={inFlight}
+                  loading={isPreviewing}
                   onClick={handleSubmit((data) => handlePreviewPDF(data), onInvalidSubmit)}
                 >
-                  {isPreviewing ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <Eye className="mr-2 h-4 w-4" />
-                  )}
+                  {!isPreviewing && <Eye className="mr-2 h-4 w-4" />}
                   {isPreviewing ? t('preview_pdf_generating') : t('preview_pdf')}
                 </Button>
               )}
               <Button
                 type="submit"
                 disabled={inFlight || !canWrite}
+                loading={isFormSubmitting && !isSavingDraft}
                 title={!canWrite ? t('viewer_disabled_tooltip') : undefined}
               >
                 {!canWrite && <Lock className="mr-2 h-4 w-4 inline" />}
-                {isFormSubmitting && !isSavingDraft && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {primaryLabel}
               </Button>
             </div>
@@ -3858,13 +3853,10 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
             <Button
               variant="outline"
               onClick={() => handlePreviewPDF()}
-              disabled={isPreviewing || isSubmitting}
+              disabled={isSubmitting}
+              loading={isPreviewing}
             >
-              {isPreviewing ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Eye className="mr-2 h-4 w-4" />
-              )}
+              {!isPreviewing && <Eye className="mr-2 h-4 w-4" />}
               {isPreviewing ? t('preview_pdf_generating') : t('preview_pdf')}
             </Button>
           }
@@ -3975,12 +3967,8 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
             >
               {t('send_later')}
             </Button>
-            <Button onClick={handleSendNow} disabled={isSending}>
-              {isSending ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Send className="mr-2 h-4 w-4" />
-              )}
+            <Button onClick={handleSendNow} loading={isSending}>
+              {!isSending && <Send className="mr-2 h-4 w-4" />}
               {isSending ? t('send_now_sending') : t('send_now')}
             </Button>
           </DialogFooter>

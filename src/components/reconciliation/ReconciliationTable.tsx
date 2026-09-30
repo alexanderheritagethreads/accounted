@@ -56,7 +56,7 @@ export function ReconciliationTable({ accounts, onSelect, footer }: Reconciliati
       >
         <td className={cn(TD_CLASS, '!pl-0')}>
           <button type="button" onClick={() => onSelect(a.account_key)} className="flex items-center gap-3 text-left">
-            <AccountLogo account={a} className="h-7 w-7 text-[10px]" />
+            <AccountLogo account={a} className="h-7 w-7 text-[11px]" />
             {/* One line (convention 4): number, currency and the
                 superseded marker ride muted beside the name. */}
             <span className="flex min-w-0 items-baseline gap-2">
@@ -105,7 +105,7 @@ export function ReconciliationTable({ accounts, onSelect, footer }: Reconciliati
           <Button
             size="sm"
             variant="outline"
-            className={cn('h-7 px-3.5 text-xs', HOVER_REVEAL_CLASS)}
+            className={HOVER_REVEAL_CLASS}
             onClick={() => onSelect(a.account_key)}
           >
             {t('v2_reconcile')}
@@ -145,7 +145,7 @@ export function ReconciliationTable({ accounts, onSelect, footer }: Reconciliati
                       <button
                         type="button"
                         onClick={() => setManualOpen((v) => !v)}
-                        className="normal-case tracking-normal text-[12px] font-normal text-muted-foreground underline decoration-border underline-offset-2 hover:text-foreground"
+                        className="normal-case tracking-normal text-[12.5px] font-normal text-muted-foreground underline decoration-border underline-offset-2 hover:text-foreground"
                       >
                         {manualOpen ? t('v2_hide_manual') : t('v2_show_manual', { count: manual.length })}
                       </button>

@@ -18,7 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Loader2, Lock, Trash2 } from 'lucide-react'
+import { Lock, Trash2 } from 'lucide-react'
 import { useTranslations } from 'next-intl'
 import { useToast } from '@/components/ui/use-toast'
 import { useCanWrite } from '@/lib/hooks/use-can-write'
@@ -336,16 +336,15 @@ export function EditAssetDialog({
             </Button>
             <Button
               onClick={handleSubmit}
-              disabled={!canWrite || submitting}
+              disabled={!canWrite}
+              loading={submitting}
               title={
                 !canWrite ? 'Endast användare med skrivrättigheter kan ändra tillgångar.' : undefined
               }
             >
               {!canWrite && <Lock className="mr-1 h-4 w-4" />}
               {submitting ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Sparar…
-                </>
+                'Sparar…'
               ) : (
                 'Spara'
               )}

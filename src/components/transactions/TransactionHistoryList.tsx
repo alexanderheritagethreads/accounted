@@ -25,7 +25,6 @@ import {
   Landmark,
   Link2,
   FileSearch,
-  Loader2,
   MoreHorizontal,
   Paperclip,
   Trash2,
@@ -222,15 +221,8 @@ export default function TransactionHistoryList({
           visible list. */}
       {hasMore && onLoadMore && !searchTerm && sourceFilter !== 'skatteverket' && (
         <div className="flex justify-center">
-          <Button variant="outline" onClick={onLoadMore} disabled={isLoadingMore}>
-            {isLoadingMore ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                {t('loading_more')}
-              </>
-            ) : (
-              t('load_more')
-            )}
+          <Button variant="outline" onClick={onLoadMore} loading={isLoadingMore}>
+            {isLoadingMore ? t('loading_more') : t('load_more')}
           </Button>
         </div>
       )}
@@ -410,7 +402,6 @@ function BankHistoryRow({
               <Button
                 size="sm"
                 variant="outline"
-                className="h-7 px-3.5 text-xs"
                 onClick={() => onOpenCategoryDialog(transaction)}
               >
                 {t('book')}
@@ -424,8 +415,8 @@ function BankHistoryRow({
                     the middle of the STATUS header, not at the page edge. */}
                 <Button
                   variant="ghost"
-                  size="icon"
-                  className={cn('mr-2 h-7 w-7 text-muted-foreground hover:text-foreground data-[state=open]:opacity-100', HOVER_REVEAL_CLASS)}
+                  size="icon-sm"
+                  className={cn('mr-2 text-muted-foreground hover:text-foreground data-[state=open]:opacity-100', HOVER_REVEAL_CLASS)}
                   aria-label="Fler alternativ"
                 >
                   <MoreHorizontal className="h-4 w-4" />
@@ -521,7 +512,7 @@ function SkattekontoHistoryRow({
             {t('skv_badge')}
           </span>
           {!isBooked && row.match_suggestion && (
-            <Badge variant="warning" className="h-4 shrink-0 px-1.5 py-0 text-[10px]">
+            <Badge variant="warning" className="h-4 shrink-0 px-1.5 py-0 text-[11px]">
               {t('possible_duplicate')}
             </Badge>
           )}
@@ -555,7 +546,6 @@ function SkattekontoHistoryRow({
                 <Button
                   size="sm"
                   variant="outline"
-                  className="h-7 px-3.5 text-xs"
                   onClick={() => onMatch(row)}
                 >
                   {row.match_suggestion ? t('link') : t('match')}
