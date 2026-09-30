@@ -22,6 +22,7 @@ import { CUSTOM_INVOICE_FONT_RENDER_PREFIX } from '@/lib/invoices/pdf-fonts'
 import { getAmountToPay } from '@/lib/invoices/rounding'
 import { isTextLikeLine } from '@/lib/invoices/display'
 import { maskedDeductionPersonnummer } from '@/lib/invoices/deduction-personnummer'
+import { workTypeLabel } from '@/lib/invoices/rot-rut-rules'
 import { getCountryName } from '@/lib/vat/country-codes'
 import { EXPORT_NOTICE_SV } from '@/lib/invoices/vat-rules'
 import { unitLabel } from '@/lib/invoices/unit-labels'
@@ -218,6 +219,17 @@ const LABELS = {
     deductionWorkType: 'Arbete:',
     deductionLaborHours: 'Arbetstimmar:',
     deductionNotice: 'Köparen ansöker om utbetalning hos Skatteverket via fakturamodellen. Säljaren begär utbetalning för den del köparen inte betalat.',
+    // Skattereduktion för grön teknik: Skatteverket asks the invoice to state
+    // the total and the reduction incl. moms, what the installation cost
+    // (arbete och material) apart from övriga kostnader, and the property
+    // (fastighetsbeteckning, or the förening's orgnr + lägenhetsnummer).
+    deductionRowGronTeknik: 'Skattereduktion grön teknik:',
+    totalInclVat: 'Totalt inkl. moms:',
+    deductionBrfOrgNumber: 'Bostadsrättsförening:',
+    gronTeknikKind: 'Grön teknik',
+    gronTeknikEligibleCost: 'Arbete och material:',
+    gronTeknikOtherCost: 'Övriga kostnader:',
+    inclVatSuffix: 'inkl. moms',
     toCredit: 'Att kreditera:',
     toPay: 'Att betala:',
     // A quote is not a payment request, so its grand total is a neutral sum.
@@ -304,6 +316,13 @@ const LABELS = {
     deductionWorkType: 'Service type:',
     deductionLaborHours: 'Labor hours:',
     deductionNotice: 'The customer claims the deduction via fakturamodellen at Skatteverket. The seller requests payment from the agency for the portion not paid by the customer.',
+    deductionRowGronTeknik: 'Green technology tax reduction:',
+    totalInclVat: 'Total incl. VAT:',
+    deductionBrfOrgNumber: 'Housing cooperative:',
+    gronTeknikKind: 'Green technology',
+    gronTeknikEligibleCost: 'Labour and material:',
+    gronTeknikOtherCost: 'Other costs:',
+    inclVatSuffix: 'incl. VAT',
     toCredit: 'To credit:',
     toPay: 'Total due:',
     totalQuote: 'Total:',
@@ -370,6 +389,13 @@ export function localizeVatNotice(text: string, lang: PdfLang): string {
 // statutory Swedish concept and has no formal English equivalent.
 const DEDUCTION_LABOR_ONLY_NOTICE =
   'Endast arbetskostnad har inkluderats i underlaget för ROT/RUT-avdrag enligt Skatteverkets fakturamodell.'
+
+// Grön teknik counterpart, Swedish-only for the same reason. Skatteverket
+// gives the reduction "för kostnaden för arbete och material", while
+// "resor, utrustning eller projektering i samband med installationen" do not
+// qualify (Så fungerar skattereduktionen för grön teknik, företag).
+export const GRON_TEKNIK_BASE_NOTICE =
+  'Underlaget för skattereduktion för grön teknik är kostnaden för arbete och material för installationen, inklusive moms. Övriga kostnader, till exempel resor, frakt, maskiner och projektering, ingår inte.'
 
 // Resolved branding values used by the stylesheet. Keeping the resolved shape
 // distinct from the prop shape lets us validate the font allowlist in one
@@ -948,6 +974,20 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
   // neither print zeros nor seed an empty per-rate VAT group.
   const billableItems = items.filter((item) => !isTextLikeLine(item))
 
+  // Skattereduktion för grön teknik. It never shares an invoice with ROT/RUT
+  // (refused at creation), so its presence decides the whole deduction
+  // block: the reduction row, the total incl. moms, the property, what the
+  // installation cost apart from övriga kostnader, and the notice. ROT/RUT
+  // invoices render exactly as before.
+  const hasGronTeknik = items.some((item) => item.deduction_type === 'gron_teknik')
+  const lineInclVat = (item: InvoiceItem): number => roundOre((item.line_total ?? 0) + (item.vat_amount ?? 0))
+  const gronTeknikEligibleCost = hasGronTeknik
+    ? roundOre(billableItems.filter((item) => item.deduction_type === 'gron_teknik').reduce((sum, item) => sum + lineInclVat(item), 0))
+    : 0
+  const gronTeknikOtherCost = hasGronTeknik
+    ? roundOre(billableItems.filter((item) => !item.deduction_type).reduce((sum, item) => sum + lineInclVat(item), 0))
+    : 0
+
   // Check if items have mixed VAT rates
   const hasPerLineVat = billableItems.some((item) => item.vat_rate !== undefined && item.vat_rate !== null)
   const uniqueRates = hasPerLineVat
@@ -1299,9 +1339,17 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
                       <Text style={[styles.totalValue, { fontSize: 8 }]}>{formatPdfCurrency(rounding.roundingDelta, 'SEK', lang)}</Text>
                     </View>
                   )}
+                  {showDeduction && hasGronTeknik && (
+                    // Grön teknik: "Fakturans totala belopp och
+                    // skattereduktionens storlek", both incl. moms.
+                    <View style={styles.totalRow}>
+                      <Text style={styles.totalLabel}>{L.totalInclVat}</Text>
+                      <Text style={styles.totalValue}>{formatPdfCurrency(rounding.displayed, invoice.currency, lang)}</Text>
+                    </View>
+                  )}
                   {showDeduction && (
                     <View style={styles.totalRow}>
-                      <Text style={styles.totalLabel}>{L.deductionRow}</Text>
+                      <Text style={styles.totalLabel}>{hasGronTeknik ? L.deductionRowGronTeknik : L.deductionRow}</Text>
                       <Text style={styles.totalValue}>
                         {/* deduction_total is stored as a positive magnitude;
                             -Math.abs() keeps the row a reduction even if the
@@ -1386,6 +1434,9 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
               // null when only RUT lines exist (RUT doesn't require it).
               const housing = items.find((i) => i.housing_designation)?.housing_designation
               const apartment = items.find((i) => i.apartment_number)?.apartment_number
+              // Grön teknik in a bostadsrätt: the förening's orgnr goes with
+              // the lägenhetsnummer.
+              const brf = hasGronTeknik ? items.find((i) => i.brf_org_number)?.brf_org_number : null
               return (
                 <>
                   {housing && (
@@ -1400,20 +1451,48 @@ export function InvoicePDF({ invoice, customer, items, company, originalInvoiceN
                       <Text style={styles.deductionValue}>{apartment}</Text>
                     </View>
                   )}
+                  {brf && (
+                    <View style={styles.deductionRow}>
+                      <Text style={styles.deductionLabel}>{L.deductionBrfOrgNumber}</Text>
+                      <Text style={styles.deductionValue}>{brf}</Text>
+                    </View>
+                  )}
                 </>
               )
             })()}
-            {/* Labor-only disclaimer (Skatteverket fakturamodellen). Per ML
-                17 kap, only the labor portion qualifies; material must be
-                invoiced separately. */}
-            <Text style={styles.deductionNotice}>{DEDUCTION_LABOR_ONLY_NOTICE}</Text>
+            {hasGronTeknik && (
+              <>
+                <View style={styles.deductionRow}>
+                  <Text style={styles.deductionLabel}>{L.gronTeknikEligibleCost}</Text>
+                  <Text style={styles.deductionValue}>
+                    {`${formatPdfCurrency(gronTeknikEligibleCost, invoice.currency, lang)} ${L.inclVatSuffix}`}
+                  </Text>
+                </View>
+                <View style={styles.deductionRow}>
+                  <Text style={styles.deductionLabel}>{L.gronTeknikOtherCost}</Text>
+                  <Text style={styles.deductionValue}>
+                    {`${formatPdfCurrency(gronTeknikOtherCost, invoice.currency, lang)} ${L.inclVatSuffix}`}
+                  </Text>
+                </View>
+              </>
+            )}
+            {/* What the base covers (Skatteverket fakturamodellen): labor
+                only for ROT/RUT, material invoiced separately; labor and
+                material for grön teknik, övriga kostnader excluded. */}
+            <Text style={styles.deductionNotice}>
+              {hasGronTeknik ? GRON_TEKNIK_BASE_NOTICE : DEDUCTION_LABOR_ONLY_NOTICE}
+            </Text>
             {/* Per-line breakdown: one row per eligible item with kind,
                 work type if present and the deducted amount. */}
             {items
               .filter((i) => i.deduction_type)
               .map((i, idx) => {
-                const kind = i.deduction_type === 'rot' ? 'ROT' : 'RUT'
-                const work = i.work_type ? `, ${i.work_type}` : ''
+                // Grön teknik rows name the installation type (Skatteverket:
+                // "vilken typ av arbete"); ROT/RUT rows keep printing the code.
+                const isGronTeknik = i.deduction_type === 'gron_teknik'
+                const kind = isGronTeknik ? L.gronTeknikKind : i.deduction_type === 'rot' ? 'ROT' : 'RUT'
+                const workText = isGronTeknik ? (workTypeLabel(i.work_type) ?? i.work_type) : i.work_type
+                const work = workText ? `, ${workText}` : ''
                 return (
                   <Text key={idx} style={styles.deductionLineItem} hyphenationCallback={wrapFullWidthWords}>
                     {`${kind}${work}: ${i.description}, ${formatPdfCurrency(i.deduction_amount ?? 0, invoice.currency, lang)}`}

@@ -58,26 +58,29 @@ export interface NextStepInput {
   requiresPersonnummer: boolean
   personnummer: string
   /**
-   * A ROT line exists AND a deduction amount is claimed (fastighetsbeteckning
-   * is then required). Derive via deriveRequiresHousing so the gate provably
-   * matches the ROT/RUT claim card's mount condition.
+   * A ROT or grön teknik line exists AND a deduction amount is claimed
+   * (fastighetsbeteckning is then required). Derive via deriveRequiresHousing
+   * so the gate provably matches the claim card's mount condition.
    */
   requiresHousing: boolean
   housingDesignation: string
 }
 
 /**
- * The housing (fastighetsbeteckning) requirement behind NextStepInput. A ROT
- * line alone is not enough: the claim card only mounts while a deduction
- * amount is claimed (deductionTotal > 0), so a ROT-flagged line whose amount
- * is still zero (transient state while typing) must not produce a housing
- * step, or the next-step link would try to focus an unmounted field.
+ * The housing (fastighetsbeteckning) requirement behind NextStepInput. ROT
+ * and grön teknik both name the property (RUT does not). A flagged line
+ * alone is not enough: the claim card only mounts while a deduction amount
+ * is claimed (deductionTotal > 0), so a flagged line whose amount is still
+ * zero (transient state while typing) must not produce a housing step, or
+ * the next-step link would try to focus an unmounted field.
  */
 export function deriveRequiresHousing(input: {
   hasRotLine: boolean
+  /** A grön teknik line: requires the property exactly like ROT. */
+  hasGronTeknikLine?: boolean
   deductionTotal: number
 }): boolean {
-  return input.hasRotLine && input.deductionTotal > 0
+  return (input.hasRotLine || input.hasGronTeknikLine === true) && input.deductionTotal > 0
 }
 
 /**

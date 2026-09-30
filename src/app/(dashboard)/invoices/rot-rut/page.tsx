@@ -30,6 +30,7 @@ import { computeRefusedShares } from '@/lib/invoices/rot-rut-reclaim'
 import { expectedRotRutPayoutAmount } from '@/lib/invoices/rot-rut-payout-matching'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { todayIsoStockholm } from '@/lib/dates/iso'
+import { DEDUCTION_TYPE_LABEL_KEYS, isDeductionType, type DeductionType } from '@/lib/invoices/rot-rut-rules'
 
 const RotRutPayoutDialog = dynamic(() => import('@/components/invoices/RotRutPayoutDialog'), {
   ssr: false,
@@ -52,7 +53,7 @@ interface RequestItem {
 interface PayoutRequest {
   id: string
   name: string
-  deduction_type: 'rot' | 'rut'
+  deduction_type: DeductionType
   status: RequestStatus
   requested_total: number | string
   decided_total: number | string | null
@@ -136,6 +137,7 @@ function refusedState(
 
 export default function RotRutOverviewPage() {
   const t = useTranslations('rot_rut_overview')
+  const tInvoices = useTranslations('invoices')
   const locale = useLocale() as ErrorLocale
   const { toast } = useToast()
   const { canWrite } = useCanWrite()
@@ -146,7 +148,11 @@ export default function RotRutOverviewPage() {
   const loadSequence = useRef(0)
 
   const [requests, setRequests] = useState<PayoutRequest[]>([])
-  const [eligibleCounts, setEligibleCounts] = useState<{ rot: number; rut: number }>({ rot: 0, rut: 0 })
+  const [eligibleCounts, setEligibleCounts] = useState<Record<DeductionType, number>>({
+    rot: 0,
+    rut: 0,
+    gron_teknik: 0,
+  })
   const [isLoading, setIsLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
@@ -155,6 +161,14 @@ export default function RotRutOverviewPage() {
   // The file dialog is driven by ?new=1 so the browser back button closes it
   // (same pattern as /invoices and /invoices/recurring).
   const showNewRequest = searchParams.has('new')
+  // ?type= opens the dialog on that list (the invoice page links grön teknik
+  // there). Otherwise ROT, unless grön teknik is the only kind ready.
+  const typeParam = searchParams.get('type')
+  const dialogInitialType: DeductionType = isDeductionType(typeParam)
+    ? typeParam
+    : eligibleCounts.rot === 0 && eligibleCounts.rut === 0 && eligibleCounts.gron_teknik > 0
+      ? 'gron_teknik'
+      : 'rot'
   const openNewRequest = () => router.push('/invoices/rot-rut?new=1', { scroll: false })
   const closeNewRequest = () => router.replace('/invoices/rot-rut', { scroll: false })
 
@@ -162,10 +176,11 @@ export default function RotRutOverviewPage() {
     const sequence = ++loadSequence.current
     setIsLoading(true)
     try {
-      const [requestsRes, rotRes, rutRes] = await Promise.all([
+      const [requestsRes, rotRes, rutRes, gronTeknikRes] = await Promise.all([
         fetch('/api/rot-rut/payout-requests'),
         fetch('/api/rot-rut/eligible?type=rot'),
         fetch('/api/rot-rut/eligible?type=rut'),
+        fetch('/api/rot-rut/eligible?type=gron_teknik'),
       ])
       if (!requestsRes.ok) {
         const description = await getResponseErrorMessage(requestsRes, 'invoice', locale)
@@ -177,9 +192,12 @@ export default function RotRutOverviewPage() {
       const body = (await requestsRes.json()) as { data: PayoutRequest[] }
       const rot = rotRes.ok ? ((await rotRes.json()) as { data: { eligible: unknown[] } }).data.eligible.length : 0
       const rut = rutRes.ok ? ((await rutRes.json()) as { data: { eligible: unknown[] } }).data.eligible.length : 0
+      const gronTeknik = gronTeknikRes.ok
+        ? ((await gronTeknikRes.json()) as { data: { eligible: unknown[] } }).data.eligible.length
+        : 0
       if (sequence !== loadSequence.current) return
       setRequests(body.data)
-      setEligibleCounts({ rot, rut })
+      setEligibleCounts({ rot, rut, gron_teknik: gronTeknik })
     } catch (error) {
       if (sequence !== loadSequence.current) return
       toast({
@@ -378,7 +396,7 @@ export default function RotRutOverviewPage() {
     }
   }
 
-  const readyCount = eligibleCounts.rot + eligibleCounts.rut
+  const readyCount = eligibleCounts.rot + eligibleCounts.rut + eligibleCounts.gron_teknik
 
   return (
     <div className="space-y-8">
@@ -394,6 +412,7 @@ export default function RotRutOverviewPage() {
               <p>
                 <span className="font-medium">{t('tile_awaiting')}:</span> {t('tile_awaiting_help')}
               </p>
+              <p>{t('gron_teknik_help')}</p>
             </div>
           </HelpPopover>
         }
@@ -451,7 +470,11 @@ export default function RotRutOverviewPage() {
           <p className="text-xs text-muted-foreground">{t('tile_ready')}</p>
           <p className="mt-1 font-display text-2xl tabular-nums">{readyCount}</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            {t('tile_ready_help', { rot: eligibleCounts.rot, rut: eligibleCounts.rut })}
+            {t('tile_ready_help', {
+              rot: eligibleCounts.rot,
+              rut: eligibleCounts.rut,
+              gron: eligibleCounts.gron_teknik,
+            })}
           </p>
         </div>
       </div>
@@ -506,7 +529,7 @@ export default function RotRutOverviewPage() {
                         <summary className="cursor-pointer list-none">
                           <span className="font-medium">{request.name}</span>
                           <span className="ml-2 text-xs text-muted-foreground">
-                            {request.deduction_type.toUpperCase()} · {t('cases', { count: request.items.length })}
+                            {tInvoices(DEDUCTION_TYPE_LABEL_KEYS[request.deduction_type] ?? 'rot_rut_type_rot')} · {t('cases', { count: request.items.length })}
                           </span>
                         </summary>
                         <ul className="mt-2 space-y-1 text-xs">
@@ -642,6 +665,7 @@ export default function RotRutOverviewPage() {
       {showNewRequest && (
         <RotRutPayoutDialog
           open
+          initialType={dialogInitialType}
           onOpenChange={(open) => {
             if (!open) {
               closeNewRequest()
