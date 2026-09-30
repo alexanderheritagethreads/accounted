@@ -3922,6 +3922,41 @@ const DOCUMENT: Record<string, StructuredErrorEntry> = {
     message_en:
       'The document is linked to a journal entry and is accounting records under BFL 7 kap 2 §: it must be kept for 7 years and cannot be deleted. Upload a new version instead.',
   },
+  // The other records that hold a document (lib/documents/deletion.ts); the
+  // Swedish texts are DOCUMENT_DELETE_REFUSALS' there, word for word.
+  DOC_DELETE_SUPPLIER_INVOICE_UNDERLAG: {
+    httpStatus: 409,
+    message_sv:
+      'Underlaget hör till en registrerad leverantörsfaktura och utgör räkenskapsinformation enligt Bokföringslagen (5 kap 6-7 §§ och 7 kap). Det ska bevaras i minst 7 år och får inte raderas så länge leverantörsfakturan finns kvar.',
+    message_en:
+      'The document is the underlag of a registered supplier invoice and is accounting records under BFL (5 kap 6-7 §§, 7 kap): it must be kept for 7 years and cannot be deleted while the supplier invoice exists.',
+    remediation: {
+      description:
+        'A supplier invoice (supplier_invoices.document_id) holds this document, and it stays as long as the supplier invoice does. A supplier invoice registered by mistake and not yet booked or paid can be deleted first (DELETE /api/v1/companies/{companyId}/supplier-invoices/{id}); a booked one is credited instead, and its underlag is kept.',
+    },
+  },
+  DOC_DELETE_EXPENSE_CLAIM_UNDERLAG: {
+    httpStatus: 409,
+    message_sv:
+      'Underlaget hör till ett registrerat utlägg och utgör räkenskapsinformation enligt Bokföringslagen (5 kap 6-7 §§ och 7 kap). Det ska bevaras i minst 7 år och får inte raderas så länge utlägget finns kvar.',
+    message_en:
+      'The document is the underlag of a registered expense claim and is accounting records under BFL (5 kap 6-7 §§, 7 kap): it must be kept for 7 years and cannot be deleted while the expense claim exists.',
+    remediation: {
+      description:
+        'An expense claim (expense_claims.document_id) holds this document, and it stays as long as the expense claim does.',
+    },
+  },
+  DOC_DELETE_BOOKED_INBOX_ITEM: {
+    httpStatus: 409,
+    message_sv:
+      'Underlaget hör till en mottagen faktura som redan har bokförts eller blivit en leverantörsfaktura. Det utgör räkenskapsinformation enligt Bokföringslagen 7 kap och ska bevaras i minst 7 år i det skick det togs emot, så det får inte raderas.',
+    message_en:
+      'The document belongs to a received invoice that has already been booked or turned into a supplier invoice. It is accounting records under BFL 7 kap and must be kept for 7 years in the form it was received, so it cannot be deleted.',
+    remediation: {
+      description:
+        'An inbox item that created a journal entry or a supplier invoice (invoice_inbox_items.created_journal_entry_id or created_supplier_invoice_id) holds this document as its file or as the received Peppol XML (channel_context.peppol_xml_document_id). It is kept; the files of an inbox item that was never booked can still be discarded.',
+    },
+  },
   DOC_ATTACH_REPLACES_POSTED: {
     httpStatus: 409,
     message_sv: 'Bilagan är kopplad till en bokförd verifikation och kan inte ersättas. Storno verifikationen först.',
@@ -4983,6 +5018,17 @@ const SALARY: Record<string, StructuredErrorEntry> = {
       description:
         'A generated payment file is kept for seven years, so the run it belongs to stays. Edit the draft run instead (gnubok_set_run_salary, gnubok_update_salary_run), or leave it unbooked.',
       tool: 'gnubok_update_salary_run',
+    },
+  },
+  DOCUMENT_DELETE_BLOCKED_BY_TRANSACTION: {
+    httpStatus: 409,
+    message_sv:
+      'Underlaget är kopplat till en banktransaktion och kan inte tas bort. Koppla bort det från transaktionen först.',
+    message_en:
+      'The document is attached to a bank transaction and cannot be deleted. Detach it from the transaction first.',
+    remediation: {
+      description:
+        'The document is the underlag of a bank transaction (transactions.document_id). Detach it from the transaction first (POST /api/v1/companies/{companyId}/transactions/{id}/detach-document), then delete it. A document linked to a verifikat is never deleted.',
     },
   },
   RECORD_STILL_REFERENCED: {

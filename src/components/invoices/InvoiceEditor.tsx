@@ -841,8 +841,6 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
   const watchValidUntil = watch('valid_until')
   const watchReceivedDate = watch('received_date')
   const watchDeliveryDate = watch('delivery_date')
-  const watchYourReference = watch('your_reference')
-  const watchInvoiceMarking = watch('invoice_marking')
   const watchPaymentLinkUrl = watch('payment_link_url')
   const watchPaymentLinkAuto = watch('payment_link_auto')
   const watchPersonnummer = watch('deduction_personnummer')
@@ -2352,8 +2350,6 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
     validUntil: watchValidUntil || '',
     receivedDate: watchReceivedDate || '',
     deliveryDate: watchDeliveryDate || '',
-    yourReference: watchYourReference || '',
-    invoiceMarking: watchInvoiceMarking || '',
     paymentLink: paymentLinkMode,
     oreRounding,
     dims: hasDimensionValues(defaultDims) ? compactDims(defaultDims) : null,
@@ -2380,10 +2376,6 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
         return t('chip_received', { date: chip.date })
       case 'delivery':
         return t('chip_delivery', { date: chip.date })
-      case 'your_reference':
-        return t('chip_your_reference', { reference: chip.reference })
-      case 'invoice_marking':
-        return t('chip_invoice_marking', { marking: chip.marking })
       case 'payment_link':
         return chip.mode === 'auto' ? t('chip_stripe_auto') : t('chip_payment_link')
       case 'ore_off':
@@ -2516,6 +2508,60 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
             >
               + {t('create_customer')}
             </button>
+
+            {/* References are per-invoice data, not defaults: they sit in the
+                visible head next to the customer (crm#136, crm#187), where a
+                draft never hides them behind Ändra förval. Self-billed mode
+                keeps not rendering them, as before. */}
+            {!isSelfBilled && (
+              <div className="mt-5 grid gap-4 sm:grid-cols-3">
+                <div className="min-w-0 space-y-1.5">
+                  <Label className="text-[13px] font-normal">{t('our_reference_label')}</Label>
+                  <Controller
+                    name="our_reference"
+                    control={control}
+                    render={({ field }) => (
+                      <TagInput
+                        value={field.value ?? ''}
+                        onChange={field.onChange}
+                        placeholder={t('our_reference_placeholder')}
+                        className="text-[13px]"
+                      />
+                    )}
+                  />
+                </div>
+                <div className="min-w-0 space-y-1.5">
+                  <Label className="text-[13px] font-normal">{t('your_reference_label')}</Label>
+                  <Controller
+                    name="your_reference"
+                    control={control}
+                    render={({ field }) => (
+                      <TagInput
+                        value={field.value ?? ''}
+                        onChange={field.onChange}
+                        placeholder={t('your_reference_placeholder')}
+                        className="text-[13px]"
+                      />
+                    )}
+                  />
+                </div>
+                {/* Fakturamärkning: one buyer-required marking string
+                    (kostnadsställe/projekt/PO), separate from Er referens.
+                    Plain input, never comma-split. */}
+                <div className="min-w-0 space-y-1.5">
+                  <Label htmlFor="invoice_marking" className="text-[13px] font-normal">
+                    {t('invoice_marking_label')}
+                  </Label>
+                  <Input
+                    id="invoice_marking"
+                    maxLength={200}
+                    placeholder={t('invoice_marking_placeholder')}
+                    className="h-9 px-3 text-[13px]"
+                    {...register('invoice_marking')}
+                  />
+                </div>
+              </div>
+            )}
 
             {isSelfBilled && (
               <div className="mt-4 grid gap-4 sm:grid-cols-2">
@@ -3631,56 +3677,6 @@ export default function InvoiceEditor(props: InvoiceEditorProps = { mode: 'creat
 
                   {!isSelfBilled && (
                     <>
-                      <div className={SETTINGS_ROW_CLASS}>
-                        <Label className="text-[13px] font-normal">{t('our_reference_label')}</Label>
-                        <div className="w-56">
-                          <Controller
-                            name="our_reference"
-                            control={control}
-                            render={({ field }) => (
-                              <TagInput
-                                value={field.value ?? ''}
-                                onChange={field.onChange}
-                                placeholder={t('our_reference_placeholder')}
-                              />
-                            )}
-                          />
-                        </div>
-                      </div>
-                      <div className={SETTINGS_ROW_CLASS}>
-                        <Label className="text-[13px] font-normal">{t('your_reference_label')}</Label>
-                        <div className="w-56">
-                          <Controller
-                            name="your_reference"
-                            control={control}
-                            render={({ field }) => (
-                              <TagInput
-                                value={field.value ?? ''}
-                                onChange={field.onChange}
-                                placeholder={t('your_reference_placeholder')}
-                              />
-                            )}
-                          />
-                        </div>
-                      </div>
-                      {/* Fakturamärkning: one buyer-required marking string
-                          (kostnadsställe/projekt/PO), separate from Er
-                          referens. Plain input, never comma-split. */}
-                      <div className={SETTINGS_ROW_CLASS}>
-                        <Label htmlFor="invoice_marking" className="text-[13px] font-normal">
-                          {t('invoice_marking_label')}
-                        </Label>
-                        <div className="w-56">
-                          <Input
-                            id="invoice_marking"
-                            maxLength={200}
-                            placeholder={t('invoice_marking_placeholder')}
-                            className="h-8 text-[13px]"
-                            {...register('invoice_marking')}
-                          />
-                        </div>
-                      </div>
-
                       {/* Online payment link: manual paste or the Stripe auto
                           toggle. Only real invoices; hidden unless the company
                           opted in, except when the draft already carries a link. */}

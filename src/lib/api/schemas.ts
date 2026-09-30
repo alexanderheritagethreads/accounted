@@ -2937,6 +2937,10 @@ export const UpdateSettingsSchema = z.object({
   // Öresavrundning: round each net payout up to whole kronor (banks that
   // reject öre in salary payment files). Diff books on 3740.
   salary_net_rounding: z.boolean().optional(),
+  // Payslip sections on the copy the employee receives (migration
+  // 20260930200000). The employer's own view always prints both.
+  salary_payslip_show_employer_cost: z.boolean().optional(),
+  salary_payslip_show_breakdown: z.boolean().optional(),
   // Calculation conventions (migration 20260919120100): partial-month
   // proration, sick-pay rate, long-leave measure, leave context, net and
   // one-off tax rounding. The full object is stored (every key present,

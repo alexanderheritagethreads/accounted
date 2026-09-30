@@ -331,7 +331,7 @@ Full detail: [references/documents.md](references/documents.md)
 GET /companies/{companyId}/documents : List documents in the archive, linked or not, newest upload first [scope:documents:read risk:low idempotent]
 POST /companies/{companyId}/documents : Upload a document to the WORM archive [scope:documents:write risk:medium idempotent]
 GET /companies/{companyId}/documents/{id} : Read one document's metadata and what holds it [scope:documents:read risk:low idempotent]
-DELETE /companies/{companyId}/documents/{id} : Delete a document that is not linked to any verifikat [scope:documents:write risk:medium idempotent dry-run]
+DELETE /companies/{companyId}/documents/{id} : Delete a document that no verifikat or registered record holds [scope:documents:write risk:medium idempotent dry-run]
 GET /companies/{companyId}/documents/{id}/download : Get a time-limited signed download URL for a document [scope:documents:read risk:low idempotent]
 POST /companies/{companyId}/documents/{id}/link : Link a document to a journal entry [scope:documents:write risk:medium idempotent dry-run]
 GET /companies/{companyId}/inbox-items : List invoice-inbox items (Underlag) with a summary of what was read from each [scope:documents:read risk:low idempotent]
