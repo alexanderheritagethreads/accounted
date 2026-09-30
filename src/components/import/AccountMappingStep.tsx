@@ -228,15 +228,22 @@ export default function AccountMappingStep({
    * The momskod and sats selects, which mark a row edited so it stays in the
    * review list until the user is done with it. Only these two feed the set:
    * both confirm paths release from it instead.
+   *
+   * Only while the review filter is open. No other filter depends on the VAT
+   * state, so a row edited there cannot vanish, and holding it would put it in
+   * the review badge and the bulk confirm count while the list it names, which
+   * the filter switch clears, shows nothing.
    */
   const handleVatSelectChange = (
     sourceAccount: string,
     treatment: AccountVatTreatment | null,
     rate: number | null,
   ) => {
-    setEditedThisStep((prev) =>
-      prev.has(sourceAccount) ? prev : new Set(prev).add(sourceAccount),
-    )
+    if (filter === 'vat_review') {
+      setEditedThisStep((prev) =>
+        prev.has(sourceAccount) ? prev : new Set(prev).add(sourceAccount),
+      )
+    }
     onVatTreatmentChange(sourceAccount, treatment, rate)
   }
 
