@@ -34,6 +34,8 @@ export interface PickerAccount {
   name: string
   /** Account number for the trailing label: BBAN when the bank gives one, else IBAN. */
   nr: string
+  /** The account's identity for the ledger preview (lib/onboarding-books/ledger.ts). */
+  iban: string | null
   currency: string
   /** Ledger the account is already mirrored to, when it has one. */
   ledger: string | null
@@ -68,6 +70,7 @@ export function toPickerAccounts(
     uid: a.uid,
     name: a.name || a.product || labels.account,
     nr: a.bban || a.iban || '',
+    iban: a.iban || null,
     currency: (a.currency || 'SEK').toUpperCase(),
     ledger: a.ledger_account ?? null,
     balance: typeof a.balance === 'number' ? a.balance : null,

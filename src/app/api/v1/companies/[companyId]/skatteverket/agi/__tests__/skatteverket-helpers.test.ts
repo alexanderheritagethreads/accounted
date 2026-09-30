@@ -176,9 +176,23 @@ describe('POST /skatteverket/agi/validate-individuppgift', () => {
   const post = (body: unknown) => validateIu(request(`${BASE}/skatteverket/agi/validate-individuppgift`, body), params)
 
   it('refuses forstaAnstalld together with vaxaStod (400) without calling Skatteverket', async () => {
-    const res = await post({ ...IU, forstaAnstalld: true, vaxaStod: true })
+    const res = await post({ ...IU, redovisningsPeriod: '202512', forstaAnstalld: true, vaxaStod: true })
     expect(res.status).toBe(400)
     expect(services.validateAgiUppgift).not.toHaveBeenCalled()
+  })
+
+  it('refuses vaxaStod from 202601 (400 VALIDATION_ERROR): växa-stöd is a refund now, not an AGI field', async () => {
+    const res = await post({ ...IU, vaxaStod: true })
+    expect(res.status).toBe(400)
+    expect((await res.json()).error.code).toBe('VALIDATION_ERROR')
+    expect(services.validateAgiUppgift).not.toHaveBeenCalled()
+  })
+
+  it('still forwards vaxaStod for 202512, the last period it was valid in', async () => {
+    services.validateAgiUppgift.mockResolvedValue({ ok: true, data: { status: 'OK', fel: [] } })
+    const res = await post({ ...IU, redovisningsPeriod: '202512', vaxaStod: true })
+    expect(res.status).toBe(200)
+    expect(services.validateAgiUppgift).toHaveBeenCalledTimes(1)
   })
 
   it('validates an individuppgift', async () => {

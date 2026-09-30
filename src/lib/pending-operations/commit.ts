@@ -379,6 +379,12 @@ type ExecutorResult = {
   // the dispatcher then lands the op in 'failed_partial' instead of
   // 'rejected' and persists these ids in result_data.posted_ids (issue #842).
   partialPostedIds?: Record<string, string>
+  // Set when the refusal came before any side-effect and only says another
+  // call holds the resource right now (SALARY_RUN_BOOKING_IN_PROGRESS): the
+  // dispatcher hands the op back to 'pending', exactly as for a 401/403, so
+  // the approval can be given again once the other call is done instead of
+  // the op being consumed as 'rejected'.
+  returnToPending?: boolean
 }
 
 /**
@@ -6515,7 +6521,13 @@ async function commitBookSalaryRun(
         error: [entry?.message_sv ?? `Kunde inte bokföra lönekörningen: ${result.code}`, detail]
           .filter(Boolean)
           .join(' '),
+        // The agent branches on the code: SALARY_RUN_BOOKING_IN_PROGRESS
+        // means wait and re-read the run, not approve again at once. That
+        // refusal posted nothing, so the op stays pending for a later
+        // approval instead of being auto-rejected as a 409.
+        errorCode: result.code,
         status: entry?.httpStatus ?? 500,
+        ...(result.code === 'SALARY_RUN_BOOKING_IN_PROGRESS' ? { returnToPending: true } : {}),
       }
     }
     const run = result.data.run as { period_year?: number; period_month?: number; status?: string }
@@ -6784,9 +6796,20 @@ async function commitBookSkattekontoRows(
   if (ids.length === 0) {
     return { error: 'ids (eller transaction_id) krävs', status: 400 }
   }
+  // Rows approved for booking although the ledger already holds a verifikat
+  // for the event: the batch op stores allow_duplicate_ids, the single-row op
+  // allow_duplicate. Anything else keeps the ledger-twin guard on.
+  const allowDuplicateIds = Array.isArray(params.allow_duplicate_ids)
+    ? params.allow_duplicate_ids.filter((v): v is string => typeof v === 'string' && v.length > 0)
+    : params.allow_duplicate === true
+      ? ids
+      : []
 
   const services = getSkattekontoBookingService()
-  const result = await services.commitBookSkattekontoRows(supabase, userId, companyId, { ids })
+  const result = await services.commitBookSkattekontoRows(supabase, userId, companyId, {
+    ids,
+    ...(allowDuplicateIds.length > 0 ? { allow_duplicate_ids: allowDuplicateIds } : {}),
+  })
   if (!result.ok) {
     if (result.recoverable) {
       throw new SkatteverketRecoverableError(result.error, result.code, result.http_status)
@@ -7845,8 +7868,9 @@ async function commitPendingOperationInner(
     // caller that IS authorized (the /pending UI, or a key with the scope),
     // instead of vanishing as 'rejected'. Feedback seq 261545: three
     // samlingsverifikat were consumed this way and the user believed they
-    // had been approved.
-    if (result.status === 401 || result.status === 403) {
+    // had been approved. An executor may ask for the same release for a
+    // transient, side-effect-free refusal (returnToPending).
+    if (result.status === 401 || result.status === 403 || result.returnToPending) {
       await supabase
         .from('pending_operations')
         .update({ status: 'pending' })

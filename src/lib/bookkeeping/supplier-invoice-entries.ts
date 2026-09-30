@@ -328,7 +328,8 @@ export interface SupplierInvoicePaymentLinesOptions {
   /**
    * SEK cleared off 2440: at the booked rate when there is a kursdifferens;
    * with `sekClearingDebt`, the SEK that left the bank for the invoice, net
-   * of any fee.
+   * of any fee. Always SEK, never the invoice's currency: the manual doors
+   * resolve it with resolveSupplierPaymentSek (#2955).
    */
   paymentAmount: number
   /** Kursvinst (> 0) or kursförlust (< 0) in SEK; omit for none. */
@@ -477,6 +478,7 @@ export async function createSupplierInvoicePaymentEntry(
   companyId: string,
   userId: string,
   invoice: SupplierInvoice,
+  // SEK, see SupplierInvoicePaymentLinesOptions.paymentAmount.
   paymentAmount: number,
   paymentDate: string,
   exchangeRateDifference?: number,

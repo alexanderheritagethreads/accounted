@@ -459,7 +459,12 @@ import { suggestToolNames } from './tool-suggest'
 // matcher the skattekonto list page and the booking commit path use. The
 // actual booking runs in the extension's registry-resolved commit service on
 // approval; staging never books.
-import { attachBookingSuggestions } from '@/extensions/general/skatteverket/lib/skattekonto-booking'
+import {
+  attachBookingSuggestions,
+  findSkattekontoLedgerTwins,
+  ledgerTwinMessage,
+} from '@/extensions/general/skatteverket/lib/skattekonto-booking'
+import type { SkattekontoLedgerTwin } from '@/types/skatteverket'
 import { SKATTEKONTO_ACCOUNT } from '@/lib/skatteverket/manual-verifikat-prefill'
 import { formatRedovisningsperiod } from '@/lib/skatteverket/format'
 import { createExtensionContext } from '@/lib/extensions/context-factory'
@@ -1551,6 +1556,48 @@ interface SkattekontoStageRow {
   status: string
   is_ignored: boolean | null
   journal_entry_id: string | null
+}
+
+const SKATTEKONTO_TWIN_TAIL =
+  'A key without the reconciliation:write scope cannot call gnubok_reconcile_match: the user links the row with Koppla on the Skattekonto page in Accounted. Book it anyway (allow_duplicate=true, or allow_duplicate_ids for the batch tool) only when the user confirms the event really happened twice.'
+
+/**
+ * The event of a skattekonto row is already in the ledger (a verifikat the
+ * match flow would link, e.g. one imported by SIE). Coded so an agent links
+ * instead of retrying; the Swedish text names the verifikat.
+ */
+function skattekontoLedgerTwinRefusal(
+  rowId: string,
+  twins: SkattekontoLedgerTwin[],
+  rowCount = 1,
+): Error {
+  const ids = twins.map((t) => t.journal_entry_id)
+  // A combined twin settles the verifikat only together with other open rows
+  // of the same day: the link must carry all of them, or it is refused.
+  const companionIds = (twins[0]?.combined_with ?? []).map((c) => c.id)
+  const lead = rowCount > 1 ? `Alla ${rowCount} rader finns redan i bokföringen. Första raden: ` : ''
+  return codedRefusal('SKATTEKONTO_BOOK_LEDGER_TWIN_EXISTS', `${lead}${ledgerTwinMessage(twins)}`, {
+    description:
+      ids.length > 1
+        ? `Ask the user which of the named verifikat is the ledger side of this event and link the row to it with gnubok_reconcile_match (account_key "skattekonto"). ${SKATTEKONTO_TWIN_TAIL}`
+        : companionIds.length > 0
+          ? `Link the row, together with the ${companionIds.length} other open row(s) of the same day that the verifikat also carries, to the named verifikat instead of booking it: gnubok_reconcile_match with account_key "skattekonto" and one pair { external_ids: [row id, ...companion ids], journal_entry_ids: [verifikat id] } (see args). ${SKATTEKONTO_TWIN_TAIL}`
+          : `Link the row to the named verifikat instead of booking it: gnubok_reconcile_match with account_key "skattekonto" and pairs [{ external_ids: [row id], journal_entry_ids: [verifikat id] }]. ${SKATTEKONTO_TWIN_TAIL}`,
+    tool: 'gnubok_reconcile_match',
+    args: {
+      account_key: 'skattekonto',
+      pairs: [{ external_ids: [rowId, ...companionIds], journal_entry_ids: ids.slice(0, 1) }],
+    },
+  })
+}
+
+/** Reviewer warning when a staged booking was told to ignore a ledger twin. */
+function skattekontoDuplicateNote(twins: SkattekontoLedgerTwin[]): string {
+  const refs = twins
+    .slice(0, 5)
+    .map((t) => (t.voucher_number ? `${t.voucher_series ?? ''}${t.voucher_number}` : `draft ${t.entry_date}`))
+    .join(', ')
+  return `DUPLICATE_OVERRIDE: verifikat ${refs} already carry this event on 1630. Approving books it a second time; approve only if the event really happened twice, otherwise reject and link the row instead.`
 }
 
 /**
@@ -14715,7 +14762,7 @@ export const tools: McpTool[] = [
     keywords: ['ränta', 'intäktsränta', 'kostnadsränta', 'skattetillägg', 'förseningsavgift', 'avgift', 'preliminärskatt', 'interest', 'tax account', '8314', '8423', '6992'],
     title: 'Book Skattekonto Row',
     description:
-      'Book one settled skattekonto row as a verifikat: 1630 against the rule-matched counter account (intäktsränta 8314, kostnadsränta 8423, skattetillägg/förseningsavgift 6992, prelskatt 2510, moms 2650). Refuses booked/ignored/upcoming/rule-less rows. Stages; dry_run previews.',
+      'Book one settled skattekonto row: 1630 against the rule-matched account (intäktsränta 8314, kostnadsränta 8423, skattetillägg/förseningsavgift 6992, prelskatt 2510, moms 2650). Refuses rows booked/ignored/upcoming/rule-less or already in the ledger. Stages; dry_run previews.',
     catalogVisibility: 'search',
     inputSchema: {
       type: 'object',
@@ -14724,6 +14771,11 @@ export const tools: McpTool[] = [
         skattekonto_transaction_id: {
           type: 'string',
           description: 'item_id of an unmatched_external row from gnubok_list_reconciliation_items (account_key "skattekonto").',
+        },
+        allow_duplicate: {
+          type: 'boolean',
+          description:
+            'Book although a verifikat already carries this event on 1630 (the refusal names it). Only when the user confirms the event really happened twice; otherwise link the row to that verifikat with gnubok_reconcile_match.',
         },
         dry_run: { type: 'boolean' },
         idempotency_key: { type: 'string' },
@@ -14757,6 +14809,14 @@ export const tools: McpTool[] = [
         throw new Error('Händelsen är inte genomförd hos Skatteverket ännu och kan inte bokföras.')
       }
 
+      // The ledger may already carry the event (an SIE-imported or manual
+      // verifikat): same guard as the commit path, surfaced before staging.
+      const allowDuplicate = args.allow_duplicate === true
+      const twins = (await findSkattekontoLedgerTwins(supabase, companyId, [tx])).get(tx.id) ?? []
+      if (twins.length > 0 && !allowDuplicate) {
+        throw skattekontoLedgerTwinRefusal(tx.id, twins)
+      }
+
       const [enriched] = await attachBookingSuggestions(supabase, companyId, [tx])
       if (!enriched.booking_suggestion) {
         throw new Error(
@@ -14772,7 +14832,9 @@ export const tools: McpTool[] = [
         userId,
         'book_skattekonto_row',
         `Bokför skattekontohändelse: ${tx.transaktionstext}`,
-        { transaction_id: tx.id },
+        // The override is stored only for the twins the reviewer is warned
+        // about below; with none found the commit keeps the guard on.
+        { transaction_id: tx.id, ...(allowDuplicate && twins.length > 0 ? { allow_duplicate: true } : {}) },
         {
           skattekonto_transaction_id: tx.id,
           transaction_date: tx.transaktionsdatum,
@@ -14786,6 +14848,7 @@ export const tools: McpTool[] = [
           suggested_counter_account: enriched.booking_suggestion.account,
           suggested_counter_account_name: enriched.booking_suggestion.account_name,
           rule_label: enriched.booking_suggestion.label,
+          ...(twins.length > 0 ? { ledger_twins: twins } : {}),
         },
         actor,
         {
@@ -14798,6 +14861,7 @@ export const tools: McpTool[] = [
           dryRun: args.dry_run === true,
           idempotencyKey: args.idempotency_key as string | undefined,
           dateForPeriodCheck: tx.transaktionsdatum,
+          ...(twins.length > 0 ? { complianceNote: skattekontoDuplicateNote(twins) } : {}),
         },
       )
     },
@@ -14808,7 +14872,7 @@ export const tools: McpTool[] = [
     keywords: ['ränta', 'intäktsränta', 'kostnadsränta', 'skattetillägg', 'förseningsavgift', 'avgift', 'preliminärskatt', 'interest', 'tax account', '8314', '8423', '6992'],
     title: 'Book Skattekonto Rows (Batch)',
     description:
-      'Book up to 200 settled skattekonto rows as verifikat (1630 + rule-matched counter account per row: ränta 8314/8423, skattetillägg/förseningsavgift 6992, prelskatt 2510, moms 2650). Unbookable rows (booked/ignored/upcoming/no rule) are skipped and listed. Stages; dry_run previews.',
+      'Book up to 200 settled skattekonto rows as verifikat (1630 + rule-matched account: ränta 8314/8423, skattetillägg/förseningsavgift 6992, prelskatt 2510, moms 2650). Rows booked, ignored, upcoming, rule-less or already in the ledger are skipped, listed. Stages; dry_run previews.',
     catalogVisibility: 'search',
     inputSchema: {
       type: 'object',
@@ -14820,6 +14884,13 @@ export const tools: McpTool[] = [
           minItems: 1,
           maxItems: 200,
           description: 'item_ids of unmatched_external rows from gnubok_list_reconciliation_items (account_key "skattekonto"); duplicates are ignored.',
+        },
+        allow_duplicate_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          maxItems: 200,
+          description:
+            'Rows to book although a verifikat already carries the event on 1630 (skipped as LEDGER_TWIN_EXISTS otherwise). Only rows the user confirms really happened twice; link the others with gnubok_reconcile_match.',
         },
         dry_run: { type: 'boolean' },
         idempotency_key: { type: 'string' },
@@ -14848,7 +14919,16 @@ export const tools: McpTool[] = [
       const found = (rows ?? []) as SkattekontoStageRow[]
 
       const foundIds = new Set(found.map((r) => r.id))
-      const skipped: Array<{ skattekonto_transaction_id: string; reason: string }> = []
+      const allowDuplicate = new Set(
+        Array.isArray(args.allow_duplicate_ids)
+          ? args.allow_duplicate_ids.filter((v): v is string => typeof v === 'string' && ids.includes(v))
+          : [],
+      )
+      const skipped: Array<{
+        skattekonto_transaction_id: string
+        reason: string
+        ledger_twins?: SkattekontoLedgerTwin[]
+      }> = []
       for (const id of ids) {
         if (!foundIds.has(id)) {
           skipped.push({ skattekonto_transaction_id: id, reason: 'TRANSACTION_NOT_FOUND' })
@@ -14856,31 +14936,57 @@ export const tools: McpTool[] = [
       }
 
       // Same per-row gates as the single-row tool; blocked rows become
-      // skipped-with-reason preview data instead of aborting the batch.
+      // skipped-with-reason preview data instead of aborting the batch. The
+      // ledger-twin search runs once for every open row.
       const enriched = await attachBookingSuggestions(supabase, companyId, found)
+      const twinsByRow = await findSkattekontoLedgerTwins(
+        supabase,
+        companyId,
+        found.filter((r) => !r.journal_entry_id && !r.is_ignored),
+      )
       const bookable: typeof enriched = []
+      const approvedTwins: SkattekontoLedgerTwin[] = []
       for (const r of enriched) {
+        const twins = twinsByRow.get(r.id) ?? []
         const reason = r.journal_entry_id
           ? 'ALREADY_BOOKED'
           : r.is_ignored
             ? 'ROW_IGNORED'
             : r.status !== 'booked'
               ? 'NOT_SETTLED'
-              : !r.booking_suggestion
-                ? 'NO_COUNTER_ACCOUNT'
-                : null
+              : twins.length > 0 && !allowDuplicate.has(r.id)
+                ? 'LEDGER_TWIN_EXISTS'
+                : !r.booking_suggestion
+                  ? 'NO_COUNTER_ACCOUNT'
+                  : null
         if (reason) {
-          skipped.push({ skattekonto_transaction_id: r.id, reason })
+          skipped.push({
+            skattekonto_transaction_id: r.id,
+            reason,
+            ...(reason === 'LEDGER_TWIN_EXISTS' ? { ledger_twins: twins } : {}),
+          })
           continue
         }
+        approvedTwins.push(...twins)
         bookable.push(r)
       }
       if (bookable.length === 0) {
+        const twinSkips = skipped.filter((s) => s.reason === 'LEDGER_TWIN_EXISTS')
+        if (twinSkips.length === skipped.length) {
+          // Every row is already in the ledger: say where, so the agent links
+          // instead of retrying.
+          throw skattekontoLedgerTwinRefusal(
+            twinSkips[0].skattekonto_transaction_id,
+            twinSkips[0].ledger_twins ?? [],
+            twinSkips.length,
+          )
+        }
         const reasons = [...new Set(skipped.map((s) => s.reason))].join(', ')
         throw new Error(`Inga bokförbara rader: alla ${ids.length} hoppades över (${reasons}).`)
       }
 
       const bookableIds = bookable.map((r) => r.id)
+      const approvedDuplicateIds = bookableIds.filter((id) => allowDuplicate.has(id) && (twinsByRow.get(id)?.length ?? 0) > 0)
       // Oldest row first: lock conflicts live in the past, so the period
       // check should probe the earliest affärshändelse date in the batch.
       const earliestDate = bookable.map((r) => r.transaktionsdatum).sort()[0]
@@ -14893,20 +14999,27 @@ export const tools: McpTool[] = [
         userId,
         'book_skattekonto_rows',
         `Bokför ${bookableIds.length} skattekontohändelser`,
-        { ids: bookableIds },
+        {
+          ids: bookableIds,
+          ...(approvedDuplicateIds.length > 0 ? { allow_duplicate_ids: approvedDuplicateIds } : {}),
+        },
         {
           row_count: bookableIds.length,
           total_amount: totalAmount,
           skattekonto_account: SKATTEKONTO_ACCOUNT,
-          rows: bookable.slice(0, 50).map((r) => ({
-            skattekonto_transaction_id: r.id,
-            transaction_date: r.transaktionsdatum,
-            transaction_text: r.transaktionstext,
-            verifikat_description: `Skattekonto: ${r.transaktionstext}`,
-            amount: Number(r.belopp_skatteverket),
-            suggested_counter_account: r.booking_suggestion?.account ?? null,
-            rule_label: r.booking_suggestion?.label ?? null,
-          })),
+          rows: bookable.slice(0, 50).map((r) => {
+            const twins = twinsByRow.get(r.id) ?? []
+            return {
+              skattekonto_transaction_id: r.id,
+              transaction_date: r.transaktionsdatum,
+              transaction_text: r.transaktionstext,
+              verifikat_description: `Skattekonto: ${r.transaktionstext}`,
+              amount: Number(r.belopp_skatteverket),
+              suggested_counter_account: r.booking_suggestion?.account ?? null,
+              rule_label: r.booking_suggestion?.label ?? null,
+              ...(twins.length > 0 ? { ledger_twins: twins } : {}),
+            }
+          }),
           ...(bookable.length > 50 ? { rows_truncated: true } : {}),
           ...(skipped.length > 0 ? { skipped } : {}),
         },
@@ -14921,6 +15034,7 @@ export const tools: McpTool[] = [
           dryRun: args.dry_run === true,
           idempotencyKey: args.idempotency_key as string | undefined,
           dateForPeriodCheck: earliestDate,
+          ...(approvedTwins.length > 0 ? { complianceNote: skattekontoDuplicateNote(approvedTwins) } : {}),
         },
       )
     },
@@ -17893,7 +18007,7 @@ export const tools: McpTool[] = [
         pay: { type: 'object', description: 'Salary type + amounts' },
         tax: { type: 'object', description: 'Table, column, municipality, jamkning, F-skatt, sidoinkomst' },
         vacation: { type: 'object', description: 'Rule, days per year, saved days, tillagg rate' },
-        vaxa_stod: { type: 'object', description: 'Eligibility window' },
+        vaxa_stod: { type: 'object', description: 'Eligibility window: refund to apply for, never a reduced avgift' },
         bank: { type: 'object', description: 'Clearing + account (payment routing)' },
         default_dimensions: { type: 'object' },
         is_active: { type: 'boolean' },
@@ -18601,7 +18715,7 @@ export const tools: McpTool[] = [
         vacation_pay_rate: { type: ['number', 'null'], description: 'CBA semesterlön fraction 0.12-0.30 (0.135 = 13.5 %); null = statutory' },
         email: { type: 'string' },
         phone: { type: 'string' },
-        vaxa_stod_eligible: { type: 'boolean' },
+        vaxa_stod_eligible: { type: 'boolean', description: 'Never lowers avgifter: from 2026 the AGI declares them in full and the company applies to Skatteverket for the refund; runs in the window note the expected amount' },
         vaxa_stod_start: { type: 'string' },
         vaxa_stod_end: { type: 'string' },
         jamkning_percentage: { type: 'number', description: 'Requires both dates, else rejected' },
@@ -18720,7 +18834,7 @@ export const tools: McpTool[] = [
         email: { type: ['string', 'null'] },
         phone: { type: ['string', 'null'] },
         is_active: { type: 'boolean', description: 'false soft-deactivates; row kept (BFL)' },
-        vaxa_stod_eligible: { type: 'boolean' },
+        vaxa_stod_eligible: { type: 'boolean', description: 'Never lowers avgifter: from 2026 the AGI declares them in full and the company applies to Skatteverket for the refund; runs in the window note the expected amount' },
         vaxa_stod_start: { type: ['string', 'null'] },
         vaxa_stod_end: { type: ['string', 'null'] },
         jamkning_percentage: { type: ['number', 'null'], description: 'Requires both dates' },

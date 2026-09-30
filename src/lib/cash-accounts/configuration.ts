@@ -33,11 +33,19 @@ export async function readBankConfiguration(
   return data as BankConfigurationSnapshot
 }
 
+/** An unused row of an unchecked account that gave its ledger up and was deleted (crm#224). */
+export interface YieldedCashAccount {
+  id: string
+  ledger_account: string
+  bank_connection_id: string
+  is_primary: boolean
+}
+
 /** The caller prepares a selection without writing chart, route or cash rows. */
 export async function saveBankAccountSelection(
   supabase: SupabaseClient, companyId: string, userId: string, connectionId: string,
   expectedToken: string, selections: BankAccountSelection[],
-): Promise<{ status: string; accounts: unknown[] }> {
+): Promise<{ status: string; accounts: unknown[]; yielded?: YieldedCashAccount[] }> {
   const chartAccounts = buildBankChartAccounts(companyId, userId, selections)
   const { data, error } = await supabase.rpc('save_bank_account_selection', {
     p_company_id: companyId, p_user_id: userId, p_connection_id: connectionId,
@@ -45,7 +53,7 @@ export async function saveBankAccountSelection(
   })
   if (error) throw selectionError(error)
   if (!data?.status || !Array.isArray(data?.accounts)) throw new Error('Bank selection receipt missing')
-  return data as { status: string; accounts: unknown[] }
+  return data as { status: string; accounts: unknown[]; yielded?: YieldedCashAccount[] }
 }
 
 /**

@@ -1760,7 +1760,9 @@ describe('POST /api/v1/companies/:companyId/supplier-invoices/:id/mark-paid', ()
   })
 
   it('passes when exchange_rate_difference is supplied (even as 0) for non-SEK accrual', async () => {
-    const eurSI = { ...approvedSI, currency: 'EUR' }
+    // A rate on file: with no registration verifikat the SEK cleared off 2440
+    // is the invoice's booked rate (#2955), never the EUR figure as kronor.
+    const eurSI = { ...approvedSI, currency: 'EUR', exchange_rate: 11.5 }
     const paidEurSI = { ...eurSI, status: 'paid', paid_amount: 1250, remaining_amount: 0 }
     mockServiceClient.mockReturnValue(
       makeFlexibleSupabase({
@@ -1785,6 +1787,8 @@ describe('POST /api/v1/companies/:companyId/supplier-invoices/:id/mark-paid', ()
     )
     expect(res.status).toBe(200)
     expect(mockedPayment).toHaveBeenCalledTimes(1)
+    // paymentAmount (SEK): 1 250 EUR x 11.5.
+    expect(mockedPayment.mock.calls[0][4]).toBe(14375)
   })
 
   it('rejects a future payment_date with 400 VALIDATION_ERROR', async () => {

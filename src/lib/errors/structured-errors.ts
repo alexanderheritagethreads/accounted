@@ -3333,6 +3333,14 @@ const BANK_SELECTION: Record<string, StructuredErrorEntry> = {
     message_sv: 'Bankkontot har redan historik på sitt bokföringskonto och kan inte flyttas till ett annat automatiskt. Inget sparades.',
     message_en: 'The bank account already has history on its ledger account and cannot be moved to another one automatically. Nothing was saved.',
   },
+  // An unchecked account of another physical account holds the wanted ledger
+  // and has transactions or invoice or reconciliation ties, so it cannot just
+  // give the ledger up.
+  BANK_SELECTION_YIELD_HAS_HISTORY: {
+    httpStatus: 409,
+    message_sv: 'Bokföringskontot hör till ett annat bankkonto som inte synkas men har transaktioner eller används i fakturor eller avstämningar. Välj ett annat bokföringskonto, eller markera först det andra bankkontot, ge det ett annat bokföringskonto och spara. Inget sparades.',
+    message_en: 'The ledger account belongs to another bank account that is not synced but has transactions or is used on invoices or reconciliations. Choose another ledger account, or first select the other bank account, give it another ledger account and save. Nothing was saved.',
+  },
 }
 
 const BANK_SYNC: Record<string, StructuredErrorEntry> = {
@@ -3912,6 +3920,41 @@ const DOCUMENT: Record<string, StructuredErrorEntry> = {
     message_en:
       'The document is linked to a journal entry and is accounting records under BFL 7 kap 2 §: it must be kept for 7 years and cannot be deleted. Upload a new version instead.',
   },
+  // The other records that hold a document (lib/documents/deletion.ts); the
+  // Swedish texts are DOCUMENT_DELETE_REFUSALS' there, word for word.
+  DOC_DELETE_SUPPLIER_INVOICE_UNDERLAG: {
+    httpStatus: 409,
+    message_sv:
+      'Underlaget hör till en registrerad leverantörsfaktura och utgör räkenskapsinformation enligt Bokföringslagen (5 kap 6-7 §§ och 7 kap). Det ska bevaras i minst 7 år och får inte raderas så länge leverantörsfakturan finns kvar.',
+    message_en:
+      'The document is the underlag of a registered supplier invoice and is accounting records under BFL (5 kap 6-7 §§, 7 kap): it must be kept for 7 years and cannot be deleted while the supplier invoice exists.',
+    remediation: {
+      description:
+        'A supplier invoice (supplier_invoices.document_id) holds this document, and it stays as long as the supplier invoice does. A supplier invoice registered by mistake and not yet booked or paid can be deleted first (DELETE /api/v1/companies/{companyId}/supplier-invoices/{id}); a booked one is credited instead, and its underlag is kept.',
+    },
+  },
+  DOC_DELETE_EXPENSE_CLAIM_UNDERLAG: {
+    httpStatus: 409,
+    message_sv:
+      'Underlaget hör till ett registrerat utlägg och utgör räkenskapsinformation enligt Bokföringslagen (5 kap 6-7 §§ och 7 kap). Det ska bevaras i minst 7 år och får inte raderas så länge utlägget finns kvar.',
+    message_en:
+      'The document is the underlag of a registered expense claim and is accounting records under BFL (5 kap 6-7 §§, 7 kap): it must be kept for 7 years and cannot be deleted while the expense claim exists.',
+    remediation: {
+      description:
+        'An expense claim (expense_claims.document_id) holds this document, and it stays as long as the expense claim does.',
+    },
+  },
+  DOC_DELETE_BOOKED_INBOX_ITEM: {
+    httpStatus: 409,
+    message_sv:
+      'Underlaget hör till en mottagen faktura som redan har bokförts eller blivit en leverantörsfaktura. Det utgör räkenskapsinformation enligt Bokföringslagen 7 kap och ska bevaras i minst 7 år i det skick det togs emot, så det får inte raderas.',
+    message_en:
+      'The document belongs to a received invoice that has already been booked or turned into a supplier invoice. It is accounting records under BFL 7 kap and must be kept for 7 years in the form it was received, so it cannot be deleted.',
+    remediation: {
+      description:
+        'An inbox item that created a journal entry or a supplier invoice (invoice_inbox_items.created_journal_entry_id or created_supplier_invoice_id) holds this document as its file or as the received Peppol XML (channel_context.peppol_xml_document_id). It is kept; the files of an inbox item that was never booked can still be discarded.',
+    },
+  },
   DOC_ATTACH_REPLACES_POSTED: {
     httpStatus: 409,
     message_sv: 'Bilagan är kopplad till en bokförd verifikation och kan inte ersättas. Storno verifikationen först.',
@@ -4295,6 +4338,20 @@ const SUPPLIER_INVOICE_WAVE4: Record<string, StructuredErrorEntry> = {
     remediation: {
       description:
         'Inspect details.candidates[].match_reason. For an unlinked row, match it via POST /api/transactions/{id}/match-supplier-invoice. For `already_booked`, the row is already a posted verifikat (booked straight from the bank side): do NOT pay the invoice, correct the double booking instead (reverse one of the two vouchers with a storno entry and attach the underlag to the remaining one). Resend mark-paid with force: true only when the payment really is separate; on the v1 endpoint that retry needs a fresh Idempotency-Key.',
+    },
+  },
+  // #2955: a foreign-currency invoice's payment clears the SEK its linked
+  // vouchers carry on 244x (lib/bookkeeping/supplier-payment-amounts.ts).
+  // When those links contradict each other the SEK is refused, not guessed.
+  SI_PAID_SEK_UNRESOLVED: {
+    httpStatus: 409,
+    message_sv:
+      'Det gick inte att avgöra hur mycket i kronor fakturan har kvar på leverantörsskulder (2440): kopplingen mellan fakturan och dess verifikationer är inte entydig, eller skulden där stämmer inte med fakturans belopp och kurs. Bokför betalningen som en egen verifikation i kronor och koppla den till fakturan, eller rätta kopplingen först.',
+    message_en:
+      "Could not determine how much SEK the invoice still carries on accounts payable (2440): the links between the invoice and its vouchers are ambiguous, or the liability there does not match the invoice's amount and rate. Book the payment as its own SEK voucher and link it to the invoice, or fix the links first.",
+    remediation: {
+      description:
+        "details.reason names the contradiction: registration_voucher_not_live (reversed with no single correction), registration_voucher_shared, payment_history_mismatch (payment rows do not add up to paid_amount), payment_voucher_not_posted (missing, or reversed with no single correction), payment_voucher_shared (a batch voucher), no_liability_left, or ledger_rate_mismatch (2440 carries more than 10% away from remaining_amount x exchange_rate, details.expected_sek vs details.ledger_sek: the registration was corrected for something other than the rate, so the gap is not a kursdifferens), or ledger_history_too_long (more than 50 payment rows or 20 storno hops to follow: past what one request resolves). Check the SEK against the ledger, then resend mark-paid with explicit SEK `lines` (Debit 2440 / Credit the payment account, plus 3960/7960 for a genuine kursdifferens), or book the voucher yourself and link it to the invoice.",
     },
   },
   SI_CREDIT_ALREADY_CREDITED: {
@@ -4804,6 +4861,21 @@ const SALARY: Record<string, StructuredErrorEntry> = {
     retryable: false,
     thrown_message_sv: true,
   },
+  // lib/salary/book-run.ts (accounted#3251): another call holds the run's
+  // booking claim (claim_salary_run_booking), so this one posted nothing.
+  // The claim ends when that call finishes, or after 15 minutes if it died.
+  SALARY_RUN_BOOKING_IN_PROGRESS: {
+    httpStatus: 409,
+    message_sv:
+      'Lönekörningen håller redan på att bokföras (i en annan flik eller av en agent), så inget bokfördes nu. Vänta en stund och kontrollera sedan lönekörningens status.',
+    message_en:
+      'The salary run is already being booked by another request. Nothing was posted by this one.',
+    remediation: {
+      description:
+        'Wait a moment, then fetch the run. Status booked means the other booking went through; status paid means it did not finish, so book the run again (vouchers an interrupted booking already posted are reused, never posted twice). A staged book_salary_run operation stays pending and can be approved again.',
+    },
+    retryable: true,
+  },
   SALARY_PAYSLIPS_SEND_INVALID_STATUS: {
     httpStatus: 400,
     message_sv: 'Lönespecifikationer kan bara skickas efter godkännande.',
@@ -4944,6 +5016,17 @@ const SALARY: Record<string, StructuredErrorEntry> = {
       description:
         'A generated payment file is kept for seven years, so the run it belongs to stays. Edit the draft run instead (gnubok_set_run_salary, gnubok_update_salary_run), or leave it unbooked.',
       tool: 'gnubok_update_salary_run',
+    },
+  },
+  DOCUMENT_DELETE_BLOCKED_BY_TRANSACTION: {
+    httpStatus: 409,
+    message_sv:
+      'Underlaget är kopplat till en banktransaktion och kan inte tas bort. Koppla bort det från transaktionen först.',
+    message_en:
+      'The document is attached to a bank transaction and cannot be deleted. Detach it from the transaction first.',
+    remediation: {
+      description:
+        'The document is the underlag of a bank transaction (transactions.document_id). Detach it from the transaction first (POST /api/v1/companies/{companyId}/transactions/{id}/detach-document), then delete it. A document linked to a verifikat is never deleted.',
     },
   },
   RECORD_STILL_REFERENCED: {
@@ -5724,6 +5807,23 @@ const SKATTEVERKET: Record<string, StructuredErrorEntry> = {
       description:
         'Skip the skattekonto for now and continue with the other accounts; ask again later. The skattekonto is fetched right after each BankID consent and by the scheduled sync, and the user can fetch it now on the Skattekonto page in Accounted. If it stays empty, check the connection with gnubok_connect_skatteverket and have the user reconnect.',
       tool: 'gnubok_connect_skatteverket',
+    },
+    thrown_message_sv: true,
+  },
+  // A skattekonto row whose event a live verifikat already carries on 1630
+  // (typically imported by SIE from the previous system): booking it would
+  // record the event twice. The thrown Swedish text names the verifikat.
+  SKATTEKONTO_BOOK_LEDGER_TWIN_EXISTS: {
+    httpStatus: 409,
+    message_sv:
+      'Händelsen finns redan i bokföringen: ett verifikat innehåller den redan på konto 1630. Koppla raden till verifikatet i stället för att bokföra den en gång till.',
+    message_en:
+      'The event is already in the ledger: a live verifikat carries it on account 1630. Link the row to that verifikat instead of booking it a second time.',
+    retryable: false,
+    remediation: {
+      description:
+        'Link the row to the verifikat the message names with gnubok_reconcile_match (account_key "skattekonto", pairs [{ external_ids: [row id, plus any same-day rows the verifikat carries with it], journal_entry_ids: [verifikat id] }]). Book it anyway (allow_duplicate / allow_duplicate_ids) only when the user confirms the event really happened twice.',
+      tool: 'gnubok_reconcile_match',
     },
     thrown_message_sv: true,
   },

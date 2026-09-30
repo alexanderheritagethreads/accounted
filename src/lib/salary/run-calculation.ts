@@ -57,6 +57,7 @@ import { computePremiumLines } from './shift-premium-engine'
 import { roundOre } from '@/lib/money'
 import { computePriorYtd, loadOpeningBalances } from './ytd'
 import { dailyDivisor, degreeAdjustedMonthlySalary, hourlyDivisor, scheduledHoursPerDay } from './work-schedule'
+import { vaxaStodRefundWarning } from './vaxa-stod'
 import type { WorkedDayShift } from './shift-premium-engine'
 import type { Logger } from '@/lib/logger'
 import type { SalaryLineItemType, ShiftPremiumRule, ShiftPremiumItemType } from '@/types'
@@ -396,6 +397,7 @@ export async function runSalaryCalculation(
   const lakarintygEmployees: string[] = []
   const fkReportingEmployees: string[] = []
   const doubleBenefitAdjustments: string[] = []
+  const vaxaStodRefundEmployees: string[] = []
 
   // 8. Per-employee calculation loop.
   for (const sre of runEmployees) {
@@ -869,6 +871,7 @@ export async function runSalaryCalculation(
       config,
       taxRates.map((r) => ({ ...r })),
     )
+    if (result.vaxaStodRefund) vaxaStodRefundEmployees.push(employeeName)
 
     // Aggregated absence counts derived from per-day records.
     const sickDays = absenceResult.aggregated.sickDays
@@ -1061,6 +1064,8 @@ export async function runSalaryCalculation(
   }
   const doubleAdjustmentWarning = doubleBenefitAdjustmentWarning(doubleBenefitAdjustments)
   if (doubleAdjustmentWarning) warnings.push(doubleAdjustmentWarning)
+  const vaxaStodWarning = vaxaStodRefundWarning(vaxaStodRefundEmployees)
+  if (vaxaStodWarning) warnings.push(vaxaStodWarning)
 
   opLog.info('salary calculation complete', {
     requestId,

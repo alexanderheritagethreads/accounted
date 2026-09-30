@@ -614,6 +614,11 @@ export interface CompanySettings {
   // Öresavrundning (migration 20260813143000): round each net payout up to
   // whole kronor; the 0-99 öre diff books on 3740 via a derived line item.
   salary_net_rounding: boolean
+  // Payslip sections on the copy the employee receives (migration
+  // 20260930200000): Arbetsgivarkostnad and Beräkningsunderlag. Default true;
+  // the employer's own view always prints both (build-payslip-data).
+  salary_payslip_show_employer_cost: boolean
+  salary_payslip_show_breakdown: boolean
   // Avvikelseperiod (migration 20260918120000): the month a new salary run
   // reads absence and worked days from. 'previous_month' is the common
   // Swedish setup (innevarande månads lön, föregående månads avvikelser).
@@ -3149,7 +3154,7 @@ export interface InboxChannelContext {
   peppol_sender_endpoint?: string | null
   /** Archived exact UBL XML, when the inbox document is a rendering (embedded PDF) instead. */
   peppol_xml_document_id?: string | null
-  /** Set by the removed Gmail receipt hunt: which mailbox the receipt came out of. Kept for existing rows. */
+  /** Set by lib/receipt-hunt/ingest.ts: which mailbox the receipt came out of. */
   mail_mailbox?: string | null
   mail_provider?: 'gmail' | 'microsoft' | null
   mail_subject?: string | null
@@ -3588,7 +3593,7 @@ export type DocumentUploadSource =
   | 'api'
   | 'system'
   | 'whatsapp'
-  /** Fetched out of a connected mailbox by the removed Gmail receipt hunt. Kept for existing rows. */
+  /** Fetched by the receipt hunt out of a connected mailbox. */
   | 'mail_hunt'
 
 export interface DocumentAttachment {
@@ -4521,6 +4526,12 @@ export interface SalaryRun {
   notes: string | null
   is_correction: boolean
   corrects_run_id: string | null
+  // Payslip sections the employee copy was issued with (migration
+  // 20260930200000). All null until the payslips first go to employees;
+  // written once (lib/salary/payslips/section-snapshot).
+  payslip_sections_issued_at: string | null
+  payslip_show_employer_cost: boolean | null
+  payslip_show_breakdown: boolean | null
   created_at: string
   updated_at: string
   // Relations

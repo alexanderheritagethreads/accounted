@@ -60,7 +60,7 @@ describe('browser Supabase fetchers', () => {
     await fetchCashAccounts('c1')
     expect(supabaseState.calls).toEqual([
       { method: 'from', args: ['cash_accounts'] },
-      { method: 'select', args: ['*, bank_connection:bank_connections(bank_name)'] },
+      { method: 'select', args: ['*, bank_connection:bank_connections(bank_name, status)'] },
       { method: 'eq', args: ['company_id', 'c1'] },
       { method: 'order', args: ['is_primary', { ascending: false }] },
       { method: 'order', args: ['ledger_account', { ascending: true }] },

@@ -75,6 +75,7 @@ describe('POST /api/salary/runs/[id]/book: nollkörning', () => {
     enqueueMany([
       { data: makePaidRun() }, // salary_runs (paid) lookup
       { data: [] }, // salary_run_employees roster (empty)
+      { data: 'booking-claim-1' }, // claim_salary_run_booking
       { data: { id: 'run-1', status: 'booked' } }, // salary_runs update → booked
     ])
 
@@ -103,6 +104,7 @@ describe('POST /api/salary/runs/[id]/book: nollkörning', () => {
     enqueueMany([
       { data: makePaidRun() }, // salary_runs (paid) lookup
       { data: [{ employee_id: 'e1', gross_salary: 0, line_items: [] }] }, // roster present but zero
+      { data: 'booking-claim-1' }, // claim_salary_run_booking
       { data: { id: 'run-1', status: 'booked' } }, // salary_runs update → booked
     ])
 
@@ -146,6 +148,7 @@ describe('POST /api/salary/runs/[id]/book: nollkörning', () => {
           },
         ],
       }, // roster with dims from the employees join
+      { data: 'booking-claim-1' }, // claim_salary_run_booking
       { data: { id: 'run-1', status: 'booked' } }, // salary_runs update → booked
     ])
 
@@ -199,6 +202,7 @@ describe('POST /api/salary/runs/[id]/book: posted vouchers of the run that do no
           },
         ],
       },
+      { data: 'booking-claim-1' }, // claim_salary_run_booking
     ])
 
     const request = createMockRequest('/api/salary/runs/run-1/book', { method: 'POST' })
@@ -213,5 +217,40 @@ describe('POST /api/salary/runs/[id]/book: posted vouchers of the run that do no
     expect(body.error.message).toContain('(L7, L9)')
     expect(body.error.details).toEqual({ voucher_numbers: ['L7', 'L9'], entry_ids: ['je-7', 'je-9'] })
     expect(eventBus.emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'salary_run.booked' }))
+  })
+})
+
+// accounted#3251: two tabs (or the dashboard plus MCP) booking the same run
+// both used to get 200 while the vouchers were posted twice. The second call
+// now loses the database claim and is told the run is being booked.
+describe('POST /api/salary/runs/[id]/book: concurrent booking of the same run', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('answers 409 SALARY_RUN_BOOKING_IN_PROGRESS in Swedish and posts nothing', async () => {
+    const { supabase, enqueueMany } = createQueuedMockSupabase()
+    vi.mocked(requireAuth).mockResolvedValue({
+      user: mockUser as never,
+      supabase: supabase as never,
+      error: null,
+    })
+
+    enqueueMany([
+      { data: makePaidRun({ total_gross: 30000, total_tax: 7000, total_net: 23000, total_avgifter: 9426 }) },
+      { data: [{ employee_id: 'e1', employee: { employment_type: 'employee' }, line_items: [] }] },
+      { data: null }, // claim_salary_run_booking: another call holds the run
+      { data: { status: 'paid' } }, // status re-read
+    ])
+
+    const request = createMockRequest('/api/salary/runs/run-1/book', { method: 'POST' })
+    const response = await POST(request, createMockRouteParams({ id: 'run-1' }))
+    const { status, body } = await parseJsonResponse<{ error: { code: string; message: string } }>(response)
+
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('SALARY_RUN_BOOKING_IN_PROGRESS')
+    expect(body.error.message).toContain('håller redan på att bokföras')
+    expect(createSalaryRunEntries).not.toHaveBeenCalled()
+    expect(eventBus.emit).not.toHaveBeenCalled()
   })
 })
