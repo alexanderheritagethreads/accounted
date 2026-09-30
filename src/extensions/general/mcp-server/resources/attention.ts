@@ -6,6 +6,7 @@ import {
 } from '@/lib/documents/unlinked-documents'
 import { countReconciliationDue, listExpensePayoutsDue } from '@/lib/worklist/categories'
 import { countUnbookedBankTransactions, fetchAnchoredTransactionIds } from '@/lib/transactions/unbooked'
+import { createLogger } from '@/lib/logger'
 
 type Severity = 'critical' | 'warning' | 'info'
 
@@ -24,6 +25,12 @@ interface AttentionCategory {
 }
 
 const SAMPLE_LIMIT = 5
+
+const log = createLogger('mcp-attention')
+
+function failureReason(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
 
 function daysBetween(fromIso: string, toIso: string): number {
   const ms = new Date(toIso).getTime() - new Date(fromIso).getTime()
@@ -63,8 +70,12 @@ export const attentionResource: McpResource = {
       // same predicate the period-lock guard, the VAT close check and the
       // report data_status use. It used to count is_business = true only, so
       // every never-triaged row was invisible here. A failed count skips the
-      // category rather than claiming zero.
-      countUnbookedBankTransactions(supabase, companyId).catch(() => null),
+      // category rather than claiming zero, and is logged so a failing read
+      // does not pass for an empty queue.
+      countUnbookedBankTransactions(supabase, companyId).catch((err: unknown) => {
+        log.warn('attention unbooked count unavailable', { companyId, reason: failureReason(err) })
+        return null
+      }),
       supabase
         .from('transactions')
         .select('id, date, amount, currency, description, merchant_name')
@@ -167,7 +178,14 @@ export const attentionResource: McpResource = {
             supabase,
             companyId,
             sampleCandidates.map((row) => row.id as string),
-          ).catch(() => new Set<string>())
+          ).catch((err: unknown) => {
+            // Counts are unaffected; at worst a sample row is already booked.
+            log.warn('attention unbooked sample anchor lookup failed', {
+              companyId,
+              reason: failureReason(err),
+            })
+            return new Set<string>()
+          })
         : new Set<string>()
     const samples = sampleCandidates
       .filter((row) => !anchoredSamples.has(row.id as string))

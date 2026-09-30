@@ -23,7 +23,8 @@ const log = createLogger('report-data-status')
  *
  * Only signals that can change a figure belong here. A missing underlag does
  * not (the verifikat is already in the numbers); it stays in
- * gnubok_vat_close_check and the attention resource.
+ * gnubok_vat_close_check, and the attention resource lists the unmatched
+ * receipts and unlinked documents.
  */
 export interface ReportDataStatus {
   computed_at: string

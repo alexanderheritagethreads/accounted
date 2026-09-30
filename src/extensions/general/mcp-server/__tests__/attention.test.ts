@@ -4,14 +4,19 @@ import { createQueuedMockSupabase } from '@/tests/helpers'
 // The unbooked count is the shared lib predicate (lib/transactions/unbooked.ts,
 // tested on its own); here it is a seam so the queue below only carries the
 // resource's own reads.
-const { countUnbooked, fetchAnchored } = vi.hoisted(() => ({
+const { countUnbooked, fetchAnchored, logWarn } = vi.hoisted(() => ({
   countUnbooked: vi.fn(),
   fetchAnchored: vi.fn(),
+  logWarn: vi.fn(),
 }))
 vi.mock('@/lib/transactions/unbooked', () => ({
   countUnbookedBankTransactions: countUnbooked,
   fetchAnchoredTransactionIds: fetchAnchored,
 }))
+vi.mock('@/lib/logger', () => {
+  const logger = { info: vi.fn(), warn: logWarn, error: vi.fn(), child: (): unknown => logger }
+  return { createLogger: () => logger }
+})
 
 import { attentionResource } from '../resources/attention'
 
@@ -162,6 +167,41 @@ describe('Accounted://attention', () => {
     expect(cat?.count).toBe(1)
     expect(cat?.samples.map((s) => s.id)).toEqual(['t-open'])
     expect(cat?.next?.args).toEqual({ transaction_id: 't-open' })
+  })
+
+  it('skips the unbooked category and logs why when the shared count fails', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    const today = new Date().toISOString().slice(0, 10)
+    countUnbooked.mockRejectedValue(new Error('untriaged transaction count failed: timeout'))
+    enqueue({ data: [{ id: 't-1', date: today, amount: -100, currency: 'SEK', description: 'X', merchant_name: null }] })
+    for (let i = 3; i <= 14; i += 1) enqueue({ data: i === 13 || i === 14 ? null : [], count: 0 })
+    enqueue({ data: [] })                              // 15. unlinked-document candidates
+
+    const result = (await attentionResource.read(ctx(supabase))) as AttentionResponse
+
+    expect(result.categories.find((c) => c.key === 'unbooked_transactions')).toBeUndefined()
+    expect(logWarn).toHaveBeenCalledWith('attention unbooked count unavailable', {
+      companyId: 'company-1',
+      reason: 'untriaged transaction count failed: timeout',
+    })
+  })
+
+  it('keeps the count and logs when the sample anchor lookup fails', async () => {
+    const { supabase, enqueue } = createQueuedMockSupabase()
+    const today = new Date().toISOString().slice(0, 10)
+    setUnbooked(1)
+    fetchAnchored.mockRejectedValue(new Error('invoice_payments anchor lookup failed: timeout'))
+    enqueue({ data: [{ id: 't-1', date: today, amount: -100, currency: 'SEK', description: 'X', merchant_name: null }] })
+    for (let i = 3; i <= 14; i += 1) enqueue({ data: i === 13 || i === 14 ? null : [], count: 0 })
+    enqueue({ data: [] })                              // 15. unlinked-document candidates
+
+    const result = (await attentionResource.read(ctx(supabase))) as AttentionResponse
+
+    expect(result.categories.find((c) => c.key === 'unbooked_transactions')?.count).toBe(1)
+    expect(logWarn).toHaveBeenCalledWith('attention unbooked sample anchor lookup failed', {
+      companyId: 'company-1',
+      reason: 'invoice_payments anchor lookup failed: timeout',
+    })
   })
 
   it('escalates unbooked transactions to critical when oldest is > 30 days old', async () => {
