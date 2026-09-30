@@ -25,7 +25,9 @@ import { genericCSVFormat } from './formats/generic-csv'
 /**
  * Ordered list of format detectors.
  * camt.053 first (XML detection is unambiguous), then bank-specific CSV formats.
- * New bank formats go after existing ones but before generic_csv.
+ * New bank formats go after existing ones but before generic_csv, unless an
+ * earlier detector's header check would claim the new format's files: then
+ * the new format goes before that detector (Avanza sits before Länsförsäkringar).
  * Generic CSV is last: it never auto-detects (manual fallback only).
  */
 const FORMATS: BankFileFormat[] = [
