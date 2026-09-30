@@ -622,6 +622,7 @@ Marks a sent / overdue / partially_paid invoice as paid (or further partially_pa
 
 **Pitfalls:**
 - Idempotency-Key is mandatory. Retried marks with the same key replay the cached response.
+- A partially_paid invoice takes further payments: each call with a new Idempotency-Key books another installment, so retry a call whose outcome you did not see with the same key. A kontantmetoden invoice never booked at issue cannot be completed once part-paid: 400 INVOICE_PAID_CASH_PARTIAL_UNSUPPORTED (details.reason previously_partially_paid).
 - Custom `lines` must balance (sum of debits = sum of credits, both > 0). Otherwise returns 400 INVOICE_PAID_LINES_UNBALANCED.
 - For foreign-currency invoices, supply `exchange_rate_difference` (SEK delta vs the invoice's booked rate) to book the FX adjustment correctly. Omitting it on a non-SEK invoice will mis-book the FX gain/loss.
 - Custom `lines` are journal lines and therefore SEK, while `total` / `paid_amount` / `remaining_amount` are stored in the invoice currency. The route converts the line total via `invoice.exchange_rate`; a non-SEK invoice with no exchange_rate on file returns 400 MATCH_INVOICE_BOOKING_RATE_MISSING rather than silently treating the SEK amount as invoice currency.
