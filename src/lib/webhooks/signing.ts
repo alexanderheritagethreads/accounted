@@ -62,11 +62,13 @@ export function signPayload(args: {
  * unavoidable for outbound HMAC signing: the signing operation needs the
  * original byte sequence on every delivery, so a one-way hash would
  * preclude signing. Stripe, GitHub, Slack, and Twilio all follow the same
- * pattern for the same reason. Defense-in-depth comes from the
- * service-role-only INSERT/UPDATE/DELETE on `webhooks` (no anon/auth
- * write path), the column-level select projection on every read endpoint
- * (the row never includes `secret` outside the create response), and
- * Supabase encryption-at-rest. Re-evaluate if/when KMS-backed signing
+ * pattern for the same reason. Defense-in-depth comes from the database
+ * (20260929173432): anon and authenticated hold no INSERT or UPDATE on
+ * `webhooks` and no SELECT on `secret`, so only the service role (the v1 API
+ * and the dispatcher) can set or read it; from the column-level select
+ * projection on every read endpoint (the row never includes `secret`
+ * outside the create and rotate responses); and from Supabase
+ * encryption-at-rest. Re-evaluate if/when KMS-backed signing
  * becomes available without per-call latency cost.
  *
  * Receivers use this same value verbatim when verifying signatures.
