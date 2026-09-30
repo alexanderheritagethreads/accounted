@@ -1,4 +1,5 @@
 import type { CompanySettings, Invoice } from '@/types'
+import { isNotVatRegistered } from '@/lib/bookkeeping/vat-registration'
 
 /**
  * Issuing an invoice requires a momsdeklaration box (moms_ruta), except when
@@ -12,13 +13,14 @@ import type { CompanySettings, Invoice } from '@/types'
  * Every other null stays a defect: a VAT-registered seller always gets a ruta
  * from getVatRules() (05 / 39 / 40 ...), so a missing one means the row was
  * created outside the normal paths (legacy import, manual SQL) and its VAT
- * treatment is unverified. `vat_registered` must be explicitly false, matching
- * the `notVatRegistered` check on the create paths.
+ * treatment is unverified. `vat_registered` must be explicitly false
+ * (isNotVatRegistered), matching the `notVatRegistered` check on the create
+ * paths.
  */
 export function hasRequiredMomsRuta(
   company: Pick<CompanySettings, 'vat_registered'>,
   invoice: Pick<Invoice, 'moms_ruta' | 'vat_treatment'>,
 ): boolean {
   if (invoice.moms_ruta) return true
-  return company.vat_registered === false && invoice.vat_treatment === 'exempt'
+  return isNotVatRegistered(company.vat_registered) && invoice.vat_treatment === 'exempt'
 }
