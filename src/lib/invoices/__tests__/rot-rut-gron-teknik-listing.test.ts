@@ -15,6 +15,9 @@ import { listGronTeknikCandidates, listRotRutCandidates } from '@/lib/invoices/r
 
 // Synthetic test identity from Skatteverket's official example files.
 const PNR = '198406012388'
+// Encrypted once: every encrypt runs scrypt, and the paging test builds
+// more than a thousand rows.
+const PNR_ENCRYPTED = encryptPersonnummer(PNR)
 const TODAY = '2026-09-30'
 
 function item(overrides: Partial<InvoiceItem> = {}): InvoiceItem {
@@ -51,7 +54,7 @@ function row(id: string, items: InvoiceItem[], overrides: Partial<Row> = {}): Ro
       status: 'paid',
       paid_at: '2026-09-20T10:00:00Z',
       deduction_total: items.reduce((sum, i) => sum + (i.deduction_amount ?? 0), 0),
-      deduction_personnummer_encrypted: encryptPersonnummer(PNR),
+      deduction_personnummer_encrypted: PNR_ENCRYPTED,
       deduction_personnummer_last4: PNR.slice(-4),
       items: items.map((i) => ({ ...i, invoice_id: id })),
     }),
@@ -78,7 +81,7 @@ describe('HUS file: a grön teknik invoice never enters it', () => {
       expect(result.ok).toBe(false)
       if (result.ok) continue
       expect(result.blocker.code).toBe('NO_DEDUCTION_OF_TYPE')
-      expect(result.blocker.message).toContain('Grön teknik: företag')
+      expect(result.blocker.message).toContain('e-tjänst för grön teknik')
     }
   })
 
@@ -175,5 +178,118 @@ describe('listGronTeknikCandidates', () => {
     enqueueMany([{ data: null, error: { message: 'boom' } }])
     const result = await listGronTeknikCandidates(supabase as unknown as SupabaseClient, 'company-1', TODAY)
     expect(result.ok).toBe(false)
+  })
+})
+
+describe('listGronTeknikCandidates: order and what a row carries', () => {
+  it('lists the newest payment first, so the next e-tjänst entry is on top', async () => {
+    const older = row('inv-older', [item()], { paid_at: '2026-03-02T10:00:00Z' })
+    const newer = row('inv-newer', [item()], { paid_at: '2026-09-02T10:00:00Z' })
+    const middle = row('inv-middle', [item()], { paid_at: '2026-06-02T10:00:00Z' })
+    const result = await listGronTeknikCandidates(mockedSupabase([older, middle, newer]), 'company-1', TODAY)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.eligible.map((e) => e.invoice_id)).toEqual(['inv-newer', 'inv-middle', 'inv-older'])
+  })
+
+  it('carries the property the e-tjänst asks for', async () => {
+    const brf = row('inv-brf', [item({ housing_designation: null, apartment_number: '1201', brf_org_number: '769600-1234' })])
+    const result = await listGronTeknikCandidates(mockedSupabase([gron(), brf]), 'company-1', TODAY)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const byId = Object.fromEntries(result.eligible.map((e) => [e.invoice_id, e.property]))
+    expect(byId['inv-gron']).toEqual({ fastighet: 'Exempelby 1:1' })
+    expect(byId['inv-brf']).toEqual({ lagenhetsNr: '1201', brfOrgNr: '167696001234' })
+  })
+})
+
+describe('listGronTeknikCandidates: the request window', () => {
+  it('marks an invoice paid before last year as past the 31 January deadline', async () => {
+    const late = row('inv-2024', [item()], { paid_at: '2024-11-20T10:00:00Z' })
+    const lastYear = row('inv-2025', [item()], { paid_at: '2025-12-20T10:00:00Z' })
+    const thisYear = row('inv-2026', [item()], { paid_at: '2026-01-10T10:00:00Z' })
+    const inJanuary = await listGronTeknikCandidates(mockedSupabase([late, lastYear, thisYear]), 'company-1', '2026-01-31')
+    const inFebruary = await listGronTeknikCandidates(mockedSupabase([late, lastYear, thisYear]), 'company-1', '2026-02-01')
+    expect(inJanuary.ok && inFebruary.ok).toBe(true)
+    if (!inJanuary.ok || !inFebruary.ok) return
+    const pastOn = (list: typeof inJanuary.eligible) => Object.fromEntries(list.map((e) => [e.invoice_id, e.past_deadline]))
+    expect(pastOn(inJanuary.eligible)).toEqual({ 'inv-2024': true, 'inv-2025': false, 'inv-2026': false })
+    expect(pastOn(inFebruary.eligible)).toEqual({ 'inv-2024': true, 'inv-2025': true, 'inv-2026': false })
+  })
+})
+
+describe('paging: the newest paid invoices are never cut off at 1000 rows', () => {
+  // A company past 1000 paid deduction invoices. The first page is full of
+  // old invoices whose begäran is already decided (both lists skip them
+  // before any evaluation); the second page holds one more decided invoice
+  // and the two newest paid invoices, the ones still to request. The
+  // begäran read pages too: the decided request of the 1001st old invoice
+  // sits on its second page.
+  const OLD_COUNT = 1001
+  const oldInvoices: Row[] = Array.from({ length: OLD_COUNT }, (_, i) => {
+    const id = `old-${String(i).padStart(4, '0')}`
+    return i % 2 === 0
+      ? row(id, [item()], { paid_at: '2026-01-15T10:00:00Z' })
+      : row(id, [item({ deduction_type: 'rot', work_type: 'EL', deduction_amount: 3750 })], { paid_at: '2026-01-15T10:00:00Z' })
+  })
+  const decidedItems = oldInvoices.map((invoice, i) => ({
+    id: `item-${String(i).padStart(4, '0')}`,
+    invoice_id: invoice.id,
+    request: { id: `request-${i}`, name: 'Begäran', status: 'paid', company_id: 'company-1' },
+  }))
+  const newestGron = gron('inv-gron-newest')
+  const newestRot = rot('inv-rot-newest')
+
+  function pagedSupabase() {
+    const mock = createQueuedMockSupabase()
+    const invoicePages = [
+      { data: oldInvoices.slice(0, 1000) },
+      { data: [...oldInvoices.slice(1000), newestGron, newestRot] },
+    ]
+    mock.enqueueMany([
+      ...invoicePages, // by header total
+      ...invoicePages, // by deduction lines
+      { data: decidedItems.slice(0, 1000) },
+      { data: decidedItems.slice(1000) },
+    ])
+    return mock
+  }
+
+  it('lists the newest grön teknik invoice and still skips every decided one', async () => {
+    const mock = pagedSupabase()
+    const result = await listGronTeknikCandidates(mock.supabase as unknown as SupabaseClient, 'company-1', TODAY)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.eligible.map((e) => e.invoice_id)).toEqual(['inv-gron-newest'])
+    expect(result.blocked).toEqual([])
+    expect(result.other_type_counts).toEqual({ rot: 1 })
+  })
+
+  it('lists the newest ROT invoice on the ROT list and counts the newest grön teknik one', async () => {
+    const mock = pagedSupabase()
+    const result = await listRotRutCandidates(mock.supabase as unknown as SupabaseClient, 'company-1', 'rot', TODAY)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.eligible.map((e) => e.invoice_id)).toEqual(['inv-rot-newest'])
+    expect(result.blocked).toEqual([])
+    expect(result.other_type_counts).toEqual({ gron_teknik: 1 })
+  })
+
+  it('pages every read on a stable total order', async () => {
+    const mock = pagedSupabase()
+    await listGronTeknikCandidates(mock.supabase as unknown as SupabaseClient, 'company-1', TODAY)
+    expect(mock.findCalls('invoices', 'range')).toEqual([
+      [0, 999],
+      [1000, 1999],
+      [0, 999],
+      [1000, 1999],
+    ])
+    expect(mock.findCalls('rot_rut_payout_request_items', 'range')).toEqual([
+      [0, 999],
+      [1000, 1999],
+    ])
+    for (const table of ['invoices', 'rot_rut_payout_request_items']) {
+      expect(mock.findCalls(table, 'order')).toContainEqual(['id', { ascending: true }])
+    }
   })
 })

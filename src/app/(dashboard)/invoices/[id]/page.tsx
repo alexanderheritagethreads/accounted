@@ -2313,12 +2313,12 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
                 {hasGronTeknik && payoutRequests.length === 0 ? (
                   // No grön teknik file yet: the payout is requested in
                   // Skatteverkets e-tjänst. The link opens the figures it
-                  // asks for.
+                  // asks for, on this invoice's row.
                   <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
                     <span className="text-muted-foreground">{t('deduction_claim_gron_teknik')}</span>
                     {skvClaimable && (
                       <Link
-                        href="/invoices/rot-rut?new=1&type=gron_teknik"
+                        href={`/invoices/rot-rut?new=1&type=gron_teknik&invoice=${invoice.id}`}
                         className={cn(ROW_ACTION_CLASS, 'whitespace-nowrap')}
                       >
                         {t('deduction_claim_gron_teknik_cta')}

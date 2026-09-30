@@ -1,10 +1,13 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { DeductionType, Invoice } from '@/types'
 import { getSwedishLocalDate } from '@/lib/bookkeeping/engine'
+import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import {
   buildRotRutFile,
   evaluateInvoiceForFile,
+  isPastRequestDeadline,
   type BuildRotRutFileResult,
+  type ClaimProperty,
   type RotRutBlocker,
   type RotRutBlockerCode,
 } from './rot-rut-file'
@@ -31,7 +34,8 @@ export interface RotRutCandidateSummary {
 
 /**
  * A paid grön teknik invoice with the figures its ärenden need (one per
- * installation type), for the request made in Skatteverkets e-tjänst.
+ * installation type), for the request made in Skatteverkets e-tjänst. The
+ * buyer's full personnummer is not here: it is read on the invoice page.
  */
 export interface GronTeknikCandidateSummary {
   invoice_id: string
@@ -39,9 +43,13 @@ export interface GronTeknikCandidateSummary {
   customer_name: string | null
   personnummer_last4: string
   betalnings_datum: string
+  /** Fastighetsbeteckning, or lägenhetsnummer + the förening's orgnr. */
+  property: ClaimProperty
   installations: GronTeknikInstallation[]
   ovrig_kostnad: number
   begart_belopp: number
+  /** 31 January after the payment year has passed: too late to request. */
+  past_deadline: boolean
   warnings: string[]
 }
 
@@ -85,6 +93,12 @@ interface ActiveRequest {
   status: string
 }
 
+interface ActiveItemRow {
+  id: string
+  invoice_id: string
+  request: { name?: string | null; status?: string } | null
+}
+
 /**
  * Every deduction-carrying invoice a list may show, plus the begäran that
  * holds each one. Two fetches so no candidate shape is invisible:
@@ -93,6 +107,14 @@ interface ActiveRequest {
  *    total was never written (older imports). The header filter would miss
  *    those entirely, which is exactly the silent drop this list must not
  *    have; they surface as DEDUCTION_TOTAL_MISSING.
+ *
+ * Every read pages through fetchAllRows: PostgREST caps one read at 1000
+ * rows, and these sets only grow (decided invoices are still fetched and
+ * dropped in memory, and a grön teknik invoice gets no begäran row until the
+ * Begaran file exists). A capped read sorted oldest payment first silently
+ * lost the NEWEST paid invoices, the ones still to request, and a capped
+ * begäran read could make an invoice already requested look requestable.
+ * Each read orders on a unique tail (id) so pages never skip or repeat a row.
  */
 async function fetchDeductionCandidates(
   supabase: SupabaseClient,
@@ -101,35 +123,62 @@ async function fetchDeductionCandidates(
   | { ok: true; invoices: InvoiceWithCustomer[]; activeRequestByInvoice: Map<string, ActiveRequest> }
   | { ok: false; dbError: unknown }
 > {
-  const { data: byHeader, error: headerError } = await supabase
-    .from('invoices')
-    .select('*, items:invoice_items(*), customer:customers(id, name)')
-    .eq('company_id', companyId)
-    .eq('document_type', 'invoice')
-    .in('status', CANDIDATE_STATUSES)
-    .gt('deduction_total', 0)
-    .order('paid_at', { ascending: true })
-
-  if (headerError) return { ok: false, dbError: headerError }
-
-  const { data: byLines, error: linesError } = await supabase
-    .from('invoices')
-    .select(
-      '*, items:invoice_items(*), customer:customers(id, name), deduction_lines:invoice_items!inner(deduction_type)',
+  let byHeader: InvoiceWithCustomer[]
+  let byLines: InvoiceWithCustomer[]
+  let activeItems: ActiveItemRow[]
+  try {
+    byHeader = await fetchAllRows<InvoiceWithCustomer>(
+      ({ from, to }) =>
+        supabase
+          .from('invoices')
+          .select('*, items:invoice_items(*), customer:customers(id, name)')
+          .eq('company_id', companyId)
+          .eq('document_type', 'invoice')
+          .in('status', CANDIDATE_STATUSES)
+          .gt('deduction_total', 0)
+          .order('paid_at', { ascending: true })
+          .order('id', { ascending: true })
+          .range(from, to),
+      { dedupeBy: (row) => row.id },
     )
-    .eq('company_id', companyId)
-    .eq('document_type', 'invoice')
-    .in('status', CANDIDATE_STATUSES)
-    .not('deduction_lines.deduction_type', 'is', null)
-    .order('paid_at', { ascending: true })
 
-  if (linesError) return { ok: false, dbError: linesError }
+    byLines = await fetchAllRows<InvoiceWithCustomer>(
+      ({ from, to }) =>
+        supabase
+          .from('invoices')
+          .select(
+            '*, items:invoice_items(*), customer:customers(id, name), deduction_lines:invoice_items!inner(deduction_type)',
+          )
+          .eq('company_id', companyId)
+          .eq('document_type', 'invoice')
+          .in('status', CANDIDATE_STATUSES)
+          .not('deduction_lines.deduction_type', 'is', null)
+          .order('paid_at', { ascending: true })
+          .order('id', { ascending: true })
+          .range(from, to),
+      { dedupeBy: (row) => row.id },
+    )
+
+    // The select parser types the many-to-one embed as an array; PostgREST
+    // returns the one parent row as an object, as ActiveItemRow says.
+    const activeRows = await fetchAllRows(
+      ({ from, to }) =>
+        supabase
+          .from('rot_rut_payout_request_items')
+          .select('id, invoice_id, request:rot_rut_payout_requests!inner(id, name, status, company_id)')
+          .eq('request.company_id', companyId)
+          .not('request.status', 'in', '("cancelled","rejected")')
+          .order('id', { ascending: true })
+          .range(from, to),
+      { dedupeBy: (row) => row.id },
+    )
+    activeItems = activeRows as unknown as ActiveItemRow[]
+  } catch (dbError) {
+    return { ok: false, dbError }
+  }
 
   const invoiceById = new Map<string, InvoiceWithCustomer>()
-  for (const row of [
-    ...(byHeader ?? []),
-    ...(byLines ?? []),
-  ] as unknown as InvoiceWithCustomer[]) {
+  for (const row of [...byHeader, ...byLines]) {
     if (!invoiceById.has(row.id)) invoiceById.set(row.id, row)
   }
   // Deterministic order across the merged sets: oldest payment first
@@ -140,19 +189,8 @@ async function fetchDeductionCandidates(
     return aKey === bKey ? a.id.localeCompare(b.id) : aKey < bKey ? -1 : 1
   })
 
-  const { data: activeItems, error: activeError } = await supabase
-    .from('rot_rut_payout_request_items')
-    .select('invoice_id, request:rot_rut_payout_requests!inner(id, name, status, company_id)')
-    .eq('request.company_id', companyId)
-    .not('request.status', 'in', '("cancelled","rejected")')
-
-  if (activeError) return { ok: false, dbError: activeError }
-
   const activeRequestByInvoice = new Map<string, ActiveRequest>()
-  for (const row of (activeItems ?? []) as unknown as Array<{
-    invoice_id: string
-    request: { name?: string | null; status?: string } | null
-  }>) {
+  for (const row of activeItems) {
     activeRequestByInvoice.set(row.invoice_id, {
       name: row.request?.name ?? null,
       status: row.request?.status ?? '',
@@ -291,9 +329,15 @@ export async function listRotRutCandidates(
  * carry the figures each ärende needs, blocked ones the first reason.
  * ROT/RUT invoices are counted in `other_type_counts` (they are listed under
  * ROT and RUT). There is no grön teknik file yet: the request is made in
- * Skatteverkets e-tjänst Grön teknik: företag, so no begäran row exists for
- * these invoices and nothing here writes one. The decided/in-flight begäran
- * rules still apply, so the list is ready for the Begaran GRON_TEKNIK file.
+ * Skatteverkets e-tjänst for grön teknik, so no begäran row exists for these
+ * invoices and nothing here writes one. `eligible` therefore means "paid and
+ * complete", not "not yet requested": a request made in the e-tjänst is
+ * invisible here, and callers must say so (the tile and the invoice list do).
+ * The decided/in-flight begäran rules still apply, so the list is ready for
+ * the Begaran GRON_TEKNIK file.
+ *
+ * Newest payment first: the invoice to enter next in the e-tjänst is the one
+ * most recently paid, and the ones already entered sink down the list.
  */
 export async function listGronTeknikCandidates(
   supabase: SupabaseClient,
@@ -341,12 +385,24 @@ export async function listGronTeknikCandidates(
       customer_name: invoice.customer?.name ?? null,
       personnummer_last4: result.value.personnummer_last4,
       betalnings_datum: result.value.betalnings_datum,
+      property: result.value.property,
       installations: result.value.installations,
       ovrig_kostnad: result.value.ovrig_kostnad,
       begart_belopp: result.value.begart_belopp,
+      past_deadline: isPastRequestDeadline(result.value.betalnings_datum, today),
       warnings: result.value.warnings,
     })
   }
+
+  // The fetch order is oldest payment first (stable, id-tied); reverse it
+  // with the same tie-break so equal dates keep a deterministic order.
+  eligible.sort((a, b) =>
+    a.betalnings_datum === b.betalnings_datum
+      ? b.invoice_id.localeCompare(a.invoice_id)
+      : a.betalnings_datum < b.betalnings_datum
+        ? 1
+        : -1,
+  )
 
   return { ok: true, eligible, blocked, other_type_counts: otherTypeCounts }
 }

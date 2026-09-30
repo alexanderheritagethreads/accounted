@@ -181,7 +181,7 @@ describe('POST /api/rot-rut/payout-file refuses grön teknik', () => {
     }>(response)
     expect(status).toBe(400)
     expect(body.error.details?.blockers?.[0]).toMatchObject({ code: 'NO_DEDUCTION_OF_TYPE' })
-    expect(body.error.details?.blockers?.[0].message).toContain('Grön teknik: företag')
+    expect(body.error.details?.blockers?.[0].message).toContain('e-tjänst för grön teknik')
   })
 })
 

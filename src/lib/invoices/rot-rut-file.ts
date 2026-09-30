@@ -328,7 +328,7 @@ export function readClaimProperty(lines: InvoiceItem[], missingMessage: string):
 
 /** Pointer for a grön teknik invoice met on a HUS surface. */
 const GRON_TEKNIK_ELSEWHERE =
-  'Fakturans skattereduktion är grön teknik: den begärs i Skatteverkets e-tjänst Grön teknik: företag, inte med en ROT- eller RUT-fil.'
+  'Fakturans skattereduktion är grön teknik: den begärs i Skatteverkets e-tjänst för grön teknik, inte med en ROT- eller RUT-fil.'
 
 /**
  * Evaluate one invoice against the file rules for `type`. Returns either an
@@ -383,7 +383,7 @@ export function evaluateInvoiceForFile(
   if (gronTeknikLines.length > 0) {
     return block(
       'MIXED_DEDUCTION_TYPES',
-      'Fakturan blandar ROT/RUT-rader med grön teknik. Grön teknik begärs i Skatteverkets e-tjänst Grön teknik: företag: dela upp i separata fakturor.',
+      'Fakturan blandar ROT/RUT-rader med grön teknik. Grön teknik begärs i Skatteverkets e-tjänst för grön teknik: dela upp i separata fakturor.',
     )
   }
 

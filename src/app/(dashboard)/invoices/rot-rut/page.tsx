@@ -30,7 +30,13 @@ import { computeRefusedShares } from '@/lib/invoices/rot-rut-reclaim'
 import { expectedRotRutPayoutAmount } from '@/lib/invoices/rot-rut-payout-matching'
 import { formatCurrency, formatDate } from '@/lib/utils'
 import { todayIsoStockholm } from '@/lib/dates/iso'
-import { DEDUCTION_TYPE_LABEL_KEYS, isDeductionType, type DeductionType } from '@/lib/invoices/rot-rut-rules'
+import {
+  DEDUCTION_TYPE_LABELS,
+  DEDUCTION_TYPE_LABEL_KEYS,
+  isDeductionType,
+  type DeductionType,
+} from '@/lib/invoices/rot-rut-rules'
+import { readyTileOf } from '@/lib/invoices/rot-rut-overview'
 
 const RotRutPayoutDialog = dynamic(() => import('@/components/invoices/RotRutPayoutDialog'), {
   ssr: false,
@@ -153,6 +159,9 @@ export default function RotRutOverviewPage() {
     rut: 0,
     gron_teknik: 0,
   })
+  // Paid grön teknik invoices still inside their request window: shown apart
+  // from "Redo att begäras" (see readyTileOf).
+  const [gronTeknikOpen, setGronTeknikOpen] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [importing, setImporting] = useState(false)
@@ -169,6 +178,8 @@ export default function RotRutOverviewPage() {
     : eligibleCounts.rot === 0 && eligibleCounts.rut === 0 && eligibleCounts.gron_teknik > 0
       ? 'gron_teknik'
       : 'rot'
+  // ?invoice= (from the invoice page) opens the dialog on that invoice's row.
+  const focusInvoiceId = searchParams.get('invoice')
   const openNewRequest = () => router.push('/invoices/rot-rut?new=1', { scroll: false })
   const closeNewRequest = () => router.replace('/invoices/rot-rut', { scroll: false })
 
@@ -192,12 +203,14 @@ export default function RotRutOverviewPage() {
       const body = (await requestsRes.json()) as { data: PayoutRequest[] }
       const rot = rotRes.ok ? ((await rotRes.json()) as { data: { eligible: unknown[] } }).data.eligible.length : 0
       const rut = rutRes.ok ? ((await rutRes.json()) as { data: { eligible: unknown[] } }).data.eligible.length : 0
-      const gronTeknik = gronTeknikRes.ok
-        ? ((await gronTeknikRes.json()) as { data: { eligible: unknown[] } }).data.eligible.length
-        : 0
+      const gronTeknikEligible = gronTeknikRes.ok
+        ? ((await gronTeknikRes.json()) as { data: { eligible: Array<{ past_deadline?: boolean }> } }).data
+            .eligible
+        : []
       if (sequence !== loadSequence.current) return
       setRequests(body.data)
-      setEligibleCounts({ rot, rut, gron_teknik: gronTeknik })
+      setEligibleCounts({ rot, rut, gron_teknik: gronTeknikEligible.length })
+      setGronTeknikOpen(gronTeknikEligible.filter((candidate) => !candidate.past_deadline).length)
     } catch (error) {
       if (sequence !== loadSequence.current) return
       toast({
@@ -396,7 +409,7 @@ export default function RotRutOverviewPage() {
     }
   }
 
-  const readyCount = eligibleCounts.rot + eligibleCounts.rut + eligibleCounts.gron_teknik
+  const readyTile = readyTileOf({ rot: eligibleCounts.rot, rut: eligibleCounts.rut, gronTeknikOpen })
 
   return (
     <div className="space-y-8">
@@ -468,14 +481,22 @@ export default function RotRutOverviewPage() {
         </div>
         <div className="rounded-lg border p-4">
           <p className="text-xs text-muted-foreground">{t('tile_ready')}</p>
-          <p className="mt-1 font-display text-2xl tabular-nums">{readyCount}</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {t('tile_ready_help', {
-              rot: eligibleCounts.rot,
-              rut: eligibleCounts.rut,
-              gron: eligibleCounts.gron_teknik,
-            })}
-          </p>
+          <p className="mt-1 font-display text-2xl tabular-nums">{readyTile.ready}</p>
+          {readyTile.parts.length > 0 && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {readyTile.parts
+                .map((part) => `${part.count} ${DEDUCTION_TYPE_LABELS[part.kind].short}`)
+                .join(' · ')}
+            </p>
+          )}
+          {/* Grön teknik is requested in Skatteverkets e-tjänst, which we
+              cannot see: never "ready", only what is still inside its
+              request window (the "?" says why). */}
+          {readyTile.gronTeknikOpen > 0 && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              {t('tile_ready_gron_teknik', { count: readyTile.gronTeknikOpen })}
+            </p>
+          )}
         </div>
       </div>
 
@@ -666,6 +687,7 @@ export default function RotRutOverviewPage() {
         <RotRutPayoutDialog
           open
           initialType={dialogInitialType}
+          focusInvoiceId={focusInvoiceId}
           onOpenChange={(open) => {
             if (!open) {
               closeNewRequest()

@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocale, useTranslations } from 'next-intl'
+import Link from 'next/link'
 import {
   AlertTriangle,
   Ban,
   CheckCircle2,
+  ChevronRight,
   Download,
   ExternalLink,
   FileDown,
@@ -22,6 +24,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
+import { QUIET_LINK_CLASS } from '@/components/ui/dry-table'
 import { useToast } from '@/components/ui/use-toast'
 import { downloadFile, saveBlobToDisk } from '@/lib/browser/download-file'
 import { failureDescription } from '@/lib/browser/action-failure'
@@ -30,7 +33,7 @@ import {
   getResponseErrorMessage,
   type ErrorLocale,
 } from '@/lib/errors/get-error-message'
-import { formatCurrency, formatDate } from '@/lib/utils'
+import { formatCurrency, formatDate, formatOrgNumber } from '@/lib/utils'
 import { DEDUCTION_TYPE_LABEL_KEYS, type DeductionType } from '@/lib/invoices/rot-rut-rules'
 
 type RequestStatus =
@@ -59,6 +62,8 @@ interface Candidate {
     betalt_belopp: number
   }>
   ovrig_kostnad?: number
+  /** Grön teknik only: the property the e-tjänst asks for. */
+  property?: { fastighet?: string; lagenhetsNr?: string; brfOrgNr?: string }
   warnings?: string[]
 }
 
@@ -97,6 +102,8 @@ interface RotRutPayoutDialogProps {
   canWrite: boolean
   /** The list to open on (defaults to ROT). */
   initialType?: DeductionType
+  /** An invoice to open the list on: its payment year, its row expanded. */
+  focusInvoiceId?: string | null
 }
 
 const MAX_CASES_PER_FILE = 100
@@ -124,6 +131,7 @@ export default function RotRutPayoutDialog({
   onOpenChange,
   canWrite,
   initialType = 'rot',
+  focusInvoiceId = null,
 }: RotRutPayoutDialogProps) {
   const t = useTranslations('invoices')
   const locale = useLocale() as ErrorLocale
@@ -185,11 +193,15 @@ export default function RotRutPayoutDialog({
         const years = Array.from(
           new Set(nextEligible.map((candidate) => candidate.betalnings_datum.slice(0, 4))),
         ).sort((a, b) => b.localeCompare(a))
+        // Opened from an invoice: land on that invoice's payment year.
+        const focused = focusInvoiceId
+          ? nextEligible.find((candidate) => candidate.invoice_id === focusInvoiceId)
+          : undefined
         setEligible(nextEligible)
         setBlocked(eligibleBody.data.blocked)
         setOtherTypeCounts(eligibleBody.data.other_type_counts ?? {})
         setRequests(requestsBody.data)
-        setSelectedYear(years[0] ?? '')
+        setSelectedYear(focused ? focused.betalnings_datum.slice(0, 4) : (years[0] ?? ''))
       } catch (error) {
         if (sequence !== loadSequence.current) return
         setEligible([])
@@ -206,12 +218,17 @@ export default function RotRutPayoutDialog({
         if (sequence === loadSequence.current) setLoading(false)
       }
     },
-    [locale, t, toast],
+    [focusInvoiceId, locale, t, toast],
   )
 
   useEffect(() => {
     if (open) void load(type)
   }, [load, open, type])
+
+  // Scroll the focused row into view once it renders (it starts expanded).
+  const scrollFocusedRow = useCallback((element: HTMLDetailsElement | null) => {
+    element?.scrollIntoView({ block: 'nearest' })
+  }, [])
 
   const years = useMemo(
     () =>
@@ -465,11 +482,14 @@ export default function RotRutPayoutDialog({
                       {t('gron_teknik_hus_other_hint', { count: husElsewhereCount })}
                     </p>
                   )}
-                  {otherTypeBlockedCount > 0 && (
+                  {/* NO_DEDUCTION_OF_TYPE only comes from the ROT and RUT
+                      lists (grön teknik counts the HUS kinds instead), so
+                      the other list is the other HUS kind. */}
+                  {!isGronTeknik && otherTypeBlockedCount > 0 && (
                     <p className="mt-2 text-xs text-muted-foreground">
                       {t('rot_rut_other_type_hint', {
                         count: otherTypeBlockedCount,
-                        type: t(type === 'rot' ? 'rot_rut_type_rut' : 'rot_rut_type_rot'),
+                        type: t(DEDUCTION_TYPE_LABEL_KEYS[type === 'rot' ? 'rut' : 'rot']),
                       })}
                     </p>
                   )}
@@ -485,8 +505,17 @@ export default function RotRutPayoutDialog({
                 // is its own ärende at Skatteverket).
                 <div className="max-h-64 divide-y overflow-y-auto rounded-lg border">
                   {visibleCandidates.map((candidate) => (
-                    <details key={candidate.invoice_id} className="px-3 py-2.5">
+                    <details
+                      key={candidate.invoice_id}
+                      className="group px-3 py-2.5"
+                      open={candidate.invoice_id === focusInvoiceId || undefined}
+                      ref={candidate.invoice_id === focusInvoiceId ? scrollFocusedRow : undefined}
+                    >
                       <summary className="flex min-h-10 cursor-pointer list-none items-center gap-3">
+                        <ChevronRight
+                          aria-hidden
+                          className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-150 group-open:rotate-90"
+                        />
                         <span className="min-w-0 flex-1">
                           <span className="block truncate text-sm font-medium">
                             {candidate.invoice_number ?? '-'} · {candidate.customer_name ?? '-'}
@@ -501,6 +530,18 @@ export default function RotRutPayoutDialog({
                         </span>
                       </summary>
                       <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                        {candidate.property && (
+                          <li>
+                            {candidate.property.fastighet
+                              ? t('gron_teknik_property_line', { property: candidate.property.fastighet })
+                              : t('gron_teknik_brf_line', {
+                                  apartment: candidate.property.lagenhetsNr ?? '-',
+                                  org: formatOrgNumber(
+                                    (candidate.property.brfOrgNr ?? '').replace(/^16(?=\d{10}$)/, ''),
+                                  ),
+                                })}
+                          </li>
+                        )}
                         {(candidate.installations ?? []).map((installation) => (
                           <li key={installation.work_type} className="tabular-nums">
                             {t('gron_teknik_installation_line', {
@@ -520,6 +561,13 @@ export default function RotRutPayoutDialog({
                         {(candidate.warnings ?? []).map((warning) => (
                           <li key={warning}>{warning}</li>
                         ))}
+                        <li>
+                          {/* The buyer's full personnummer is shown on the
+                              invoice, never in this list. */}
+                          <Link href={`/invoices/${candidate.invoice_id}`} className={QUIET_LINK_CLASS}>
+                            {t('gron_teknik_open_invoice')}
+                          </Link>
+                        </li>
                       </ul>
                     </details>
                   ))}
@@ -601,8 +649,13 @@ export default function RotRutPayoutDialog({
                 // With nothing eligible the reasons ARE the content: start
                 // expanded so the dialog explains itself instead of looking
                 // empty. The element stays a plain details, so the user can
-                // still collapse it.
-                open={visibleCandidates.length === 0 || undefined}
+                // still collapse it. Opened from a blocked invoice: its
+                // reason is the content too.
+                open={
+                  visibleCandidates.length === 0 ||
+                  blocked.some((candidate) => candidate.invoice_id === focusInvoiceId) ||
+                  undefined
+                }
               >
                 <summary className="cursor-pointer text-sm font-medium">
                   {t('rot_rut_blocked_title', { count: blocked.length })}
