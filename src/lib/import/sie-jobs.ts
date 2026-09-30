@@ -33,10 +33,12 @@ export interface SIEJobInput {
 
 /**
  * Every message this class carries is a finished Swedish sentence naming the
- * file, the setting or the choice the reader has to change, so it is marked
- * user-facing: without that the registry answers its code with "Förfrågan
- * innehåller ogiltiga uppgifter" and the specific half is lost. Observed on a
- * paused import, where the truth was that SIE_IMPORT_JOBS was unset.
+ * file, the setting or the choice the reader has to change. Under the generic
+ * VALIDATION_ERROR code it is marked user-facing: without that the registry
+ * answers the code with "Förfrågan innehåller ogiltiga uppgifter" and the
+ * specific half is lost. A code with its own registry entry
+ * (SIE_IMPORT_UNSUPPORTED_ACCOUNT_CLASS) is left unmarked so it keeps that
+ * bilingual text, the same split sieJobValidationResponse makes.
  */
 export class SIEJobValidationError extends Error {
   constructor(
@@ -45,7 +47,7 @@ export class SIEJobValidationError extends Error {
     readonly details?: Record<string, unknown>,
   ) {
     super(message)
-    userFacing(this, code)
+    if (code === 'VALIDATION_ERROR') userFacing(this, code)
   }
 }
 
