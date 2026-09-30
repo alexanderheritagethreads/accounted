@@ -125,6 +125,15 @@ const PEPPOL_FAILED_DELIVERY_STATUSES = new Set(['failed', 'no_route'])
 // before the page says so.
 const PEPPOL_UNCONFIRMED_AFTER_MS = 60 * 60 * 1000
 
+// The reminder history card's columns. Never '*': action_token is the
+// customer's bearer link, withheld from end-user roles by a column grant, so
+// a '*' select from the browser is refused outright.
+const REMINDER_HISTORY_COLUMNS = 'id, reminder_level, sent_at, email_to, response_type'
+type ReminderHistoryRow = Pick<
+  InvoiceReminder,
+  'id' | 'reminder_level' | 'sent_at' | 'email_to' | 'response_type'
+>
+
 // How long the preview waits for the PDF route to say whether it will render
 // before giving up and closing the placeholder tab. Generous: a cold
 // serverless start plus the invoice and settings reads, not the render itself.
@@ -180,7 +189,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   const locale = useLocale()
 
   const [invoice, setInvoice] = useState<InvoiceWithRelations | null>(null)
-  const [reminders, setReminders] = useState<InvoiceReminder[]>([])
+  const [reminders, setReminders] = useState<ReminderHistoryRow[]>([])
   const [deliveries, setDeliveries] = useState<InvoiceDeliveryView[]>([])
   // An empty deliveries list means "nothing was ever sent through Accounted".
   // A failed read also produces an empty list, and the two must never be
@@ -450,7 +459,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
           .single(),
         supabase
           .from('invoice_reminders')
-          .select('*')
+          .select(REMINDER_HISTORY_COLUMNS)
           .eq('invoice_id', id)
           .order('sent_at', { ascending: false }),
         // Payment history for the Betalningsstatus card. Joins the
@@ -502,7 +511,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
     setDeliveriesUnreadable(!deliveryData.ok)
 
     if (reminderData) {
-      setReminders(reminderData as InvoiceReminder[])
+      setReminders(reminderData as ReminderHistoryRow[])
     }
 
     if (paymentData) {
