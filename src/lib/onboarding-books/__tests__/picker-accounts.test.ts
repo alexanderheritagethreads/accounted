@@ -22,6 +22,7 @@ describe('toPickerAccounts', () => {
         uid: 'a',
         name: 'ARCIM TECHNOLOGY AB',
         nr: '832798443379915',
+        iban: 'SE6380000832798443379915',
         currency: 'SEK',
         ledger: null,
         balance: null,

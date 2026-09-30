@@ -277,7 +277,7 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
   const ledgerOf = useMemo(() => {
     const preset: Record<string, string> = {}
     for (const a of tickedList) if (a.ledger) preset[a.uid] = a.ledger
-    return allocateLedgers(tickedList, claims.used, { ...preset, ...picks }, claims.connected, chartNumbers)
+    return allocateLedgers(tickedList, claims.used, { ...preset, ...picks }, claims.connected, chartNumbers, claims.holders)
   }, [tickedList, claims, picks, chartNumbers])
   const chartNames = useMemo(() => Object.fromEntries(chart.map((a) => [a.account_number, a.account_name])), [chart])
 
@@ -527,7 +527,7 @@ export function BankStep({ ctx }: { ctx: BooksCtx }) {
               {tickedList.map((a) => {
                 const cur = ledgerOf[a.uid]
                 const others = Object.values(ledgerOf).filter((l) => l !== cur)
-                const opts = ledgerOptions(a.currency, [...usedLedgers, ...others], cur, [...claims.connected, ...others], chartNumbers)
+                const opts = ledgerOptions(a.currency, [...usedLedgers, ...others], cur, [...claims.connected, ...others], chartNumbers, claims.holders, a.iban)
                 return (
                   <OptRow
                     key={a.uid}

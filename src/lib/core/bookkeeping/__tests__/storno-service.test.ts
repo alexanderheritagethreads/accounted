@@ -40,6 +40,9 @@ function makeClient() {
 vi.mock('@/lib/bookkeeping/engine', () => ({
   validateBalance: vi.fn().mockReturnValue({ valid: true, totalDebit: 1000, totalCredit: 1000 }),
   getNextVoucherNumber: vi.fn(async () => ++resultIdx), // just increment
+  // The gated cleanup door (cancel_orphaned_entry RPC). Consumes no queued
+  // result: rollbacks no longer issue client-side UPDATE/DELETE statements.
+  cancelOrphanedEntry: vi.fn(async () => ({ error: null })),
 }))
 
 // On-demand BAS backfill, default: nothing seedable. Tests override.
@@ -49,7 +52,7 @@ vi.mock('@/lib/bookkeeping/account-backfill', () => ({
 }))
 
 import { correctEntry } from '../storno-service'
-import { validateBalance, getNextVoucherNumber } from '@/lib/bookkeeping/engine'
+import { validateBalance, getNextVoucherNumber, cancelOrphanedEntry } from '@/lib/bookkeeping/engine'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -62,6 +65,7 @@ beforeEach(() => {
   vi.mocked(validateBalance).mockReturnValue({ valid: true, totalDebit: 1000, totalCredit: 1000 })
   let voucherNum = 0
   vi.mocked(getNextVoucherNumber).mockImplementation(async () => ++voucherNum)
+  vi.mocked(cancelOrphanedEntry).mockResolvedValue({ error: null })
   mockBackfill.mockResolvedValue([])
 })
 
@@ -166,16 +170,97 @@ describe('correctEntry', () => {
       { data: null, error: null },                   // 6: insert corrected lines
       { data: null, error: null },                   // 7: post corrected
       { data: [], error: null },                     // 8: CAS fails: empty array
-      { data: null, error: null },                   // 9: cancelEntry reversal update
-      { data: null, error: null },                   // 10: cancelEntry reversal lines delete
-      { data: null, error: null },                   // 11: cancelEntry corrected update
-      { data: null, error: null },                   // 12: cancelEntry corrected lines delete
     ]
 
     const supabase = makeClient()
     await expect(
       correctEntry(supabase as never, 'company-1', 'user-1', 'orig-1', correctedLines)
     ).rejects.toThrow('already reversed')
+
+    // Both posted orphans go through the gated cleanup door (a direct
+    // posted -> cancelled UPDATE is refused by the database).
+    expect(vi.mocked(cancelOrphanedEntry).mock.calls).toEqual([
+      [supabase, 'company-1', 'user-1', 'reversal-1'],
+      [supabase, 'company-1', 'user-1', 'corrected-1'],
+    ])
+  })
+
+  it('treats an ambiguous CAS error that did land as a completed correction', async () => {
+    setupResults()
+    // 8: the CAS reports an error although the UPDATE committed; then the
+    // re-read of the original shows it pointing at our reversal.
+    results.splice(8, 1,
+      { data: null, error: { message: 'fetch failed' } },
+      { data: { status: 'reversed', reversed_by_id: 'reversal-1' }, error: null },
+    )
+    // The cleanup door refuses the reversal: the original references it.
+    vi.mocked(cancelOrphanedEntry).mockResolvedValue({
+      error: { message: 'is referenced by another verifikat', code: '55000' },
+    })
+
+    const supabase = makeClient()
+    const result = await correctEntry(supabase as never, 'company-1', 'user-1', 'orig-1', correctedLines)
+
+    expect(result.reversal.id).toBe('reversal-1')
+    expect(result.corrected.id).toBe('corrected-1')
+    // Only the reversal cleanup was attempted; the replacement was never cancelled.
+    expect(vi.mocked(cancelOrphanedEntry).mock.calls).toEqual([
+      [supabase, 'company-1', 'user-1', 'reversal-1'],
+    ])
+  })
+
+  it('keeps the replacement posted when the reversal cleanup fails after a lost CAS', async () => {
+    const reversalEntry = makeJournalEntry({ id: 'reversal-1', reverses_id: 'orig-1' })
+    const correctedEntry = makeJournalEntry({ id: 'corrected-1', correction_of_id: 'orig-1' })
+    vi.mocked(cancelOrphanedEntry).mockResolvedValue({
+      error: { message: 'fetch failed' },
+    })
+
+    results = [
+      { data: originalEntry, error: null },         // 0: fetch original
+      { data: [{ id: 'acc-5420', account_number: '5420' }, { id: 'acc-1930', account_number: '1930' }], error: null }, // 1: accounts (Step 0)
+      { data: reversalEntry, error: null },          // 2: insert reversal
+      { data: null, error: null },                   // 3: insert reversal lines
+      { data: null, error: null },                   // 4: post reversal
+      { data: correctedEntry, error: null },         // 5: insert corrected
+      { data: null, error: null },                   // 6: insert corrected lines
+      { data: null, error: null },                   // 7: post corrected
+      { data: [], error: null },                     // 8: CAS fails: empty array
+      { data: { status: 'posted', reversed_by_id: null }, error: null }, // 9: re-read original
+    ]
+
+    const supabase = makeClient()
+    await expect(
+      correctEntry(supabase as never, 'company-1', 'user-1', 'orig-1', correctedLines)
+    ).rejects.toThrow('already reversed')
+
+    // Cancelling the replacement while the reversal survives would net the
+    // original to zero with nothing in its place.
+    expect(vi.mocked(cancelOrphanedEntry).mock.calls).toEqual([
+      [supabase, 'company-1', 'user-1', 'reversal-1'],
+    ])
+  })
+
+  it('keeps the original error when the rollback itself is refused', async () => {
+    const reversalEntry = makeJournalEntry({ id: 'reversal-1', reverses_id: 'orig-1' })
+    vi.mocked(cancelOrphanedEntry).mockResolvedValue({
+      error: { message: 'was not posted within the last 15 minutes', code: '55000' },
+    })
+
+    results = [
+      { data: originalEntry, error: null },          // 0: fetch original
+      { data: [{ id: 'acc-5420', account_number: '5420' }, { id: 'acc-1930', account_number: '1930' }], error: null }, // 1: accounts (Step 0)
+      { data: reversalEntry, error: null },           // 2: insert reversal
+      { data: null, error: null },                    // 3: insert reversal lines
+      { data: null, error: null },                    // 4: post reversal
+      { data: null, error: { message: 'DB error' } }, // 5: insert corrected FAILS
+    ]
+
+    const supabase = makeClient()
+    await expect(
+      correctEntry(supabase as never, 'company-1', 'user-1', 'orig-1', correctedLines)
+    ).rejects.toThrow(BookkeepingDatabaseError)
+    expect(cancelOrphanedEntry).toHaveBeenCalledWith(supabase, 'company-1', 'user-1', 'reversal-1')
   })
 
   it('cancels reversal when corrected entry creation fails', async () => {
@@ -188,14 +273,15 @@ describe('correctEntry', () => {
       { data: null, error: null },                    // 3: insert reversal lines
       { data: null, error: null },                    // 4: post reversal
       { data: null, error: { message: 'DB error' } }, // 5: insert corrected FAILS
-      { data: null, error: null },                    // 6: cancelEntry reversal update
-      { data: null, error: null },                    // 7: cancelEntry reversal lines delete
     ]
 
     const supabase = makeClient()
     await expect(
       correctEntry(supabase as never, 'company-1', 'user-1', 'orig-1', correctedLines)
     ).rejects.toThrow(BookkeepingDatabaseError)
+    expect(vi.mocked(cancelOrphanedEntry).mock.calls).toEqual([
+      [supabase, 'company-1', 'user-1', 'reversal-1'],
+    ])
   })
 
   it('cancels reversal entry when reversal lines fail', async () => {
@@ -206,14 +292,15 @@ describe('correctEntry', () => {
       { data: [{ id: 'acc-5420', account_number: '5420' }, { id: 'acc-1930', account_number: '1930' }], error: null }, // 1: accounts (Step 0)
       { data: reversalEntry, error: null },            // 2: insert reversal
       { data: null, error: { message: 'line error' } }, // 3: insert reversal lines FAILS
-      { data: null, error: null },                     // 4: cancelEntry update
-      { data: null, error: null },                     // 5: cancelEntry lines delete
     ]
 
     const supabase = makeClient()
     await expect(
       correctEntry(supabase as never, 'company-1', 'user-1', 'orig-1', correctedLines)
     ).rejects.toThrow(BookkeepingDatabaseError)
+    expect(vi.mocked(cancelOrphanedEntry).mock.calls).toEqual([
+      [supabase, 'company-1', 'user-1', 'reversal-1'],
+    ])
   })
 
   it('mirrors original.entry_date on storno + corrected entries (rättelsen stannar i ursprungsperioden)', async () => {

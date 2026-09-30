@@ -20,14 +20,16 @@ import type { CashAccount } from '@/types'
 import { bankLogoUrl } from '@/lib/reconciliation/bank-logos'
 
 /**
- * A cash_accounts row with its connection's bank name embedded:
- * `select('*, bank_connection:bank_connections(bank_name)')`. The reference
+ * A cash_accounts row with its connection's bank name and status embedded:
+ * `select('*, bank_connection:bank_connections(bank_name, status)')`. The
+ * status tells a live claim from one left on a revoked connection
+ * (lib/onboarding-books/ledger.ts ledgerClaims). The reference
  * list (lib/reference-data/fetchers.ts) and the dashboard layout's seed both
  * select exactly that, as literals so the phantom-column scanner
  * (tests/schema) checks the embed.
  */
 export type CashAccountWithBank = CashAccount & {
-  bank_connection: { bank_name: string | null } | null
+  bank_connection: { bank_name: string | null; status?: string | null } | null
 }
 
 /** The bank the account belongs to, or null when nothing names it. */

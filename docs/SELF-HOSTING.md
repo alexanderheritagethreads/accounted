@@ -163,10 +163,12 @@ docker compose -f docker-compose.yml -f docker/compose.build.yml up --build
 ```
 
 The locally-built image runs **unprivileged** (`USER nextjs`): the entrypoint
-populates the `.next`/`public` tmpfs mounts and substitutes the `NEXT_PUBLIC_*`
-placeholders as the `nextjs` user, so the container needs no Linux capabilities
-and runs as-is under the hardened compose defaults (`cap_drop: ALL`,
-`read_only: true`).
+populates `/app/.next` (the `next_runtime` named volume) and `/app/public` (a
+tmpfs) and substitutes the `NEXT_PUBLIC_*` placeholders as the `nextjs` user, so
+the container needs no Linux capabilities and runs as-is under the hardened
+compose defaults (`cap_drop: ALL`, `read_only: true`). The volume holds only
+that runtime copy of the bundle, rebuilt from the image on every start, so it
+needs no backup.
 
 ### Custom Port
 
@@ -424,12 +426,26 @@ Migration 024 automatically creates the `documents` storage bucket (private, 50 
 
 ## Updating
 
-Pull the latest image and restart:
+Update the repository files, pull the latest image and restart:
 
 ```bash
+git pull
 docker compose pull
 docker compose up -d
 ```
+
+`docker compose pull` updates only the image, and `docker-compose.yml` sometimes
+has to change with it: a compose file from before [#3164](https://github.com/erp-mafia/accounted/issues/3164)
+mounts `/app/.next` as a 400 MB tmpfs, which newer images no longer fit in, and
+the container then stops at start with an error saying so. Keep local changes in
+a `docker-compose.override.yml` rather than in `docker-compose.yml`, so updating
+it never conflicts.
+
+If `git pull` refuses because you edited `docker-compose.yml` directly (for
+example, raising the `/app/.next` tmpfs size as a workaround for #3164), move any
+edits you still need into `docker-compose.override.yml`, discard the rest with
+`git checkout -- docker-compose.yml`, and run the three commands again. The
+current file no longer needs a tmpfs size for `/app/.next`.
 
 If a new release includes database migrations, apply them before restarting:
 

@@ -103,6 +103,78 @@ describe('a manual row on the currency default does not push the bank account of
   })
 })
 
+describe('a manual row of another bank account keeps the account off the currency default (crm#129)', () => {
+  // The server refuses to promote a holder with another IBAN or currency
+  // (CASH_ACCOUNT_KEEPER_IDENTITY_CONFLICT). PATCH /accounts sends the
+  // preview as an explicit mapping, so offering 1930 here failed the save.
+  const OWN = 'SE4550000000058398257466'
+  const OTHER = 'SE9912000000000000000001'
+  const rows = (iban: string | null, currency = 'SEK') => [
+    { ledger_account: '1930', bank_connection_id: null, enabled: true, iban, currency },
+  ]
+
+  it('skips 1930 when its manual row carries another IBAN', () => {
+    const { used, connected, holders } = ledgerClaims(rows(OTHER), 'conn-new')
+    expect(connected).toEqual([])
+    expect(allocateLedgers([{ uid: 'a', currency: 'SEK', iban: OWN }], used, {}, connected, [], holders)).toEqual({ a: '1931' })
+  })
+
+  it('refuses a pick of 1930 there too', () => {
+    const { used, connected, holders } = ledgerClaims(rows(OTHER), 'conn-new')
+    expect(allocateLedgers([{ uid: 'a', currency: 'SEK', iban: OWN }], used, { a: '1930' }, connected, [], holders)).toEqual({ a: '1931' })
+  })
+
+  it('keeps 1930 when its manual row is the same account or has no IBAN', () => {
+    for (const iban of ['se45 5000 0000 0583 9825 7466', null]) {
+      const { used, connected, holders } = ledgerClaims(rows(iban), 'conn-new')
+      expect(allocateLedgers([{ uid: 'a', currency: 'SEK', iban: OWN }], used, {}, connected, [], holders)).toEqual({ a: '1930' })
+    }
+  })
+
+  it('skips a manual row in another currency', () => {
+    const { used, connected, holders } = ledgerClaims(rows(null, 'EUR'), 'conn-new')
+    expect(allocateLedgers([{ uid: 'a', currency: 'SEK', iban: OWN }], used, {}, connected, [], holders)).toEqual({ a: '1931' })
+  })
+
+  it('a disabled row of another connection is checked the same way', () => {
+    // The save releases it to a manual row first, then promotes it.
+    const { used, connected, holders } = ledgerClaims(
+      [{ ledger_account: '1930', bank_connection_id: 'conn-old', enabled: false, iban: OTHER, currency: 'SEK' }],
+      'conn-new',
+    )
+    expect(allocateLedgers([{ uid: 'a', currency: 'SEK', iban: OWN }], used, {}, connected, [], holders)).toEqual({ a: '1931' })
+  })
+
+  it('a row left on a revoked connection has no claim, as on the server', () => {
+    // findFreeLedgerAccount and promote_psd2_cash_account read the connection
+    // status, not the row's enabled flag: the same account gets its slot back.
+    const revoked = (iban: string) => [
+      { ledger_account: '1930', bank_connection_id: 'conn-old', enabled: true, iban, currency: 'SEK', bank_connection: { status: 'revoked' } },
+    ]
+    const same = ledgerClaims(revoked(OWN), 'conn-new')
+    expect(same.connected).toEqual([])
+    expect(allocateLedgers([{ uid: 'a', currency: 'SEK', iban: OWN }], same.used, {}, same.connected, [], same.holders)).toEqual({ a: '1930' })
+    const other = ledgerClaims(revoked(OTHER), 'conn-new')
+    expect(allocateLedgers([{ uid: 'a', currency: 'SEK', iban: OWN }], other.used, {}, other.connected, [], other.holders)).toEqual({ a: '1931' })
+  })
+
+  it('an enabled row of an active connection keeps its claim even for the same account', () => {
+    const { used, connected, holders } = ledgerClaims(
+      [{ ledger_account: '1930', bank_connection_id: 'conn-old', enabled: true, iban: OWN, currency: 'SEK', bank_connection: { status: 'active' } }],
+      'conn-new',
+    )
+    expect(connected).toEqual(['1930'])
+    expect(allocateLedgers([{ uid: 'a', currency: 'SEK', iban: OWN }], used, {}, connected, [], holders)).toEqual({ a: '1931' })
+  })
+
+  it('the Ändra list leaves 1930 out only for another account', () => {
+    const other = ledgerClaims(rows(OTHER), 'conn-new')
+    expect(ledgerOptions('SEK', other.used, '1931', other.connected, [], other.holders, OWN)).not.toContain('1930')
+    const same = ledgerClaims(rows(OWN), 'conn-new')
+    expect(ledgerOptions('SEK', same.used, '1931', same.connected, [], same.holders, OWN)).toContain('1930')
+  })
+})
+
 describe('the preview follows the server rule for overflow slots', () => {
   // A SEK account ticked in onboarding with 1930 and 1931 taken went to 1932
   // and its new chart row was named "Bankkonto EUR".

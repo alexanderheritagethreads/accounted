@@ -361,6 +361,7 @@ describe('PATCH /accounts (enable-banking)', () => {
     [{ code: '23514', message: 'CASH_ACCOUNT_KEEPER_IDENTITY_CONFLICT' }, 409, /annat bankkonto/],
     [{ code: '23514', message: 'BANK_SELECTION_LEDGER_CONFLICT' }, 400, /samma bokföringskonto/],
     [{ code: '23505', message: 'CASH_ACCOUNT_LEDGER_CLAIMED' }, 409, /annan bankanslutning/],
+    [{ code: '23514', message: 'BANK_SELECTION_YIELD_HAS_HISTORY' }, 409, /inte synkas men har transaktioner/],
   ])('answers a refused save (%o) with its own code and a readable Swedish message', async (selectionError, status, message) => {
     const stub: SupabaseStub = { authUser: { id: 'user-1' }, selectionError,
       connectionRow: { id: 'conn-1', status: 'active', accounts_data: [{ uid: 'acc-1', currency: 'SEK', enabled: true, ledger_account: '1930' }] } }

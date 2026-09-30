@@ -348,4 +348,117 @@ describe('ledger changes keep the bank account row', () => {
     await client.query('ROLLBACK TO SAVEPOINT foreign_claim')
     expect(await state()).toEqual(before)
   })
+
+  // crm#224: the connect mirrored every account of the consent, an unchecked
+  // one onto 1930 and the synced one onto 1940. Moving the synced account to
+  // 1930 takes the ledger from the unchecked account of another IBAN: its
+  // unused row goes instead of staying, detached, on 1930.
+  describe('an unchecked account of another physical account yields its ledger', () => {
+    const b = { uid: 'selection-b', currency: 'SEK' }
+    async function mirrorUncheckedOn(aLedger: string, bLedger: string) {
+      await client.query(`UPDATE bank_connections SET accounts_data=jsonb_set(accounts_data,'{1,currency}','"SEK"') WHERE id=$1`, [connectionId])
+      const both = (aEnabled: boolean) => [{ ...selection[0], ledger_account: aLedger, enabled: aEnabled }, { ...b, enabled: true, ledger_account: bLedger }]
+      await save((await snapshot()).token, both(true), chartsFor(aLedger, bLedger))
+      await save((await snapshot()).token, both(false), chartsFor(aLedger, bLedger))
+      const [ra, rb] = await rows()
+      expect([ra.ledger_account, rb.ledger_account]).toEqual([aLedger, bLedger])
+      return { ra, rb }
+    }
+    // What PATCH /accounts sends once the unchecked account yielded: no ledger for it.
+    const takeOver = (ledger: string) => [{ uid: 'selection-a', currency: 'SEK', enabled: false }, { ...b, enabled: true, ledger_account: ledger }]
+
+    it('moves the synced account onto the ledger with its history and primary flag, and deletes the unused row', async () => {
+      const { ra, rb } = await mirrorUncheckedOn('1930', '1940')
+      await client.query('UPDATE cash_accounts SET is_primary=true WHERE id=$1', [rb.id])
+      const history = [await transactionOn(rb.id), await transactionOn(rb.id)].sort()
+
+      const result = await save((await snapshot()).token, takeOver('1930'), chartsFor('1930'))
+
+      expect(result.accounts[0]).toMatchObject({ uid: 'selection-a', enabled: false })
+      expect(result.accounts[0]).not.toHaveProperty('ledger_account')
+      expect(result.accounts[1]).toMatchObject({ uid: 'selection-b', enabled: true, ledger_account: '1930' })
+      expect(result.mirrors).toEqual([{ cashAccountId: rb.id, moved: 0, retired: [] }])
+      expect(result.yielded).toEqual([{ id: ra.id, ledger_account: '1930', bank_connection_id: connectionId, is_primary: false }])
+      expect(await rows()).toEqual([
+        { id: rb.id, ledger_account: '1930', external_uid: 'selection-b', bank_connection_id: connectionId, is_primary: true },
+      ])
+      expect(await transactionsOf(rb.id)).toEqual(history)
+    })
+
+    // Not a yield: the unchecked account asks for a ledger of its own in the
+    // same save (PATCH /accounts passes an uncontested mapping through), so
+    // the move step relocates its row, as before this change.
+    it.each([true, false])('moves an unchecked account that asks for its own ledger in place (history: %s)', async withHistory => {
+      const { ra, rb } = await mirrorUncheckedOn('1930', '1940')
+      const history = withHistory ? [await transactionOn(ra.id)] : []
+
+      const result = await save((await snapshot()).token,
+        [{ ...selection[0], ledger_account: '1937', enabled: false }, { ...b, enabled: true, ledger_account: '1930' }],
+        chartsFor('1937', '1930'))
+
+      expect(result.yielded).toEqual([])
+      expect(await rows()).toEqual([
+        { id: ra.id, ledger_account: '1937', external_uid: 'selection-a', bank_connection_id: connectionId, is_primary: false },
+        { id: rb.id, ledger_account: '1930', external_uid: 'selection-b', bank_connection_id: connectionId, is_primary: false },
+      ])
+      expect(await transactionsOf(ra.id)).toEqual(history)
+    })
+
+    it('hands the primary flag of the deleted row to the account that takes its ledger, posted lines on it or not', async () => {
+      // voucherId has posted lines on 1931. They stay; the synced account continues the ledger.
+      const { ra, rb } = await mirrorUncheckedOn('1931', '1935')
+      await client.query('UPDATE cash_accounts SET is_primary=true WHERE id=$1', [ra.id])
+
+      await save((await snapshot()).token, takeOver('1931'), chartsFor('1931'))
+
+      expect(await rows()).toEqual([
+        { id: rb.id, ledger_account: '1931', external_uid: 'selection-b', bank_connection_id: connectionId, is_primary: true },
+      ])
+    })
+
+    it.each(['a transaction', 'invoice payee details'])('refuses the save and rolls back when the unchecked row has %s', async kind => {
+      const { ra } = await mirrorUncheckedOn('1930', '1940')
+      if (kind === 'a transaction') await transactionOn(ra.id)
+      else await client.query("UPDATE cash_accounts SET bankgiro='123-4567' WHERE id=$1", [ra.id])
+      const before = await state()
+      const token = (await snapshot()).token
+      await client.query('SAVEPOINT yield_history')
+      await expect(save(token, takeOver('1930'), chartsFor('1930')))
+        .rejects.toMatchObject({ code: '23514', message: 'BANK_SELECTION_YIELD_HAS_HISTORY' })
+      await client.query('ROLLBACK TO SAVEPOINT yield_history')
+      expect(await state()).toEqual(before)
+    })
+
+    it('hands the ledger over once the refused account got another ledger first, as the refusal advises', async () => {
+      const { ra, rb } = await mirrorUncheckedOn('1930', '1940')
+      const history = [await transactionOn(ra.id)]
+      const a = (enabled: boolean) => ({ ...selection[0], ledger_account: '1937', enabled })
+
+      await save((await snapshot()).token, [a(true), { ...b, enabled: true, ledger_account: '1940' }], chartsFor('1937', '1940'))
+      await save((await snapshot()).token, [a(false), { ...b, enabled: true, ledger_account: '1930' }], chartsFor('1937', '1930'))
+
+      expect(await rows()).toEqual([
+        { id: ra.id, ledger_account: '1937', external_uid: 'selection-a', bank_connection_id: connectionId, is_primary: false },
+        { id: rb.id, ledger_account: '1930', external_uid: 'selection-b', bank_connection_id: connectionId, is_primary: false },
+      ])
+      expect(await transactionsOf(ra.id)).toEqual(history)
+    })
+
+    it('deletes an unused unchecked row of another connection with another IBAN', async () => {
+      const otherId = randomUUID()
+      const iban = 'SE0000000000000000000047'
+      await client.query(`INSERT INTO bank_connections(id,company_id,user_id,session_id,status,accounts_data)
+        VALUES($1,$2,$3,'other-session','active',$4)`, [otherId, owner.companyId, owner.userId,
+        JSON.stringify([{ uid: 'other-a', currency: 'SEK', iban, enabled: false, ledger_account: '1930' }])])
+      const otherRow = (await client.query(`INSERT INTO cash_accounts(company_id,bank_connection_id,external_uid,ledger_account,currency,iban,enabled)
+        VALUES($1,$2,'other-a','1930','SEK',$3,false) RETURNING id`, [owner.companyId, otherId, iban])).rows[0].id
+
+      const result = await save((await snapshot()).token)
+
+      expect(result.yielded).toEqual([{ id: otherRow, ledger_account: '1930', bank_connection_id: otherId, is_primary: false }])
+      expect((await client.query('SELECT id FROM cash_accounts WHERE id=$1', [otherRow])).rows).toEqual([])
+      expect((await client.query('SELECT bank_connection_id, external_uid, iban FROM cash_accounts WHERE company_id=$1 AND ledger_account=$2',
+        [owner.companyId, '1930'])).rows).toEqual([{ bank_connection_id: connectionId, external_uid: 'selection-a', iban: accounts[0].iban }])
+    })
+  })
 })

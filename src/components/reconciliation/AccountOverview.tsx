@@ -33,6 +33,14 @@ const SkattekontoBookDialog = dynamic(
   { loading: DialogLoadingSkeleton },
 )
 
+const SkattekontoMatchDialog = dynamic(
+  () =>
+    import('@/components/skattekonto/SkattekontoMatchDialog').then(
+      (module) => module.SkattekontoMatchDialog,
+    ),
+  { loading: DialogLoadingSkeleton },
+)
+
 /**
  * The body of the Avstämning flow for one account: the strip of four figures
  * (outside, ledger, difference, unexplained) with the verdict sentence and
@@ -91,6 +99,9 @@ export function AccountOverview({ account, otherBankAccounts = [], window, onCha
   const [busy, setBusy] = useState<string | null>(null)
   const [unfolded, setUnfolded] = useState<Set<ReconciliationItemBucket>>(new Set())
   const [bookRow, setBookRow] = useState<ReconciliationItem | null>(null)
+  // Row the book dialog handed to the match flow (a ledger twin exists). Kept
+  // as the converted row so the match dialog's fetch effect sees a stable object.
+  const [matchRow, setMatchRow] = useState<SkattekontoTransactionWithSuggestion | null>(null)
   const [signoffOpen, setSignoffOpen] = useState(false)
   const [matcher, setMatcher] = useState<MatcherMatch[] | null>(null)
   const [bridgeOpen, setBridgeOpen] = useState(false)
@@ -255,8 +266,12 @@ export function AccountOverview({ account, otherBankAccounts = [], window, onCha
         const results = (data.results ?? []) as SkattekontoBatchRowResult[]
         const ok = results.filter((r) => r.ok).length
         const failed = results.length - ok
+        // Rows whose event the ledger already holds were skipped, not lost:
+        // say so, and that they are linked rather than booked.
+        const twins = results.filter((r) => r.error_code === 'LEDGER_TWIN_EXISTS').length
         toast({
           title: failed > 0 ? t('toast_book_partial', { ok, failed }) : t('toast_booked', { count: ok }),
+          ...(twins > 0 ? { description: t('toast_book_twins', { count: twins }) } : {}),
           variant: failed > 0 && ok === 0 ? 'destructive' : undefined,
         })
         await refresh()
@@ -857,6 +872,19 @@ export function AccountOverview({ account, otherBankAccounts = [], window, onCha
             setBookRow(null)
             void refresh()
           }}
+          onMatch={() => {
+            if (bookRow) setMatchRow(toDialogRow(bookRow))
+            setBookRow(null)
+          }}
+        />
+      )}
+
+      {isSkv && (
+        <SkattekontoMatchDialog
+          row={matchRow}
+          open={matchRow !== null}
+          onClose={() => setMatchRow(null)}
+          onMatched={() => void refresh()}
         />
       )}
 
