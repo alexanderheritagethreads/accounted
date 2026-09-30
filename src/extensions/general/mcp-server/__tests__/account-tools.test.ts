@@ -110,7 +110,7 @@ describe('gnubok_create_account: validation gates', () => {
         { account_number: '5410', default_vat_rate: 25 },
         'company-1', 'user-1', supabase as never,
       ),
-    ).rejects.toThrow(/Invalid default_vat_rate/)
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR', message: expect.stringMatching(/^Invalid arguments: default_vat_rate: /) })
   })
 
   it('rejects an account_type inconsistent with the BAS class digit', async () => {
@@ -453,7 +453,7 @@ describe('gnubok_update_account', () => {
         { account_number: '2617', vat_box: '49' },
         'company-1', 'user-1', bad.supabase as never,
       ),
-    ).rejects.toThrow(/Invalid vat_box/)
+    ).rejects.toMatchObject({ code: 'VALIDATION_ERROR', message: expect.stringMatching(/^Invalid arguments: vat_box: /) })
 
     const wrongAccount = createQueuedMockSupabase()
     wrongAccount.enqueue(current('4545'))

@@ -307,7 +307,7 @@ export default async function DashboardLayout({
     // as fetchCashAccounts (lib/cash-accounts/labels.ts CashAccountWithBank).
     supabase
       .from('cash_accounts')
-      .select('*, bank_connection:bank_connections(bank_name)')
+      .select('*, bank_connection:bank_connections(bank_name, status)')
       .eq('company_id', companyId)
       .order('is_primary', { ascending: false })
       .order('ledger_account', { ascending: true }),

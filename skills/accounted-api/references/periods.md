@@ -1111,6 +1111,447 @@ Example response `200`:
 
 ---
 
+### `POST /api/v1/companies/{companyId}/dimensions/retag`
+
+**Change the dimension tags (kostnadsställe, projekt) on posted journal lines.**
+`scope:bookkeeping:write · risk:medium · idempotent · dry-run · reversible`
+
+Sets dimension tags on lines of posted verifikat, the one thing about a posted line that may change: amounts, accounts and texts never do. mode merge (default) sets the pairs in `dimensions` and keeps every other dimension the line carries; replace makes the line's tags exactly `dimensions`. Each line is its own transaction through the audited retag path, which writes an immutable before/after row with the reason (GET /dimensions/retag-log) and refuses a line in a closed or locked period, on or before the bookkeeping lock date, on a draft, or with a code that is not an active registry value. Partial success is success: refused lines are listed in failed. Idempotent. Dry-runnable: the dry run shows each line's tags before and after.
+
+**Use when:** Posted lines lack a project or cost centre, or carry the wrong one, and you know the line ids (lines[].id of GET /journal-entries/{id}).
+**Do not use for:** Changing amounts, accounts or dates (a rättelse: POST /journal-entries/{id}/correct), tagging lines of a draft (edit the draft), or clearing every tag of a line (the dashboard only).
+
+**Pitfalls:**
+- Codes are STRINGS keyed by sie_dim_no: {"6": "P001"}, and each must be an active value in the registry (GET /dimensions).
+- merge keeps the line's other tags, and those must still be active registry values too: a line carrying an archived code is refused until the code is reactivated or replace is used.
+- At most 500 line ids per call; the reason (3-500 characters) is stored per line.
+- When every line is refused the call answers 400 DIMENSION_RETAG_FAILED with details.failed; otherwise it answers 200 with the refused lines in failed.
+
+| Parameter | In | Type | Required | Notes |
+|---|---|---|---|---|
+| `companyId` | path | `string` | yes |  |
+| `dry_run` | query | `string` | no | true (any case) previews the write without committing it, like the X-Dry-Run: true header. Any other value commits. |
+
+Request body:
+```ts
+{
+  line_ids: string[],
+  dimensions: Record<string, string>,
+  reason: string,
+  mode?: "merge" | "replace"
+}
+```
+
+Example request:
+```json
+{
+  "line_ids": [
+    "9f1c…",
+    "9f1d…"
+  ],
+  "dimensions": {
+    "6": "P001"
+  },
+  "reason": "Projektet saknades på fakturan"
+}
+```
+
+Response `200`:
+```ts
+{
+  data: {
+    retagged: number,
+    unchanged: number,
+    failed_count: number,
+    failed: { line_id: string, error: string }[],
+    mode: "merge" | "replace"
+  },
+  meta: {
+    request_id: string,
+    api_version: string,
+    next_cursor?: string | null,
+    audit?: { voucher_number?: string, voucher_url?: string, audit_trail_url?: string, immutable_at?: string },
+    warnings?: { code: string, message_sv: string, message_en: string, remediation?: { description: string, tool?: string, args?: Record<string, unknown>, resource?: string } }[],
+    partial_expansions?: string[],
+    coverage?: Record<string, unknown>
+  }
+}
+```
+
+Example response `200`:
+```json
+{
+  "data": {
+    "retagged": 2,
+    "unchanged": 0,
+    "failed_count": 0,
+    "failed": [],
+    "mode": "merge"
+  },
+  "meta": {
+    "request_id": "req_…",
+    "api_version": "2026-05-12"
+  }
+}
+```
+
+---
+
+### `GET /api/v1/companies/{companyId}/dimensions/retag-log`
+
+**Read the history of dimension tag changes on posted lines, newest first.**
+`scope:reports:read · risk:low · idempotent`
+
+The immutable trail behind every retag of a posted line: the tags before and after, who made the change, when and why. Filter by journal_entry_id and/or line_id, or read the whole company's history. The log outlives its lines (an undone SIE import deletes the verifikat, not the history). Paged with limit and offset: total_count, has_more and next_offset say what is left.
+
+**Use when:** Explaining why a line carries its project or cost centre, or auditing who changed dimension tags on booked history.
+**Do not use for:** Rättelser of amounts, accounts or texts (GET /journal-entries/{id}/rattelse-log) or the company-wide change history (GET /audit-trail).
+
+**Pitfalls:**
+- An id of another company matches nothing: the answer is an empty page, not a 404.
+- Tags set when the line was booked are not here: only later changes are.
+
+| Parameter | In | Type | Required | Notes |
+|---|---|---|---|---|
+| `companyId` | path | `string` | yes |  |
+| `journal_entry_id` | query | `string` | no | Only changes to lines of this verifikat. |
+| `line_id` | query | `string` | no | Only changes to this line. |
+| `limit` | query | `number` | no | Page size, 1-200 (default 50). |
+| `offset` | query | `number` | no | Rows to skip (next_offset of the previous page). |
+
+Response `200`:
+```ts
+{
+  data: {
+    entries: { retag_log_id: string, journal_entry_id: string, line_id: string, old_dimensions: Record<string, string>, new_dimensions: Record<string, string>, actor: string | null, reason: string, created_at: string }[],
+    count: number,
+    total_count: number,
+    has_more: boolean,
+    next_offset?: number
+  },
+  meta: {
+    request_id: string,
+    api_version: string,
+    next_cursor?: string | null,
+    audit?: { voucher_number?: string, voucher_url?: string, audit_trail_url?: string, immutable_at?: string },
+    warnings?: { code: string, message_sv: string, message_en: string, remediation?: { description: string, tool?: string, args?: Record<string, unknown>, resource?: string } }[],
+    partial_expansions?: string[],
+    coverage?: Record<string, unknown>
+  }
+}
+```
+
+Example response `200`:
+```json
+{
+  "data": {
+    "entries": [
+      {
+        "retag_log_id": "1c2d…",
+        "journal_entry_id": "7b3a…",
+        "line_id": "9f1c…",
+        "old_dimensions": {
+          "1": "KS01"
+        },
+        "new_dimensions": {
+          "1": "KS01",
+          "6": "P001"
+        },
+        "actor": "9d2b…",
+        "reason": "Projektet saknades på fakturan",
+        "created_at": "2026-09-28T09:14:00Z"
+      }
+    ],
+    "count": 1,
+    "total_count": 1,
+    "has_more": false
+  },
+  "meta": {
+    "request_id": "req_…",
+    "api_version": "2026-05-12"
+  }
+}
+```
+
+---
+
+### `GET /api/v1/companies/{companyId}/dimensions/rules`
+
+**List the account dimension rules (required, default or fixed dimension per account).**
+`scope:reports:read · risk:low · idempotent`
+
+Returns the company's per-account dimension policy, by account number: required (the account cannot be posted without a value for the dimension; the booking answers MANDATORY_DIMENSION_MISSING), default (the value is filled in on a line that has none) and fixed (the value always applies, over what the line says). Paused rules (is_active false) are listed too; they are not enforced.
+
+**Use when:** A booking was refused with MANDATORY_DIMENSION_MISSING, or before posting to an account, to know which dimensions its lines need.
+**Do not use for:** The dimensions and their values themselves (GET /dimensions).
+
+**Pitfalls:**
+- account_number filters on one exact account: a STRING of 4 digits, "4010".
+- A company without rules gets an empty list: dimensions are then never required.
+
+| Parameter | In | Type | Required | Notes |
+|---|---|---|---|---|
+| `companyId` | path | `string` | yes |  |
+| `account_number` | query | `string` | no | Only the rules of this account. |
+
+Response `200`:
+```ts
+{
+  data: {
+    rules: { account_dimension_rule_id: string, account_number: string, dimension_id: string, sie_dim_no: number, dimension_name: string, rule_type: "required" | "default" | "fixed", value_id: string | null, value_code: string | null, value_name: string | null, is_active: boolean }[]
+  },
+  meta: {
+    request_id: string,
+    api_version: string,
+    next_cursor?: string | null,
+    audit?: { voucher_number?: string, voucher_url?: string, audit_trail_url?: string, immutable_at?: string },
+    warnings?: { code: string, message_sv: string, message_en: string, remediation?: { description: string, tool?: string, args?: Record<string, unknown>, resource?: string } }[],
+    partial_expansions?: string[],
+    coverage?: Record<string, unknown>
+  }
+}
+```
+
+Example response `200`:
+```json
+{
+  "data": {
+    "rules": [
+      {
+        "account_dimension_rule_id": "5b7e…",
+        "account_number": "4010",
+        "dimension_id": "0e9c…",
+        "sie_dim_no": 6,
+        "dimension_name": "Projekt",
+        "rule_type": "required",
+        "value_id": null,
+        "value_code": null,
+        "value_name": null,
+        "is_active": true
+      }
+    ]
+  },
+  "meta": {
+    "request_id": "req_…",
+    "api_version": "2026-05-12"
+  }
+}
+```
+
+---
+
+### `POST /api/v1/companies/{companyId}/dimensions/rules`
+
+**Require, pre-fill or pin a dimension value on an account.**
+`scope:bookkeeping:write · risk:low · idempotent · dry-run · reversible`
+
+Adds a rule for one account and one dimension. required: posting the account without a value for the dimension is refused (MANDATORY_DIMENSION_MISSING), drafts may still be incomplete. default: value_id is filled in on a line of the account that carries no value for the dimension. fixed: value_id always applies, over what the line says. Takes effect for bookings from now on; posted verifikat are never changed. Idempotent. Dry-runnable.
+
+**Use when:** Every booking on an account should carry a project or cost centre, or an account always belongs to the same one.
+**Do not use for:** Tagging lines that are already posted: a rule only acts on bookings made after it.
+
+**Pitfalls:**
+- required takes no value_id; default and fixed must name one (400 VALIDATION_ERROR otherwise).
+- value_id must be an active value of that same dimension: 404 DIMENSION_VALUE_NOT_FOUND or 400 DIMENSION_VALUE_ARCHIVED.
+- The account must be an active account in the chart: 404 ACCOUNT_NOT_FOUND.
+- One rule per account and dimension: a second answers 409 DIMENSION_RULE_EXISTS; change the existing rule with PATCH instead.
+
+| Parameter | In | Type | Required | Notes |
+|---|---|---|---|---|
+| `companyId` | path | `string` | yes |  |
+| `dry_run` | query | `string` | no | true (any case) previews the write without committing it, like the X-Dry-Run: true header. Any other value commits. |
+
+Request body:
+```ts
+{
+  account_number: string,
+  dimension_id: string,
+  rule_type: "required" | "default" | "fixed",
+  value_id?: string,
+  is_active?: boolean
+}
+```
+
+Example request:
+```json
+{
+  "account_number": "4010",
+  "dimension_id": "0e9c…",
+  "rule_type": "required"
+}
+```
+
+Response `200`:
+```ts
+{
+  data: {
+    rule: { account_dimension_rule_id: string, account_number: string, dimension_id: string, sie_dim_no: number, dimension_name: string, rule_type: "required" | "default" | "fixed", value_id: string | null, value_code: string | null, value_name: string | null, is_active: boolean }
+  },
+  meta: {
+    request_id: string,
+    api_version: string,
+    next_cursor?: string | null,
+    audit?: { voucher_number?: string, voucher_url?: string, audit_trail_url?: string, immutable_at?: string },
+    warnings?: { code: string, message_sv: string, message_en: string, remediation?: { description: string, tool?: string, args?: Record<string, unknown>, resource?: string } }[],
+    partial_expansions?: string[],
+    coverage?: Record<string, unknown>
+  }
+}
+```
+
+Example response `200`:
+```json
+{
+  "data": {
+    "rule": {
+      "account_dimension_rule_id": "5b7e…",
+      "account_number": "4010",
+      "dimension_id": "0e9c…",
+      "sie_dim_no": 6,
+      "dimension_name": "Projekt",
+      "rule_type": "required",
+      "value_id": null,
+      "value_code": null,
+      "value_name": null,
+      "is_active": true
+    }
+  },
+  "meta": {
+    "request_id": "req_…",
+    "api_version": "2026-05-12"
+  }
+}
+```
+
+---
+
+### `PATCH /api/v1/companies/{companyId}/dimensions/rules/{id}`
+
+**Change, pause or resume an account dimension rule.**
+`scope:bookkeeping:write · risk:low · idempotent · dry-run · reversible`
+
+Sparse update of a rule: rule_type, value_id and is_active (false pauses the rule without losing it). The value rule holds for the rule as it will be: switching to required needs value_id null in the same call, switching to default or fixed needs a value. The account and the dimension of a rule are fixed: delete it and create another to move it. Idempotent. Dry-runnable.
+
+**Use when:** A rule should apply another value, change type, or stop being enforced for a while.
+**Do not use for:** Removing a rule for good (DELETE /dimensions/rules/{id}).
+
+**Pitfalls:**
+- At least one of rule_type, value_id, is_active must be sent.
+- A rule of another company answers 404 DIMENSION_RULE_NOT_FOUND.
+
+| Parameter | In | Type | Required | Notes |
+|---|---|---|---|---|
+| `companyId` | path | `string` | yes |  |
+| `id` | path | `string` | yes |  |
+| `dry_run` | query | `string` | no | true (any case) previews the write without committing it, like the X-Dry-Run: true header. Any other value commits. |
+
+Request body:
+```ts
+{ rule_type?: "required" | "default" | "fixed", value_id?: string | null, is_active?: boolean }
+```
+
+Example request:
+```json
+{
+  "is_active": false
+}
+```
+
+Response `200`:
+```ts
+{
+  data: {
+    rule: { account_dimension_rule_id: string, account_number: string, dimension_id: string, sie_dim_no: number, dimension_name: string, rule_type: "required" | "default" | "fixed", value_id: string | null, value_code: string | null, value_name: string | null, is_active: boolean }
+  },
+  meta: {
+    request_id: string,
+    api_version: string,
+    next_cursor?: string | null,
+    audit?: { voucher_number?: string, voucher_url?: string, audit_trail_url?: string, immutable_at?: string },
+    warnings?: { code: string, message_sv: string, message_en: string, remediation?: { description: string, tool?: string, args?: Record<string, unknown>, resource?: string } }[],
+    partial_expansions?: string[],
+    coverage?: Record<string, unknown>
+  }
+}
+```
+
+Example response `200`:
+```json
+{
+  "data": {
+    "rule": {
+      "account_dimension_rule_id": "5b7e…",
+      "account_number": "4010",
+      "dimension_id": "0e9c…",
+      "sie_dim_no": 6,
+      "dimension_name": "Projekt",
+      "rule_type": "required",
+      "value_id": null,
+      "value_code": null,
+      "value_name": null,
+      "is_active": false
+    }
+  },
+  "meta": {
+    "request_id": "req_…",
+    "api_version": "2026-05-12"
+  }
+}
+```
+
+---
+
+### `DELETE /api/v1/companies/{companyId}/dimensions/rules/{id}`
+
+**Delete an account dimension rule.**
+`scope:bookkeeping:write · risk:low · idempotent · dry-run · reversible`
+
+Removes the rule: from then on the account neither requires nor fills in that dimension. Nothing booked changes. Pausing it instead keeps the configuration (PATCH is_active=false). Idempotent. Dry-runnable.
+
+**Use when:** A rule no longer applies.
+**Do not use for:** A short pause (PATCH is_active=false).
+
+**Pitfalls:**
+- A rule of another company, or one already deleted, answers 404 DIMENSION_RULE_NOT_FOUND.
+
+| Parameter | In | Type | Required | Notes |
+|---|---|---|---|---|
+| `companyId` | path | `string` | yes |  |
+| `id` | path | `string` | yes |  |
+| `dry_run` | query | `string` | no | true (any case) previews the write without committing it, like the X-Dry-Run: true header. Any other value commits. |
+
+Response `200`:
+```ts
+{
+  data: { deleted: true, account_dimension_rule_id: string },
+  meta: {
+    request_id: string,
+    api_version: string,
+    next_cursor?: string | null,
+    audit?: { voucher_number?: string, voucher_url?: string, audit_trail_url?: string, immutable_at?: string },
+    warnings?: { code: string, message_sv: string, message_en: string, remediation?: { description: string, tool?: string, args?: Record<string, unknown>, resource?: string } }[],
+    partial_expansions?: string[],
+    coverage?: Record<string, unknown>
+  }
+}
+```
+
+Example response `200`:
+```json
+{
+  "data": {
+    "deleted": true,
+    "account_dimension_rule_id": "5b7e…"
+  },
+  "meta": {
+    "request_id": "req_…",
+    "api_version": "2026-05-12"
+  }
+}
+```
+
+---
+
 ### `GET /api/v1/companies/{companyId}/fiscal-periods`
 
 **List fiscal periods (räkenskapsår).**
@@ -2985,7 +3426,7 @@ Sends one individuppgift (AGI API v1.7 section 8: the payee, specifikationsnumme
 **Pitfalls:**
 - Needs a live Skatteverket connection: 401 SKATTEVERKET_NOT_CONNECTED when the company has none or it expired (personal BankID sessions last about 1 hour by design). Only a person can reconnect; do not retry until they confirm.
 - betalningsmottagarId is the payee's personnummer (12 digits): it is sent to Skatteverket and not stored by Accounted beyond the audit row's metadata.
-- forstaAnstalld and vaxaStod are mutually exclusive (400 VALIDATION_ERROR).
+- forstaAnstalld and vaxaStod (FK062/FK063) exist only through redovisningsPeriod 202512 and are mutually exclusive. Setting either for 202601 or later answers 400 VALIDATION_ERROR: växa-stöd is now a refund applied for after filing (Lag 2025:1334), and the individuppgift carries the full avgifter.
 - A payload that breaks the v1.7 schema answers 400 VALIDATION_ERROR before anything reaches Skatteverket.
 
 | Parameter | In | Type | Required | Notes |

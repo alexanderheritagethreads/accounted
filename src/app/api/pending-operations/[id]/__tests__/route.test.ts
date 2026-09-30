@@ -303,7 +303,7 @@ describe('PATCH /api/pending-operations/[id]', () => {
       },
     })
     enqueue({ data: { entity_type: 'aktiebolag' } })
-    enqueue({ data: { ledger_account: '1931' } })
+    enqueue({ data: { ledger_account: '1931', currency: 'SEK' } })
     enqueue({ data: { id: 'op-1', params: {}, preview_data: {}, title: '', status: 'pending' } })
 
     const res = await PATCH(

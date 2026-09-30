@@ -14,8 +14,8 @@ import { invoicesSendPeppol } from '@/lib/operations/peppol'
 // issuance of a draft emits on.
 ensureInitialized()
 
-// The connector transport waits up to 60 s for the hosted access point per
-// call (lookup, submit).
+// The connector transport waits up to 25 s for the lookup and 50 s for the
+// submit (lib/invoices/transports/connector.ts), so the send gets 90 s.
 export const maxDuration = 90
 
 export const POST = v1OperationHandler(invoicesSendPeppol)

@@ -102,7 +102,7 @@ function toDelivery(d: PeppolDeliverySummary): z.infer<typeof Delivery> {
 }
 
 const SCOPE_PITFALL =
-  'Peppol here is BIS Billing 3: aktiebolag senders, standard invoices only (no credit notes, quotes, proformas or self-billing), Swedish org-number buyers whose org number is not a personnummer, SEK with taxable Swedish VAT at 6/12/25 %, no ROT/RUT deductions. Anything else is listed as a blocker.'
+  'Peppol here is BIS Billing 3: senders whose org number is not a personnummer (every legal form except enskild firma), standard invoices only (no credit notes, quotes, proformas or self-billing), Swedish org-number buyers whose org number is not a personnummer, SEK with taxable Swedish VAT at 6/12/25 %, no ROT/RUT deductions. Anything else is listed as a blocker.'
 
 // ---------------------------------------------------------------------------
 // invoices.peppol-readiness
@@ -212,7 +212,7 @@ export const invoicesSendPeppol = defineOperation({
   docs: {
     summary: 'Send a customer invoice as a Peppol e-invoice (BIS Billing 3) through the access point.',
     description:
-      'Builds the BIS Billing 3 UBL document, stages it as a delivery (retained with the invoice\'s fiscal year), looks the buyer up in the Peppol network and submits it. A draft is numbered first (the number is in the document) and, once the network accepted it, issued with the :mark-sent semantics: status sent, verifikat under faktureringsmetoden, PDF archived as underlag. Resending the exact same document replays the first submission instead of transmitting twice. The dry run validates everything as reads and contacts no network.',
+      'Builds the BIS Billing 3 UBL document, stages it as a delivery (retained with the invoice\'s fiscal year), looks the buyer up in the Peppol network and submits it. A draft is numbered first (the number is in the document) and issued before the network gets it (status sent, verifikat under faktureringsmetoden); once the network accepted it the PDF is archived as underlag, as :mark-sent does. Resending the exact same document while its delivery is live replays the first submission instead of transmitting twice; after a failed delivery it is sent again as a new delivery that replaces the failed submission at the access point, and counts as a send. The dry run validates everything as reads and contacts no network.',
     useWhen:
       'The buyer receives e-invoices over Peppol (typically public sector, where Lag 2018:1277 requires it, or a company that asks for it) and GET /invoices/{id}/peppol shows no blockers.',
     doNotUseFor:
@@ -220,9 +220,11 @@ export const invoicesSendPeppol = defineOperation({
     pitfalls: [
       'Needs the company\'s Peppol access grant: 403 PEPPOL_ACCESS_REQUIRED until the operators enable it (POST /peppol/access-request), 409 PEPPOL_SEND_LIMIT_REACHED once the sending cap is used.',
       'A buyer not registered in Peppol answers 422 PEPPOL_RECIPIENT_NOT_REACHABLE and nothing is transmitted; a failed lookup answers 502 PEPPOL_LOOKUP_FAILED and is safe to retry.',
-      '422 PEPPOL_SUBMISSION_REJECTED is the access point\'s verdict on the document: fix the invoice (a correction is a credit note plus a new invoice once issued), do not resend unchanged.',
+      '422 PEPPOL_SUBMISSION_REJECTED is the access point\'s verdict on the document and ends the delivery (failed): fix what the reason names and send again, which stages a new delivery; once issued, a correction of the invoice itself is a credit note plus a new invoice.',
       '502 PEPPOL_SUBMISSION_FAILED and 409 PEPPOL_SEND_PRECONDITION_FAILED leave the delivery resendable: retry later or fix the Peppol settings.',
-      'If a draft was transmitted but could not be marked as sent, the response carries issuance.ok=false and a PEPPOL_SENT_NOT_ISSUED warning: complete it with POST /invoices/{id}/mark-sent, which reuses the number.',
+      'When the invoice stays issued after the failure (issued before this send, or a draft booked on issue) the codes are 422 PEPPOL_SUBMISSION_REJECTED_AFTER_ISSUE and 502 PEPPOL_SUBMISSION_FAILED_AFTER_ISSUE, with details.invoice_status and details.journal_entry_id: the invoice is issued, so resend it or deliver the PDF another way.',
+      '409 PEPPOL_DUPLICATE_INVOICE_NUMBER: the access point already holds an invoice with this number for this recipient (ends the delivery). 409 PEPPOL_BUSINESS_REJECTED: the buyer refused the invoice via Peppol; it is not sent again, credit it and create a new invoice. 409 CONNECTOR_PEPPOL_RESEND_NOT_FAILED: a resend was refused because the access point has not reported the earlier delivery as failed (nothing is sent).',
+      'A draft whose verifikat the engine refuses (400 MANDATORY_DIMENSION_MISSING or DIMENSION_VALIDATION_FAILED, a locked period, ...) is not transmitted: the engine\'s error comes back and the invoice stays in draft. If the network then fails to take a draft that was booked on issue, the invoice stays issued (details.invoice_status sent) and can be resent.',
       'An invoice date outside every fiscal year answers 422 PEPPOL_FISCAL_PERIOD_MISSING (the delivery needs its retention basis).',
       SCOPE_PITFALL,
     ],
@@ -262,7 +264,7 @@ export const invoicesSendPeppol = defineOperation({
     invoice_number: z.string().nullable(),
     invoice_status: z.string(),
     network_submitted: z.literal(true),
-    already_submitted: z.boolean().describe('True when this exact document was already handed to the network: nothing was transmitted again.'),
+    already_submitted: z.boolean().describe('True when this exact document was already handed to the network and its delivery is live: nothing was transmitted again.'),
     delivery: Delivery,
     recipient: Participant.nullable(),
     journal_entry_id: z.string().uuid().nullable(),
@@ -285,6 +287,11 @@ export const invoicesSendPeppol = defineOperation({
     'PEPPOL_RECIPIENT_NOT_REACHABLE',
     'PEPPOL_SUBMISSION_REJECTED',
     'PEPPOL_SUBMISSION_FAILED',
+    'PEPPOL_SUBMISSION_REJECTED_AFTER_ISSUE',
+    'PEPPOL_SUBMISSION_FAILED_AFTER_ISSUE',
+    'PEPPOL_DUPLICATE_INVOICE_NUMBER',
+    'PEPPOL_BUSINESS_REJECTED',
+    'CONNECTOR_PEPPOL_RESEND_NOT_FAILED',
     'PEPPOL_SEND_PRECONDITION_FAILED',
   ],
   http: {
@@ -342,7 +349,7 @@ export const invoicesPeppolDeliveries = defineOperation({
     doNotUseFor: 'Checking whether an invoice can be sent (GET /invoices/{id}/peppol) or email deliveries.',
     pitfalls: [
       'submission_accepted means the access point took the document, not that the buyer received it; transport_succeeded and business_accepted come later.',
-      'A delivery in retryable_failure can be resent with POST /invoices/{id}/send-peppol; a terminal failed or business_rejected one cannot be resent unchanged.',
+      'A delivery in retryable_failure, failed or no_route can be resent with POST /invoices/{id}/send-peppol (a failed one as a new delivery that replaces its submission); a business_rejected one cannot: the buyer refused the invoice.',
     ],
     example: {
       response: {

@@ -614,10 +614,19 @@ export interface CompanySettings {
   // Öresavrundning (migration 20260813143000): round each net payout up to
   // whole kronor; the 0-99 öre diff books on 3740 via a derived line item.
   salary_net_rounding: boolean
+  // Payslip sections on the copy the employee receives (migration
+  // 20260930200000): Arbetsgivarkostnad and Beräkningsunderlag. Default true;
+  // the employer's own view always prints both (build-payslip-data).
+  salary_payslip_show_employer_cost: boolean
+  salary_payslip_show_breakdown: boolean
   // Avvikelseperiod (migration 20260918120000): the month a new salary run
   // reads absence and worked days from. 'previous_month' is the common
   // Swedish setup (innevarande månads lön, föregående månads avvikelser).
   salary_deviation_period: 'same_month' | 'previous_month'
+  // Semesterår basis (migration 20260713122000): 'calendar' (Jan to Dec, the
+  // default) or 'statutory_apr_mar' (Semesterlagen 3 §). Cannot change while
+  // open vacation-ledger rows exist.
+  salary_vacation_year_basis: 'calendar' | 'statutory_apr_mar'
   // Calculation conventions (migration 20260919120100): jsonb validated by
   // SalaryCalculationPolicySchema (lib/salary/calculation-policy.ts). The
   // column default is {} = every convention at its default = the historical
@@ -2153,8 +2162,11 @@ export interface MappingResult {
   // learned back into the template (it would flip the learned accounts).
   direction_mismatch?: boolean
   // Dimensions bag applied to the business (expense/revenue) lines of the
-  // generated entry: from a counterparty template's line pattern or an
+  // generated entry: a single-pair counterparty template's learned bag or an
   // explicit categorize param (dimensions PR7). Bank/VAT lines stay untagged.
+  // With all_lines_complete it can only be the explicit param (a pattern's
+  // learned bags live on its lines), and it overrides the bag of every
+  // business_line per key.
   dimensions?: Record<string, string>
 }
 
@@ -2167,6 +2179,10 @@ export interface VatJournalLine {
   // Set on business-type lines materialized from a LinePatternEntry that
   // carries dimensions (dimensions PR7); VAT/tax lines stay untagged.
   dimensions?: Record<string, string>
+  // Set on the lines materialized from a business-type LinePatternEntry: the
+  // lines an explicit categorize bag tags (buildTransactionEntryLines). VAT,
+  // tax and rounding lines never carry it.
+  business_line?: boolean
 }
 
 // Categorization template source
@@ -2631,6 +2647,10 @@ export type PendingOperationType =
   | 'create_dimension'
   | 'update_dimension'
   | 'delete_dimension'
+  // Account dimension rules (src/lib/operations/dimension-rules.ts).
+  | 'create_dimension_rule'
+  | 'update_dimension_rule'
+  | 'delete_dimension_rule'
   // Operation registry, wave 4: Peppol, årsredovisning, IB, AP actions.
   | 'send_invoice_peppol'
   | 'register_peppol_participant'
@@ -3134,7 +3154,7 @@ export interface InboxChannelContext {
   peppol_sender_endpoint?: string | null
   /** Archived exact UBL XML, when the inbox document is a rendering (embedded PDF) instead. */
   peppol_xml_document_id?: string | null
-  /** Set by the removed Gmail receipt hunt: which mailbox the receipt came out of. Kept for existing rows. */
+  /** Set by lib/receipt-hunt/ingest.ts: which mailbox the receipt came out of. */
   mail_mailbox?: string | null
   mail_provider?: 'gmail' | 'microsoft' | null
   mail_subject?: string | null
@@ -3573,7 +3593,7 @@ export type DocumentUploadSource =
   | 'api'
   | 'system'
   | 'whatsapp'
-  /** Fetched out of a connected mailbox by the removed Gmail receipt hunt. Kept for existing rows. */
+  /** Fetched by the receipt hunt out of a connected mailbox. */
   | 'mail_hunt'
 
 export interface DocumentAttachment {
@@ -3686,6 +3706,7 @@ export type YearEndBlockerCode =
   | 'UNBOOKED_TRANSACTIONS'
   | 'UNBOOKED_CHECK_FAILED'
   | 'PRIOR_RESULT_NOT_DISPOSED'
+  | 'PRIOR_RESULT_OVER_DISPOSED'
 
 export interface YearEndBlocker {
   code: YearEndBlockerCode
@@ -3729,6 +3750,45 @@ export interface YearEndPreview {
    * only, never a blocker: zero tax is legitimate with underskottsavdrag.
    */
   bolagsskattMissing: boolean
+  /**
+   * The second verifikat the close books: the omföring of the result off the
+   * result account in the next period. Null when the form closes straight
+   * into equity (enskild firma), when there is no result to move, and inside
+   * the close itself (which books it instead).
+   */
+  resultAppropriation: ResultAppropriationPreview | null
+}
+
+/**
+ * The year-open omföring av föregående års resultat that executeYearEndClosing
+ * books in the next period (step 11), estimated before the close by the same
+ * rule (planResultAppropriation). Snake_case like the other preview rows: MCP
+ * returns it verbatim.
+ */
+export interface ResultAppropriationPreview {
+  /** The form's result account the result leaves (aktiebolag 2099, ideell förening 2069). */
+  from_account: string
+  /** Where it is carried (aktiebolag 2098, ideell förening 2068). */
+  to_account: string
+  /**
+   * Estimated, öre-rounded; 0 when skipped. What the result account will
+   * carry into the next period (its balance now plus this year's result,
+   * balansdagen FX revaluation included) less what a disposition already
+   * booked there moved. Later bookings in the year change it.
+   */
+  amount: number
+  /** profit: debit from_account, credit to_account; loss: the reverse. */
+  direction: 'profit' | 'loss'
+  /** The next period's first day. */
+  entry_date: string
+  /**
+   * Why no omföring will be booked, null when one will: already_disposed =
+   * dispositions booked by hand in the next period moved all of it (PostHog
+   * PH 108); already_booked = a live omföring is already there.
+   */
+  skipped_reason: 'already_disposed' | 'already_booked' | null
+  /** Verifikat in the next period that already moved part or all of it. */
+  disposed_by: string[]
 }
 
 export interface YearEndResult {
@@ -4466,6 +4526,12 @@ export interface SalaryRun {
   notes: string | null
   is_correction: boolean
   corrects_run_id: string | null
+  // Payslip sections the employee copy was issued with (migration
+  // 20260930200000). All null until the payslips first go to employees;
+  // written once (lib/salary/payslips/section-snapshot).
+  payslip_sections_issued_at: string | null
+  payslip_show_employer_cost: boolean | null
+  payslip_show_breakdown: boolean | null
   created_at: string
   updated_at: string
   // Relations

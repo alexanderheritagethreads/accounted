@@ -550,7 +550,7 @@ describe('POST /transactions/:id/match-batch', () => {
       company_members: OWNER,
       invoices,
       transactions: { data: { id: TX_ID, amount: 1250, currency: 'SEK', date: '2026-05-12', journal_entry_id: null, cash_account_id: CA_ID }, error: null },
-      cash_accounts: { data: { ledger_account: '1931' }, error: null },
+      cash_accounts: { data: { ledger_account: '1931', currency: 'SEK' }, error: null },
     })
     mockServiceClient.mockReturnValue(client)
     const res = await post({ allocations }, '?dry_run=true')

@@ -467,6 +467,24 @@ describe('POST /inbox-items/:id/convert', () => {
     expect(createSupplierInvoiceRegistrationEntry).not.toHaveBeenCalled()
   })
 
+  it('a dry run for a non-VAT-registered company shows the seller VAT added to the cost (feedback 708521)', async () => {
+    const client = makeClient({
+      company_members: MEMBER,
+      invoice_inbox_items: { data: itemRow({ extracted_data: null }), error: null },
+      suppliers: { data: { id: SUPPLIER_ID, name: 'Clas Ohlson AB', supplier_type: 'swedish_business' }, error: null },
+      company_settings: { data: { accounting_method: 'accrual', defer_invoice_booking: false, vat_registered: false }, error: null },
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await post(BODY, '?dry_run=true')
+    expect(res.status).toBe(200)
+    const { preview } = (await res.json()).data
+    expect(preview).toMatchObject({ subtotal: 499, vat_amount: 0, total: 499, total_sek: 499 })
+    expect(preview.items[0]).toMatchObject({ line_total: 499, unit_price: 499, vat_rate: 0, vat_amount: 0 })
+    expect(preview.vat_registration).toMatchObject({ vat_registered: false, seller_vat_added_to_cost: 99.8 })
+    expect(preview.vat_registration.note).toMatch(/not VAT-registered/)
+    expect(wrote(client)).toBe(false)
+  })
+
   it('201 registers the invoice, books the registration verifikat and marks the item converted', async () => {
     const client = makeClient({
       company_members: MEMBER,
@@ -505,5 +523,65 @@ describe('POST /inbox-items/:id/convert', () => {
     expect(client.calls).toContainEqual(
       expect.objectContaining({ table: 'document_attachments', method: 'update', args: [{ journal_entry_id: JE_ID }] }),
     )
+  })
+
+  // Parity with the dashboard door and the MCP one: the bags are accepted and
+  // land on the invoice and its items, where the registration, periodisering
+  // and payment generators read them.
+  const TAGGED = {
+    ...BODY,
+    default_dimensions: { '1': 'KS01', '6': 'P001' },
+    items: [{ ...BODY.items[0], dimensions: { '6': 'P002', '20': 'KUND42' } }],
+  }
+
+  it('201 carries default_dimensions onto the invoice and each line\'s bag onto its item and the verifikat', async () => {
+    const client = makeClient({
+      company_members: MEMBER,
+      invoice_inbox_items: [{ data: itemRow({ extracted_data: null }), error: null }, { data: null, error: null }],
+      suppliers: { data: { id: SUPPLIER_ID, name: 'Clas Ohlson AB', supplier_type: 'swedish_business' }, error: null },
+      rpc: { data: 118, error: null },
+      supplier_invoices: [
+        {
+          data: { id: INVOICE_ID, arrival_number: 118, status: 'registered', currency: 'SEK', total: 499, total_sek: 499, invoice_date: '2026-09-01' },
+          error: null,
+        },
+        { data: null, error: null },
+      ],
+      supplier_invoice_items: { data: [{ id: '55555555-5555-4555-8555-555555555555', sort_order: 0 }], error: null },
+      company_settings: { data: { accounting_method: 'accrual', defer_invoice_booking: false }, error: null },
+      document_attachments: { data: null, error: null },
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await post(TAGGED)
+    expect(res.status).toBe(201)
+
+    const insert = client.calls.find((c) => c.table === 'supplier_invoices' && c.method === 'insert')
+    expect(insert?.args[0]).toMatchObject({ default_dimensions: { '1': 'KS01', '6': 'P001' } })
+    const items = client.calls.find((c) => c.table === 'supplier_invoice_items' && c.method === 'insert')
+    expect((items?.args[0] as Array<{ dimensions: Record<string, string> }>)[0].dimensions).toEqual({ '6': 'P002', '20': 'KUND42' })
+    const booked = vi.mocked(createSupplierInvoiceRegistrationEntry).mock.calls[0][4] as Array<{ dimensions: Record<string, string> }>
+    expect(booked[0].dimensions).toEqual({ '6': 'P002', '20': 'KUND42' })
+  })
+
+  it('a dry run previews the bags and writes nothing', async () => {
+    const client = makeClient({
+      company_members: MEMBER,
+      invoice_inbox_items: { data: itemRow({ extracted_data: null }), error: null },
+      suppliers: { data: { id: SUPPLIER_ID, name: 'Clas Ohlson AB', supplier_type: 'swedish_business' }, error: null },
+      company_settings: { data: { accounting_method: 'accrual', defer_invoice_booking: false }, error: null },
+    })
+    mockServiceClient.mockReturnValue(client)
+    const res = await post(TAGGED, '?dry_run=true')
+    expect(res.status).toBe(200)
+    const { preview } = (await res.json()).data
+    expect(preview.default_dimensions).toEqual({ '1': 'KS01', '6': 'P001' })
+    expect(preview.items[0].dimensions).toEqual({ '6': 'P002', '20': 'KUND42' })
+    expect(wrote(client)).toBe(false)
+  })
+
+  it('400 for a malformed dimensions bag', async () => {
+    mockServiceClient.mockReturnValue(makeClient({ company_members: MEMBER }))
+    const res = await post({ ...BODY, default_dimensions: { projekt: 'P001' } })
+    expect(res.status).toBe(400)
   })
 })

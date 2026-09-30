@@ -368,11 +368,11 @@ export const reportsKassaflodesanalys = defineOperation({
   docs: {
     summary: 'Kassaflödesanalys (cash flow statement, indirect method) for a räkenskapsår.',
     description:
-      'Derives the cash flow statement from the trial balance: löpande verksamhet (result after financial items, avskrivningar, changes in receivables, inventory and short-term liabilities, tax paid), investeringsverksamhet and finansieringsverksamhet, with a reconciliation of the calculated change against the actual change in cash (1xxx liquid funds). Read-only.',
+      'Derives the cash flow statement from the trial balance, with every account in exactly one line: löpande verksamhet (result after financial items, avskrivningar and other non-cash items, changes in receivables, inventory and short-term liabilities, tax paid, koncernbidrag), investeringsverksamhet (acquisitions, disposals at their proceeds, kortfristiga placeringar) and finansieringsverksamhet, reconciled against the actual change in cash (19xx). Read-only.',
     useWhen: 'Preparing the årsredovisning for a K3 company (or a larger K2 one that includes it), or analysing where the year\'s cash went.',
     doNotUseFor: 'Liquidity forecasts or bank balances (GET /reports/trial-balance for 19xx).',
     pitfalls: [
-      'reconciliation.is_reconciled false means an account the analysis cannot classify moved; it does not by itself mean the books are wrong.',
+      'lopande.ovriga_poster is the change on accounts outside every BAS range the analysis classifies, named in unclassified_accounts. reconciliation.is_reconciled false means the period\'s postings do not balance.',
       'A year whose income tax cannot be separated from other taxes answers 422 CASH_FLOW_TAX_ALLOCATION_REQUIRED.',
     ],
     example: {
@@ -386,6 +386,7 @@ export const reportsKassaflodesanalys = defineOperation({
           investerings: { total: -45000 },
           finansierings: { total: -50000 },
           total_cash_flow: 117000,
+          unclassified_accounts: [],
           reconciliation: { is_reconciled: true, mismatch_amount: 0 },
         },
         meta: META,
@@ -402,6 +403,7 @@ export const reportsKassaflodesanalys = defineOperation({
       investerings: z.record(z.string(), z.number()),
       finansierings: z.record(z.string(), z.number()),
       total_cash_flow: z.number(),
+      unclassified_accounts: z.array(z.string()),
       reconciliation: z.record(z.string(), z.union([z.number(), z.boolean()])),
     })
     .loose(),
@@ -664,21 +666,22 @@ export const reportsDimensionPnl = defineOperation({
   docs: {
     summary: 'Resultat per projekt or kostnadsställe: the income statement with one column per dimension value.',
     description:
-      'A value-as-column P&L matrix over one SIE dimension (dim_no 6 projekt by default, 1 kostnadsställe, or a custom dimension): each result account\'s amount per dimension value, an "(Utan dimension)" column for untagged amounts, and a Totalt column that equals the resultatrapport. Cumulative from the period start to to_date (default the period end). Read-only.',
-    useWhen: 'Following up profitability per project or cost centre.',
-    doNotUseFor: 'One value only (GET /reports/income-statement with a dimension filter) or balance accounts (dimensions are P&L-side).',
+      'A value-as-column P&L matrix over one SIE dimension (dim_no 6 projekt by default, 1 kostnadsställe, or a custom dimension): each result account\'s amount per dimension value, an "(Utan dimension)" column for untagged amounts, and a Totalt column that equals the resultatrapport for the same window. The window is from_date to to_date (defaults: the period start and end), so one quarter per project is one call. Read-only.',
+    useWhen: 'Following up profitability per project or cost centre, for the year or for one quarter or month.',
+    doNotUseFor: 'One value only (GET /reports/income-statement with dim_no and dim_code) or balance accounts (dimensions are P&L-side).',
     pitfalls: [
-      'No from_date: the matrix uses closing-balance semantics so its Totalt reconciles with the resultatrapport.',
+      'from_date and to_date must lie inside the period. Amounts are the activity inside that window, not balances accumulated from the period start.',
       'Amounts booked without a tag on the dimension land in "(Utan dimension)", not spread over the values.',
+      'What the bokslut run posts (source year_end: tax, bokslut depreciation, dispositions, resultatavslut) is left out, tagged or not, exactly as in the resultatrapport.',
     ],
     example: {
-      request: { period_id: '7c2b…', dim_no: '6' },
+      request: { period_id: '7c2b…', dim_no: '6', from_date: '2026-07-01', to_date: '2026-09-30' },
       response: {
         data: {
           dimension: { sie_dim_no: '6', name: 'Projekt' },
           columns: [{ code: 'P001', name: 'Projekt Alfa' }],
           net_total: 184200,
-          period: { start: '2026-01-01', end: '2026-12-31' },
+          period: { start: '2026-07-01', end: '2026-09-30' },
         },
         meta: META,
       },
@@ -687,7 +690,8 @@ export const reportsDimensionPnl = defineOperation({
   input: z.object({
     period_id: PERIOD_ID,
     dim_no: z.string().regex(/^[1-9]\d{0,3}$/).default('6').describe('SIE dimension number. Default "6" (projekt).'),
-    to_date: isoDateSchema.optional().describe('YYYY-MM-DD inside the period. Default: the period end.'),
+    from_date: isoDateSchema.optional().describe('YYYY-MM-DD inside the period. Default: the period start.'),
+    to_date: isoDateSchema.optional().describe('YYYY-MM-DD inside the period, not before from_date. Default: the period end.'),
   }),
   output: z
     .object({

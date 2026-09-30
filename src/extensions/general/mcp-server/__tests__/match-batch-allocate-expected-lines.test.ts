@@ -39,7 +39,7 @@ const SI_A = '44444444-4444-4444-8444-444444444444'
 
 /** resolveSettlementAccount: the row's cash_account_id resolves to this ledger account. */
 function enqueueBankAccount(enqueue: (r: { data?: unknown; error?: unknown }) => void, ledgerAccount: string) {
-  enqueue({ data: { ledger_account: ledgerAccount }, error: null }) // cash_accounts
+  enqueue({ data: { ledger_account: ledgerAccount, currency: 'SEK' }, error: null }) // cash_accounts
 }
 
 function enqueueStage(enqueue: (r: { data?: unknown; error?: unknown }) => void) {
@@ -131,6 +131,9 @@ describe('gnubok_match_batch_allocate: expected_lines in the staged preview', ()
       { account_number: '1931', description: 'Utbetalning 2026-08-05', debit: 0, credit: 1250 },
     ])
     expect(result.preview.expected_lines_balanced).toBe(true)
+    // One bill: the RPC's single-invoice header wording (feedback 708521),
+    // without the number and supplier name it appends.
+    expect(result.preview.expected_description).toBe('Utbetalning leverantörsfaktura')
     // Resolved from the transaction's own cash account, in this company.
     expect(findCalls('cash_accounts', 'eq')).toEqual(
       expect.arrayContaining([['id', 'ca-1'], ['company_id', 'company-1']]),

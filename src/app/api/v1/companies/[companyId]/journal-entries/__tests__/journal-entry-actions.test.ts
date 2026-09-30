@@ -676,8 +676,38 @@ describe('PATCH /journal-entries/:id (draft edit)', () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.data).toMatchObject({ id: ENTRY_ID, status: 'draft', voucher_number: 0 })
-    expect(body.data.lines[0]).toEqual({ account_number: '6570', debit_amount: 60, credit_amount: 0, line_description: null })
+    expect(body.data.lines[0]).toEqual({ account_number: '6570', debit_amount: 60, credit_amount: 0, line_description: null, dimensions: {} })
     expect(updateDraftEntryMock).toHaveBeenCalledWith(client, COMPANY_ID, 'user-1', ENTRY_ID, expect.objectContaining({ description: 'Bankavgift maj' }))
+  })
+
+  it('answers every line\'s stored dimensions bag, custom dimensions included', async () => {
+    // The edit accepts lines[].dimensions; the answer used to drop the whole
+    // bag, so a caller could not see what the draft kept (rules applied).
+    mockServiceClient.mockReturnValue(makeClient({ company_members: OWNER }))
+    updateDraftEntryMock.mockResolvedValue({
+      id: ENTRY_ID,
+      status: 'draft',
+      fiscal_period_id: PERIOD_ID,
+      entry_date: '2026-05-12',
+      description: 'Bankavgift maj',
+      voucher_series: 'A',
+      voucher_number: 0,
+      notes: null,
+      lines: [
+        { account_number: '6570', debit_amount: 60, credit_amount: 0, line_description: null, dimensions: { '1': 'KS01', '6': 'P001', '20': 'SYD' } },
+        { account_number: '1930', debit_amount: 0, credit_amount: 60, line_description: null, dimensions: {} },
+      ],
+    })
+    const res = await patch({
+      ...BODY,
+      lines: [{ ...BODY.lines[0], dimensions: { '1': 'KS01', '6': 'P001', '20': 'SYD' } }, BODY.lines[1]],
+    })
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data.lines.map((l: { dimensions: unknown }) => l.dimensions)).toEqual([
+      { '1': 'KS01', '6': 'P001', '20': 'SYD' },
+      {},
+    ])
   })
 
   it('dry run: a posted entry is 409 CANNOT_EDIT_NON_DRAFT and nothing is written', async () => {

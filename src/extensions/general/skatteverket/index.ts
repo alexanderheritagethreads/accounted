@@ -1,6 +1,6 @@
 import { sleep } from '@/lib/utils'
-import crypto from 'crypto'
 import { z } from 'zod'
+import { requestCspNonce } from '@/lib/security/csp'
 import { parseEntityType } from '@/lib/company/entity-type'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Extension, ExtensionContext } from '@/lib/extensions/types'
@@ -125,8 +125,11 @@ const SKV_SESSION_MISSING_MESSAGE =
 // Body for POST /skattekonto/transaktioner/bokfor-batch. Capped at 200 ids:
 // a full year of skattekonto events fits comfortably, and the sequential
 // draft+commit loop stays well inside the dispatcher's time budget.
+// allow_duplicate_ids: rows to book even though the ledger already holds a
+// verifikat for the event (LEDGER_TWIN_EXISTS); an explicit per-row choice.
 const SkattekontoBokforBatchSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(200),
+  allow_duplicate_ids: z.array(z.string().uuid()).max(200).optional(),
 })
 
 /**
@@ -516,8 +519,11 @@ export const skatteverketExtension: Extension = {
           JSON.stringify(value ?? '').replace(/</g, '\\u003c')
 
         // CSP allows only the nonce-carrying inline script; everything else
-        // is blocked. Cache-Control: no-store because the callback URL
-        // carries a one-shot authorization code and must never be cached.
+        // is blocked. The nonce is the proxy's for this request, so the
+        // script also runs under the proxy's CSP header (the only one a
+        // self-hosted `next start` delivers). Cache-Control: no-store because
+        // the callback URL carries a one-shot authorization code and must
+        // never be cached.
         const responseHeaders = (nonce: string) => ({
           'Content-Type': 'text/html; charset=utf-8',
           'Content-Security-Policy':
@@ -535,7 +541,7 @@ export const skatteverketExtension: Extension = {
         // history: navigating Back from the landing page must not re-run the
         // callback into a guaranteed state error.
         const respondWithSuccess = (fallbackPath: string) => {
-          const nonce = crypto.randomUUID()
+          const nonce = requestCspNonce(request.headers)
           const html = `<!DOCTYPE html><html><body><script nonce="${nonce}">
             if (window.opener) {
               window.opener.postMessage({ type: 'skatteverket-oauth-success' }, ${jsLiteral(responseOrigin)});
@@ -562,7 +568,7 @@ export const skatteverketExtension: Extension = {
           fallbackPath: string,
           options: { closeTab?: boolean } = {},
         ) => {
-          const nonce = crypto.randomUUID()
+          const nonce = requestCspNonce(request.headers)
           const escapedReason = reason
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
@@ -2587,6 +2593,7 @@ export const skatteverketExtension: Extension = {
             ctx.companyId,
             ctx.userId,
             ids,
+            { allowDuplicateIds: parsed.data.allow_duplicate_ids ?? [] },
           )
           return NextResponse.json({ data: result })
         } catch (err) {
@@ -2615,12 +2622,36 @@ export const skatteverketExtension: Extension = {
           return NextResponse.json({ error: 'Saknar transaktions-id' }, { status: 400 })
         }
 
+        // Optional body { allow_duplicate: true }: draft even though the
+        // ledger already holds a verifikat for the event. No body (the
+        // historical call) keeps the guard on.
+        const rawBody = await request.text().catch(() => '')
+        let allowDuplicate = false
+        if (rawBody.trim()) {
+          let body: unknown
+          try {
+            body = JSON.parse(rawBody)
+          } catch {
+            return NextResponse.json({ error: 'Ogiltig JSON i förfrågan.' }, { status: 400 })
+          }
+          const allow = (body as { allow_duplicate?: unknown } | null)?.allow_duplicate
+          if (allow !== undefined && typeof allow !== 'boolean') {
+            return NextResponse.json(
+              { error: 'Ogiltiga parametrar: allow_duplicate måste vara true eller false.' },
+              { status: 400 },
+            )
+          }
+          allowDuplicate = allow === true
+        }
+
         try {
           const entry = await bokforSkattekontoTransaction(
             ctx.supabase,
             ctx.companyId,
             ctx.userId,
             id,
+            undefined,
+            { allowDuplicate },
           )
           return NextResponse.json({ data: { entry } })
         } catch (err) {
@@ -2629,11 +2660,16 @@ export const skatteverketExtension: Extension = {
               err.code === 'TRANSACTION_NOT_FOUND' ? 404
               : err.code === 'ALREADY_BOOKED' ? 409
               : err.code === 'ROW_IGNORED' ? 409
+              : err.code === 'LEDGER_TWIN_EXISTS' ? 409
               : err.code === 'PERIOD_LOCKED' ? 423
               : err.code === 'NO_COUNTER_ACCOUNT' ? 422
               : 400
             return NextResponse.json(
-              { error: err.message, code: err.code },
+              {
+                error: err.message,
+                code: err.code,
+                ...(err.ledgerTwins ? { ledger_twins: err.ledgerTwins } : {}),
+              },
               { status },
             )
           }
@@ -3084,8 +3120,17 @@ async function commitBookSkattekontoRows(
     }
   }
 
+  // Rows the reviewer approved booking although the ledger already holds a
+  // verifikat for the event (staged with allow_duplicate / allow_duplicate_ids).
+  const rawAllow = params.allow_duplicate_ids
+  const allowDuplicateIds = Array.isArray(rawAllow)
+    ? rawAllow.filter((v): v is string => typeof v === 'string' && ids.includes(v))
+    : []
+
   try {
-    const result = await bokforSkattekontoTransactionsBatch(supabase, companyId, userId, ids)
+    const result = await bokforSkattekontoTransactionsBatch(supabase, companyId, userId, ids, {
+      allowDuplicateIds,
+    })
     return { ok: true, ...result }
   } catch (err) {
     // bokforSkattekontoTransactionsBatch catches per-row errors itself; a

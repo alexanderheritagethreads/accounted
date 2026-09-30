@@ -16,7 +16,13 @@ import {
   vatTreatmentForRegistration,
   type VatRegistration,
 } from './vat-registration'
-import { dimensionsBagKey } from './dimension-resolver'
+import {
+  dimensionsBagKey,
+  normalizeLineDimensions,
+  validateEntryDimensions,
+  type LineDimensions,
+} from './dimension-resolver'
+import { DimensionValidationError, type DimensionValidationIssue } from './dimension-errors'
 import { resolveSekAmount } from './currency-utils'
 import { stripBankNoise as stripBankMethodPhrases } from './booking-templates'
 import { createLogger } from '@/lib/logger'
@@ -484,7 +490,129 @@ export async function findCounterpartyTemplatesBatch(
     }
   }
 
+  // Every consumer of a match applies its learned bags (the proposals and
+  // their Bokför, the mapping engine, suggestions), so the codes the
+  // registry no longer accepts are dropped here, once, for the matched
+  // templates only.
+  const matched = [...new Map([...result.values()].map((m) => [m.template.id, m.template])).values()]
+  const pruned = new Map(
+    (await pruneLearnedTemplateDimensions(supabase, companyId, matched)).map((t) => [t.id, t]),
+  )
+  for (const [txId, match] of result) {
+    const template = pruned.get(match.template.id)
+    if (template && template !== match.template) result.set(txId, { ...match, template })
+  }
+
   return result
+}
+
+/**
+ * A template picked by id (the categorize doors' counterparty_template_id) as
+ * a match, its learned bags pruned like every other read that applies them.
+ * Null when the id is not an active template of the company.
+ */
+export async function loadCounterpartyTemplateMatch(
+  supabase: SupabaseClient,
+  companyId: string,
+  templateId: string,
+): Promise<CounterpartyTemplateMatch | null> {
+  const { data } = await supabase
+    .from('categorization_templates')
+    .select('*')
+    .eq('id', templateId)
+    .eq('company_id', companyId)
+    .eq('is_active', true)
+    .maybeSingle()
+  if (!data) return null
+  const [template] = await pruneLearnedTemplateDimensions(supabase, companyId, [data as CategorizationTemplate])
+  return { template, matchMethod: 'exact_alias', confidence: Number(template.confidence) }
+}
+
+/**
+ * The templates without the learned dimension codes the registry no longer
+ * accepts. A learned bag (default_dimensions, a line-pattern entry's bag) is
+ * a suggestion, not a user decision: once its value is archived, or its
+ * dimension or value is gone, applying it would turn the next booking of a
+ * company with dimensions enabled into a DimensionValidationError. Such
+ * codes are dropped with a structured warning; active codes stay.
+ *
+ * "Not accepted" is exactly what the engine rejects: the bags go through
+ * validateEntryDimensions itself (toggle gate, registry, fail-open), so the
+ * two can never disagree. Explicit picks never pass through here and are
+ * still rejected when archived. No bag, no query; nothing dropped, the same
+ * objects back.
+ */
+export async function pruneLearnedTemplateDimensions(
+  supabase: SupabaseClient,
+  companyId: string,
+  templates: CategorizationTemplate[],
+): Promise<CategorizationTemplate[]> {
+  const hasCodes = (bag: LineDimensions | null | undefined): bag is LineDimensions =>
+    !!bag && Object.keys(bag).length > 0
+  const bags = templates.flatMap((t) => [
+    t.default_dimensions,
+    ...(t.line_pattern ?? []).map((entry) => entry.dimensions),
+  ]).filter(hasCodes)
+  if (bags.length === 0) return templates
+
+  let issues: DimensionValidationIssue[]
+  try {
+    await validateEntryDimensions(supabase, companyId, bags.map((dimensions) => ({ dimensions })))
+    return templates
+  } catch (err) {
+    if (!(err instanceof DimensionValidationError)) {
+      // Same posture as the engine's own check: a failed lookup never blocks
+      // a booking, and the engine validates the bag again anyway.
+      log.warn('learned dimension check failed, bags kept', {
+        companyId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return templates
+    }
+    issues = err.issues
+  }
+
+  const reasonFor = (dimNo: string, code: string): DimensionValidationIssue['reason'] | null =>
+    issues.find((i) => i.sie_dim_no === dimNo && (i.code === null || i.code === code))?.reason ?? null
+
+  return templates.map((template) => {
+    const dropped: DimensionValidationIssue[] = []
+    const prune = <T extends LineDimensions | undefined>(bag: T): T | LineDimensions => {
+      if (!hasCodes(bag)) return bag
+      const kept: LineDimensions = {}
+      let changed = false
+      for (const [dimNo, code] of Object.entries(normalizeLineDimensions({ dimensions: bag }))) {
+        const reason = reasonFor(dimNo, code)
+        if (reason) {
+          dropped.push({ sie_dim_no: dimNo, code, reason })
+          changed = true
+        } else {
+          kept[dimNo] = code
+        }
+      }
+      return changed ? kept : bag
+    }
+
+    const defaultDimensions = prune(template.default_dimensions)
+    const linePattern = template.line_pattern?.map((entry) => {
+      const dimensions = prune(entry.dimensions)
+      if (dimensions === entry.dimensions) return entry
+      const { dimensions: _stale, ...rest } = entry
+      return hasCodes(dimensions) ? { ...rest, dimensions } : rest
+    })
+    if (dropped.length === 0) return template
+
+    log.warn('learned dimension codes dropped: no longer active in the registry', {
+      companyId,
+      templateId: template.id,
+      dropped,
+    })
+    return {
+      ...template,
+      default_dimensions: defaultDimensions,
+      line_pattern: linePattern ?? template.line_pattern,
+    }
+  })
 }
 
 // ── Build MappingResult ────────────────────────────────────────
@@ -762,7 +890,10 @@ function buildMultiLineMappingResult(
         credit_amount: side(entry.side) === 'credit' ? amount : 0,
         description: '',
         // Dimensions PR7: business lines carry the pattern's learned bag;
-        // VAT/tax/rounding lines stay untagged.
+        // VAT/tax/rounding lines stay untagged. The marker is what lets an
+        // explicit categorize bag tag the same lines, and only them
+        // (buildTransactionEntryLines).
+        ...(entry.type === 'business' ? { business_line: true } : {}),
         ...(entry.type === 'business' && entry.dimensions
           ? { dimensions: entry.dimensions }
           : {}),

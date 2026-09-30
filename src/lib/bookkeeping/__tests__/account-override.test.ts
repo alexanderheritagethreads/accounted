@@ -67,13 +67,15 @@ describe('applyAccountOverride', () => {
     expect(result.credit_account).toBe('3021')
   })
 
+  // Coded as the v1 categorize route answers for the same account_override,
+  // so an MCP agent gets a refusal it can dispatch on, not UNKNOWN_ERROR.
   it('throws with an actionable message when the account is not in the chart', async () => {
     const { supabase, mockResult } = createMockSupabase()
     mockResult({ data: null })
 
     await expect(
       applyAccountOverride(supabase as never, 'company-1', '4020', -479, mapping(), true),
-    ).rejects.toThrow(/finns inte i kontoplanen/)
+    ).rejects.toMatchObject({ code: 'TX_CATEGORIZE_INVALID_ACCOUNT', message: expect.stringMatching(/finns inte i kontoplanen/) })
   })
 
   it('throws with an activation hint when the account exists but is inactive', async () => {
@@ -82,7 +84,7 @@ describe('applyAccountOverride', () => {
 
     await expect(
       applyAccountOverride(supabase as never, 'company-1', '4020', -479, mapping(), true),
-    ).rejects.toThrow(/inaktivt/)
+    ).rejects.toMatchObject({ code: 'TX_CATEGORIZE_INVALID_ACCOUNT', message: expect.stringMatching(/inaktivt/) })
   })
 
   it('drops auto-VAT lines for a class-2 override outside the moms-line range', async () => {

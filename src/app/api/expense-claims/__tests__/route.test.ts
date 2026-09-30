@@ -96,6 +96,60 @@ describe('/api/expense-claims', () => {
     expect(body.data.id).toBe('claim-1')
   })
 
+  it('POST returns 401 when unauthenticated', async () => {
+    requireAuthMock.mockResolvedValue({
+      user: null,
+      supabase,
+      error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }),
+    })
+    const response = await POST(post(validClaim), {} as never)
+    expect(response.status).toBe(401)
+    expect(registerMock).not.toHaveBeenCalled()
+  })
+
+  it('POST hands the claim-level and per-line dimensions bags to the service', async () => {
+    // Before the schema declared them the line bags were stripped at the
+    // door, although the service books them.
+    const lines = [
+      { account_number: '5410', debit_amount: 400, credit_amount: 0, dimensions: { '1': 'KS01' } },
+      { account_number: '2641', debit_amount: 100, credit_amount: 0 },
+      { account_number: '2893', debit_amount: 0, credit_amount: 500 },
+    ]
+    const response = await POST(post({ ...validClaim, dimensions: { '6': 'P001' }, lines }), {} as never)
+
+    expect(response.status).toBe(201)
+    expect(registerMock).toHaveBeenCalledWith(
+      supabase,
+      'company-1',
+      'user-1',
+      expect.objectContaining({
+        dimensions: { '6': 'P001' },
+        lines: [
+          expect.objectContaining({ account_number: '5410', dimensions: { '1': 'KS01' } }),
+          expect.not.objectContaining({ dimensions: expect.anything() }),
+          expect.not.objectContaining({ dimensions: expect.anything() }),
+        ],
+      }),
+    )
+  })
+
+  it.each([
+    ['on the claim', { dimensions: { projekt: 'P001' } }],
+    [
+      'on a line',
+      {
+        lines: [
+          { account_number: '5410', debit_amount: 500, credit_amount: 0, dimensions: { '6': '{P1}' } },
+          { account_number: '2893', debit_amount: 0, credit_amount: 500 },
+        ],
+      },
+    ],
+  ])('POST rejects a malformed dimensions bag %s with a 400', async (_where, extra) => {
+    const response = await POST(post({ ...validClaim, ...extra }), {} as never)
+    expect(response.status).toBe(400)
+    expect(registerMock).not.toHaveBeenCalled()
+  })
+
   it('POST rejects VAT >= amount with a field-level 400', async () => {
     const response = await POST(post({ ...validClaim, vat_amount: 500 }), {} as never)
     const { status, body } = await parseJsonResponse<{ errors: { field: string }[] }>(response)

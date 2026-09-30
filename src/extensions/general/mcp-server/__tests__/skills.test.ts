@@ -220,8 +220,11 @@ describe('Skills registry', () => {
       expect(text).toContain('Inställningar > Fakturering (Settings > Invoicing)')
       expect(text).toMatch(/send cap/i)
       // The restrictions agents must not over-promise past (lib/invoices/peppol-bis-billing.ts).
-      expect(text).toMatch(/aktiebolag/i)
+      // Every legal form with an organisationsnummer sends; only enskild firma, whose org number
+      // is the owner's personnummer, waits for GLN (founder decision 2026-09-29).
+      expect(text).toMatch(/organisationsnummer/i)
       expect(text).toMatch(/enskild firma/i)
+      expect(text).not.toMatch(/aktiebolag senders|must be an aktiebolag/i)
       expect(text).toMatch(/standard invoices only|no credit notes/i)
       expect(text).toMatch(/SEK/)
       expect(text).toMatch(/6, 12 or 25 %/)
@@ -267,7 +270,7 @@ describe('Skills registry', () => {
       expect(text).toMatch(/send-peppol/)
       expect(text).toMatch(/per-company access grant/)
       expect(text).toContain('Inställningar > Fakturering (Settings > Invoicing)')
-      expect(text).toMatch(/aktiebolag senders, standard invoices only/)
+      expect(text).toMatch(/senders whose org number is not a personnummer \(every legal form except enskild firma\), standard invoices only/)
       expect(text).toMatch(/buyers whose org number is not a personnummer/)
       expect(text).toMatch(/could not be marked as sent/)
     }

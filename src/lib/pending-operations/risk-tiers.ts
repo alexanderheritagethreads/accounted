@@ -116,6 +116,13 @@ export const OPERATION_RISK_TIERS: Record<string, RiskLevel> = {
   // Deleting is refused by the DB guard when anything is booked on the
   // dimension, but it removes the dimension and its values for good.
   delete_dimension: 'medium',
+  // Account dimension rules: bookkeeping policy over reporting tags, no
+  // journal impact. A required rule can refuse a later booking until its
+  // line is tagged, and that booking says so (MANDATORY_DIMENSION_MISSING);
+  // each change is undone in one call.
+  create_dimension_rule: 'low',
+  update_dimension_rule: 'low',
+  delete_dimension_rule: 'low',
   // Kontoplan reference data: adding an account has no journal impact (a
   // wrong account only becomes bookable, nothing is booked), and update is
   // limited to name/description/VAT-default/SRU/is_active: the same surface

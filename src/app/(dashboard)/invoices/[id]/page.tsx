@@ -9,6 +9,7 @@ import { createClient } from '@/lib/supabase/client'
 import { guardBrowserWrite } from '@/lib/company/tab-guard'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { AttnLine } from '@/components/ui/attn-line'
 import { DetailSection, DefRow, DefEmpty } from '@/components/ui/detail-section'
 import { TH_CLASS, TD_CLASS } from '@/components/ui/dry-table'
 import {
@@ -117,6 +118,21 @@ const PEPPOL_STATUS_KEYS = new Set([
   'no_route', 'failed',
 ])
 const PEPPOL_SENDABLE_STATUSES = new Set<InvoiceStatus>(['draft', 'sent', 'overdue'])
+// A delivery that ended without reaching the buyer; sending again stages a
+// new delivery that replaces it.
+const PEPPOL_FAILED_DELIVERY_STATUSES = new Set(['failed', 'no_route'])
+// How long the access point may hold a submission without news of delivery
+// before the page says so.
+const PEPPOL_UNCONFIRMED_AFTER_MS = 60 * 60 * 1000
+
+// The reminder history card's columns. Never '*': action_token is the
+// customer's bearer link, withheld from end-user roles by a column grant, so
+// a '*' select from the browser is refused outright.
+const REMINDER_HISTORY_COLUMNS = 'id, reminder_level, sent_at, email_to, response_type'
+type ReminderHistoryRow = Pick<
+  InvoiceReminder,
+  'id' | 'reminder_level' | 'sent_at' | 'email_to' | 'response_type'
+>
 
 // How long the preview waits for the PDF route to say whether it will render
 // before giving up and closing the placeholder tab. Generous: a cold
@@ -173,7 +189,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   const locale = useLocale()
 
   const [invoice, setInvoice] = useState<InvoiceWithRelations | null>(null)
-  const [reminders, setReminders] = useState<InvoiceReminder[]>([])
+  const [reminders, setReminders] = useState<ReminderHistoryRow[]>([])
   const [deliveries, setDeliveries] = useState<InvoiceDeliveryView[]>([])
   // An empty deliveries list means "nothing was ever sent through Accounted".
   // A failed read also produces an empty list, and the two must never be
@@ -300,6 +316,9 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
     remaining_sends: number | null
   } | null>(null)
   const [peppolDeliveries, setPeppolDeliveries] = useState<PeppolDeliveryView[]>([])
+  // When the deliveries were read: the clock the "not confirmed yet" line
+  // measures against, set with the rows so rendering stays pure.
+  const [peppolReadAt, setPeppolReadAt] = useState<number | null>(null)
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [showFinalizeDialog, setShowFinalizeDialog] = useState(false)
@@ -440,7 +459,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
           .single(),
         supabase
           .from('invoice_reminders')
-          .select('*')
+          .select(REMINDER_HISTORY_COLUMNS)
           .eq('invoice_id', id)
           .order('sent_at', { ascending: false }),
         // Payment history for the Betalningsstatus card. Joins the
@@ -492,7 +511,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
     setDeliveriesUnreadable(!deliveryData.ok)
 
     if (reminderData) {
-      setReminders(reminderData as InvoiceReminder[])
+      setReminders(reminderData as ReminderHistoryRow[])
     }
 
     if (paymentData) {
@@ -1171,6 +1190,7 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
       const rows = Array.isArray(payload.data) ? [...payload.data] : []
       rows.sort((a, b) => (a.status_at < b.status_at ? 1 : a.status_at > b.status_at ? -1 : 0))
       setPeppolDeliveries(rows)
+      setPeppolReadAt(Date.now())
       setPeppolTransportAvailable(payload.transport?.available === true)
       setPeppolAccess(payload.access ?? null)
     } catch {
@@ -1216,6 +1236,10 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
             }),
         variant: 'destructive',
       })
+      // A failed send can still have issued the draft and recorded a failed
+      // delivery: show where the invoice stands.
+      await fetchInvoice()
+      await loadPeppolDeliveries()
     } finally {
       setIsSendingPeppol(false)
     }
@@ -1705,6 +1729,25 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
   const peppolStatusLabel = (status: string) =>
     PEPPOL_STATUS_KEYS.has(status) ? t(`peppol_status_${status}`) : status
   const latestPeppolDelivery = peppolDeliveries[0] ?? null
+  // The page's one Peppol sentence (convention 6), while the invoice can
+  // still be sent: the latest delivery failed, or the access point has held
+  // it for over an hour without news of delivery.
+  const peppolAttention: 'failed' | 'unconfirmed' | null =
+    !latestPeppolDelivery || !PEPPOL_SENDABLE_STATUSES.has(invoice.status)
+      ? null
+      : PEPPOL_FAILED_DELIVERY_STATUSES.has(latestPeppolDelivery.status)
+        ? 'failed'
+        : latestPeppolDelivery.status === 'submission_accepted'
+            && peppolReadAt !== null
+            && peppolReadAt - Date.parse(latestPeppolDelivery.status_at) > PEPPOL_UNCONFIRMED_AFTER_MS
+          ? 'unconfirmed'
+          : null
+  // The other way to the buyer. A draft (put back after the failure) can be
+  // emailed from here; an issued invoice cannot (the email send issues
+  // drafts only), so it offers the PDF to send by hand.
+  const peppolOtherWay = invoice.status === 'draft'
+    ? (canWrite ? { label: t('peppol_failed_email_action'), onClick: () => openSendDialog('email') } : null)
+    : { label: t('download_pdf'), onClick: () => void downloadPDF() }
   const showDestructive =
     invoice.status !== 'cancelled' &&
     invoice.status !== 'credited' &&
@@ -2100,8 +2143,41 @@ export default function InvoiceDetailPage({ params }: { params: Promise<{ id: st
             .map((item) => item.vat_rate ?? 0)}
           onValidated={() => void fetchInvoice()}
           editHref={`/invoices/${invoice.id}/edit`}
+          // One ochre sentence per page: a failed Peppol delivery holds it.
+          tone={peppolAttention ? 'muted' : 'attn'}
         />
       )}
+
+      {/* The latest Peppol delivery, when it needs the user: the operator's
+          own reason (status_detail, never adapter text) and the ways on. */}
+      {peppolAttention === 'failed' && latestPeppolDelivery && (
+        <AttnLine
+          action={canWrite && canSendPeppol
+            ? { label: t('peppol_failed_resend_action'), onClick: () => setShowPeppolSendDialog(true) }
+            : undefined}
+          trailing={peppolOtherWay && (
+            <>
+              {' '}
+              <button
+                type="button"
+                onClick={peppolOtherWay.onClick}
+                className="text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              >
+                {peppolOtherWay.label}
+              </button>
+            </>
+          )}
+        >
+          {latestPeppolDelivery.status_detail
+            ? t.rich('peppol_failed_attn', {
+                reason: latestPeppolDelivery.status_detail,
+                // data-ph-mask: the operator's reason can quote the invoice number
+                mask: (chunks) => <span data-ph-mask="">{chunks}</span>,
+              })
+            : t('peppol_failed_attn_no_reason')}
+        </AttnLine>
+      )}
+      {peppolAttention === 'unconfirmed' && <AttnLine>{t('peppol_unconfirmed_attn')}</AttnLine>}
 
       {/* Kund and Detaljer side by side like an invoice head: who it is for
           on the left, the facts on the right. */}

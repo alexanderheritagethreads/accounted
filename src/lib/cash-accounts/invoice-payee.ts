@@ -250,9 +250,9 @@ export async function planManualBankAccount(
   input: Pick<CreateManualBankAccountInput, 'currency' | 'ledger_account' | 'payee'>,
 ): Promise<{ ok: true; plan: ManualBankAccountPlan } | ({ ok: false } & ManualBankAccountRefusal)> {
   const currency = input.currency.toUpperCase()
-  // findFreeLedgerAccount treats a slot held by a manual row as free (the
-  // PSD2 path promotes that row in place); this path INSERTS, so every slot
-  // any row holds is taken.
+  // findFreeLedgerAccount treats a slot held by a manual row it may promote
+  // as free (the PSD2 path promotes that row in place); this path INSERTS,
+  // so every slot any row holds is taken.
   const { data: existing, error: existingError } = await supabase
     .from('cash_accounts')
     .select('id, ledger_account, iban, payee_iban')

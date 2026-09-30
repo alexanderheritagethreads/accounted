@@ -90,7 +90,7 @@ Example response `200`:
 **Register an expense claim (utlägg) and post its verifikat.**
 `scope:suppliers:write · risk:medium · idempotent · dry-run · reversible`
 
-Books a business cost someone paid privately: Debit the cost account (net), Debit 2641 (vat_amount), Credit the person's liability account (gross), in one verifikat posted immediately. The liability account follows the claimant: employee_id books 2820; otherwise the owner's account for the legal form (2893 aktiebolag, 2018 enskild firma as egen insättning, 2890 förening member) with claimant_name. Foreign currency converts at exchange_rate or Riksbanken's rate for expense_date. lines replaces the generated rows (reverse charge, templates) and must credit the liability account with exactly amount. document_id attaches the receipt to the verifikat; inbox_item_id marks the inbox item booked. Idempotent. Dry-runnable.
+Books a business cost someone paid privately: Debit the cost account (net), Debit 2641 (vat_amount), Credit the person's liability account (gross), in one verifikat posted immediately. The liability account follows the claimant: employee_id books 2820; otherwise the owner's account for the legal form (2893 aktiebolag, 2018 enskild firma as egen insättning, 2890 förening member) with claimant_name. Foreign currency converts at exchange_rate or Riksbanken's rate for expense_date. lines replaces the generated rows (reverse charge, templates) and must credit the liability account with exactly amount. dimensions ({sie_dim_no: code}, kostnadsställe/projekt) tags the cost line, or with lines every class 3-8 line, where a line's own dimensions win per key. document_id attaches the receipt to the verifikat; inbox_item_id marks the inbox item booked. Idempotent. Dry-runnable.
 
 **Use when:** A receipt was paid with a private card or cash: the answer to "Vem betalade?" is the owner or an employee, not the company account.
 **Do not use for:** A purchase the company paid itself (categorize the bank transaction or register a supplier invoice), an unpaid supplier invoice (POST /supplier-invoices) or mileage (körjournal).
@@ -121,7 +121,8 @@ Request body:
   claimant_name?: string,
   document_id?: string | null,
   inbox_item_id?: string | null,
-  lines?: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string | null }[]
+  dimensions?: Record<string, string>,
+  lines?: { account_number: string, debit_amount?: number, credit_amount?: number, line_description?: string | null, dimensions?: Record<string, string> }[]
 }
 ```
 
@@ -1158,6 +1159,7 @@ Changes the account of one line on an unsettled supplier invoice (registered, ap
 - A settled invoice answers 409 SI_ITEM_ACCOUNT_SETTLED.
 - A locked or closed period answers 409 JOURNAL_RATTELSE_PERIOD_LOCKED: past a lock, storno is the only lawful correction.
 - When the verifikat was already corrected by hand and holds no matching line on the old account, the answer is 409 SI_ITEM_ACCOUNT_NO_MATCHING_LINE and nothing changes.
+- A foreign-currency line moves the kronor the registration booked (the line at the invoice's stored rate); an invoice without that rate answers 409 SI_ITEM_ACCOUNT_FX_RATE_UNKNOWN and nothing changes.
 - account_number is a STRING ("6550"), never a number.
 
 | Parameter | In | Type | Required | Notes |
@@ -1224,7 +1226,9 @@ Books the payment journal entry (Debit 2440 / Credit the payment account under a
 **Pitfalls:**
 - Idempotency-Key is mandatory.
 - payment_date must fall in an open fiscal period: locked period returns 400 PERIOD_LOCKED.
-- exchange_rate_difference (SEK delta vs the booked rate at registration) is required for foreign-currency SIs to book the FX gain/loss to 3960 / 7960. Omitting it on a non-SEK SI under accrual mis-books FX.
+- Foreign-currency SIs under accrual: amount is in the invoice currency and the verifikat is in SEK. The SEK cleared off 2440 is read from the ledger (the registration verifikat minus earlier payments), never computed by the caller; an SI with no registration verifikat (migrated) clears at its own exchange_rate, and one with no rate either returns 400 SI_FX_RATE_MISSING. State what the payment cost in SEK with amount_sek (the SEK that left the payment account; the difference to the cleared SEK books on 3960 gain / 7960 loss) or with exchange_rate_difference (cleared SEK minus paid SEK; 0 for none). One of the two is required, not both.
+- Foreign-currency SI whose linked vouchers contradict each other (a batch voucher shared with another invoice, payment rows that do not add up to paid_amount, a registration or payment voucher reversed with no single correction), or whose 2440 balance is more than 10% away from remaining_amount x exchange_rate (reason ledger_rate_mismatch: the registration was corrected for something other than the rate), or whose history is longer than one request resolves (reason ledger_history_too_long: more than 50 payment rows or 20 storno hops), returns 409 SI_PAID_SEK_UNRESOLVED with details.reason and books nothing. Check the SEK against the ledger and resend with explicit SEK lines.
+- Kontantmetoden company paying an SI that was registered on 2440 (booked at receipt, before a switch of method): the payment clears 2440 like under faktureringsmetoden, so a foreign-currency one needs amount_sek or exchange_rate_difference too. Only an SI never registered gets the cash entry (expense + ingående moms at payment).
 - Strict-mode: a JE creation failure ABORTS before the status flip. There is no partial-state recovery banner: retry the call.
 - Cash basis (kontantmetoden) recognizes the expense + ingående moms HERE, not at :create.
 - Cash basis + öresavrundning: a SEK invoice with ore_rounding on and an öre-bearing total is paid in whole kronor, so the generated entry credits the payment account with the rounded amount and books the residual on 3740 (no VAT). amount, paid_amount and remaining_amount stay in exact öre. Invoices whose rounding is already an invoice row on 3740 have a whole-krona total and are unaffected.
@@ -1243,6 +1247,7 @@ Request body:
   amount?: number,
   payment_date?: string,
   exchange_rate_difference?: number,
+  amount_sek?: number,
   notes?: string,
   force?: boolean,
   payment_account?: string,

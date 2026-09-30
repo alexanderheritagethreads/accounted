@@ -447,7 +447,7 @@ describe('commitPendingOperation: credit-note issuance guard', () => {
       data: { accounting_method: 'cash', entity_type: 'enskild_firma', bankgiro: '123-4567' },
       error: null,
     })
-    enqueue({ data: null, error: null }) // status update
+    enqueue({ data: [{ id: 'invoice-1' }], error: null }) // status flip draft -> sent (compare-and-set)
     enqueue({ data: null, error: null }) // dispatcher update
 
     const op = makePendingOp({
@@ -2111,7 +2111,7 @@ describe('commitPendingOperation: mark_invoice_sent honours defer_invoice_bookin
       },
       error: null,
     })
-    enqueue({ data: null, error: null }) // status update
+    enqueue({ data: [{ id: 'invoice-1' }], error: null }) // status flip draft -> sent (compare-and-set)
     enqueue({ data: null, error: null }) // dispatcher update
 
     const op = makePendingOp({

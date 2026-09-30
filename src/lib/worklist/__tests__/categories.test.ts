@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { createQueuedMockSupabase } from '@/tests/helpers'
 import {
   countDeadlinesNeedingAction,
+  countFailedPeppolDeliveries,
   countInboxDocuments,
   countOverdueInvoices,
   countPendingOperations,
@@ -831,3 +832,20 @@ describe('countUnclassifiedDocuments', () => {
   })
 })
 
+
+describe('countFailedPeppolDeliveries', () => {
+  beforeEach(() => reset())
+
+  it('counts the ids the membership-checked SQL function returns on the session client', async () => {
+    enqueue({ data: ['inv-1', 'inv-2'] })
+    await expect(countFailedPeppolDeliveries(supabase, COMPANY)).resolves.toBe(2)
+    expect(mockSupabase.rpc).toHaveBeenCalledWith('peppol_failed_invoice_ids', expect.objectContaining({ p_company_id: COMPANY }))
+    // No table read: peppol_deliveries is not granted to authenticated.
+    expect(mockSupabase.from).not.toHaveBeenCalled()
+  })
+
+  it('soft-fails to 0 on query error', async () => {
+    enqueue({ error: { message: 'boom' } })
+    await expect(countFailedPeppolDeliveries(supabase, COMPANY)).resolves.toBe(0)
+  })
+})

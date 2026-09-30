@@ -39,6 +39,7 @@ import {
 import {
   upsertCounterpartyTemplate,
   buildMappingResultFromCounterpartyTemplate,
+  loadCounterpartyTemplateMatch,
 } from '@/lib/bookkeeping/counterparty-templates'
 import { createTransactionJournalEntry } from '@/lib/bookkeeping/transaction-entries'
 import { reverseOrphanedJournalEntry } from '@/lib/bookkeeping/cancel-orphaned-entry'
@@ -52,7 +53,6 @@ import { getErrorMessage } from '@/lib/errors/get-error-message'
 import { getStructuredError } from '@/lib/errors/get-structured-error'
 import { eventBus } from '@/lib/events'
 import type {
-  CategorizationTemplate,
   EntityType,
   Transaction,
   TransactionCategory,
@@ -205,23 +205,18 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string; id: string 
 
     let mappingResult
     if (body.counterparty_template_id && is_business) {
-      const { data: cpTemplate } = await ctx.supabase
-        .from('categorization_templates')
-        .select('*')
-        .eq('id', body.counterparty_template_id)
-        .eq('company_id', ctx.companyId!)
-        .eq('is_active', true)
-        .maybeSingle()
-      if (!cpTemplate) {
+      // Learned codes the registry no longer accepts are dropped on load; an
+      // explicit body.dimensions (applied below) is never filtered.
+      const match = await loadCounterpartyTemplateMatch(
+        ctx.supabase,
+        ctx.companyId!,
+        body.counterparty_template_id,
+      )
+      if (!match) {
         return v1ErrorResponseFromCode('NOT_FOUND', txLog, {
           requestId: ctx.requestId,
           details: { resource: 'counterparty_template' },
         })
-      }
-      const match = {
-        template: cpTemplate as CategorizationTemplate,
-        matchMethod: 'exact_alias' as const,
-        confidence: Number(cpTemplate.confidence),
       }
       mappingResult = buildMappingResultFromCounterpartyTemplate(
         match,

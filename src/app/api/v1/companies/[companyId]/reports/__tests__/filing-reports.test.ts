@@ -591,6 +591,29 @@ describe('GET /reports/dimension-pnl', () => {
     expect(res.status).toBe(200)
     expect(m.dimPnl).toHaveBeenCalledWith(expect.anything(), COMPANY_ID, PERIOD_ID, '6', { toDate: undefined })
   })
+
+  it('200 passing a from_date/to_date window through, as the dashboard does', async () => {
+    useClient({ fiscal_periods: PERIOD })
+    m.dimPnl.mockResolvedValue({ dimension: { sie_dim_no: '1', name: 'Kostnadsställe' }, net_total: 1 })
+    const res = await get(
+      getDimPnl,
+      `/reports/dimension-pnl?period_id=${PERIOD_ID}&dim_no=1&from_date=2025-07-01&to_date=2025-09-30`,
+    )
+    expect(res.status).toBe(200)
+    expect(m.dimPnl).toHaveBeenCalledWith(expect.anything(), COMPANY_ID, PERIOD_ID, '1', {
+      fromDate: '2025-07-01',
+      toDate: '2025-09-30',
+    })
+  })
+
+  it.each(['from_date=2024-12-31', 'from_date=2025-09-30&to_date=2025-07-01'])(
+    '400 VALIDATION_ERROR for a from_date outside the period or after to_date (%s)',
+    async (window) => {
+      useClient({ fiscal_periods: PERIOD })
+      expect((await get(getDimPnl, `/reports/dimension-pnl?period_id=${PERIOD_ID}&${window}`)).status).toBe(400)
+      expect(m.dimPnl).not.toHaveBeenCalled()
+    },
+  )
 })
 
 describe('GET /audit-trail', () => {

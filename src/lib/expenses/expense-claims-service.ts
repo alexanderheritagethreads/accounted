@@ -31,8 +31,12 @@ import { roundOre, sumOre } from '@/lib/money'
 import { ownerSettlementAccount, parseEntityType } from '@/lib/company/entity-type'
 import { ACCOUNT_NUMBER_RE } from '@/lib/invariants'
 import { createLogger } from '@/lib/logger'
+import { mergeDimensionBags } from '@/lib/bookkeeping/dimension-resolver'
 
 const log = createLogger('expenses/claims')
+
+/** Result (P&L) accounts, classes 3-8: the lines a claim-level bag tags. */
+const RESULT_ACCOUNT_RE = /^[3-8]/
 
 export const EXPENSE_LIABILITY_ACCOUNTS = ['2893', '2820', '2018', '2890'] as const
 export type ExpenseLiabilityAccount = (typeof EXPENSE_LIABILITY_ACCOUNTS)[number]
@@ -75,6 +79,13 @@ export interface RegisterExpenseClaimInput {
   claimant_name?: string
   document_id?: string
   inbox_item_id?: string
+  /**
+   * Kostnadsställe/projekt ({sie_dim_no: code}) for the claim's cost lines:
+   * the generated expense line, or with `lines` every result-account (class
+   * 3-8) line, where the line's own bag wins per key. VAT, reverse-charge and
+   * liability legs stay untagged, like every other producer.
+   */
+  dimensions?: Record<string, string>
   /**
    * Custom verifikat lines in claim currency (the advanced booking step:
    * reverse charge, templates, manual rows). When present they replace the
@@ -255,7 +266,12 @@ export async function planExpenseClaim(
             ? roundOre(l.credit_amount * rate)
             : 0,
       line_description: l.line_description?.trim() || desc,
-      dimensions: l.dimensions,
+      // The claim-level bag defaults the cost lines only; without one the
+      // line's own bag passes through exactly as before.
+      dimensions:
+        input.dimensions && RESULT_ACCOUNT_RE.test(l.account_number)
+          ? mergeDimensionBags(input.dimensions, l.dimensions)
+          : l.dimensions,
     }))
     const residual = roundOre(
       sumOre(converted.map((l) => l.debit_amount)) - sumOre(converted.map((l) => l.credit_amount)),
@@ -302,6 +318,9 @@ export async function planExpenseClaim(
       debit_amount: netSek,
       credit_amount: 0,
       line_description: desc,
+      ...(input.dimensions && Object.keys(input.dimensions).length > 0
+        ? { dimensions: input.dimensions }
+        : {}),
       ...(input.currency !== 'SEK'
         ? {
             currency: input.currency,

@@ -103,14 +103,22 @@ export function supplierOreRoundingLine(residual: number): CreateJournalEntryLin
  * grows by the same amount so it equals the whole bank row. Mutates `lines`.
  * Shared by every supplier-match builder and the preview, so the fee is
  * booked the same way on each path.
+ *
+ * `dimensions`: the settled invoice's bag, for a builder that tags its own
+ * lines as it builds them (the kontantmetod cash builder): the fee belongs to
+ * the same payment, so the lines added here carry it too. Builders whose
+ * caller stamps every line afterwards leave it out.
  */
 export function addSupplierBankFeeLine(
   lines: CreateJournalEntryLineInput[],
   paymentAccount: string,
   feeSek: number | undefined,
+  dimensions?: Record<string, string>,
 ): void {
   const fee = roundOre(feeSek ?? 0)
   if (fee <= 0) return
+  // A copy per line: a shared bag object would let one line's edit leak.
+  const tag = () => (dimensions ? { dimensions: { ...dimensions } } : {})
   const bankLine = lines.find((l) => l.account_number === paymentAccount && l.credit_amount > 0)
   if (bankLine) {
     bankLine.credit_amount = roundOre(bankLine.credit_amount + fee)
@@ -120,6 +128,7 @@ export function addSupplierBankFeeLine(
       debit_amount: 0,
       credit_amount: fee,
       line_description: 'Utbetalning från bank',
+      ...tag(),
     })
   }
   lines.push({
@@ -127,6 +136,7 @@ export function addSupplierBankFeeLine(
     debit_amount: fee,
     credit_amount: 0,
     line_description: RESIDUAL_KINDS.bank_fee.label_sv,
+    ...tag(),
   })
 }
 

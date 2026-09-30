@@ -387,11 +387,22 @@ const DraftEntryOut = z.object({
       debit_amount: z.number(),
       credit_amount: z.number(),
       line_description: z.string().nullable(),
+      // The stored bag, account dimension rules applied: the edit accepts
+      // lines[].dimensions, so the answer must show what was kept.
+      dimensions: z
+        .record(z.string(), z.string())
+        .describe('SIE dimension tags, {"<dim_no>": "<code>"}: "1" kostnadsställe, "6" projekt, 20+ custom. {} when untagged.'),
     }),
   ),
 })
 
-type DraftLineRow = { account_number: string; debit_amount: number | string; credit_amount: number | string; line_description: string | null }
+type DraftLineRow = {
+  account_number: string
+  debit_amount: number | string
+  credit_amount: number | string
+  line_description: string | null
+  dimensions?: Record<string, string> | null
+}
 
 function toDraftOut(entry: JournalEntry): z.infer<typeof DraftEntryOut> {
   const lines = ((entry as unknown as { lines?: DraftLineRow[] }).lines ?? []).map((l) => ({
@@ -399,6 +410,7 @@ function toDraftOut(entry: JournalEntry): z.infer<typeof DraftEntryOut> {
     debit_amount: Number(l.debit_amount) || 0,
     credit_amount: Number(l.credit_amount) || 0,
     line_description: l.line_description ?? null,
+    dimensions: l.dimensions ?? {},
   }))
   return {
     id: entry.id,
@@ -456,8 +468,8 @@ export const journalEntriesUpdateDraft = defineOperation({
           voucher_number: 0,
           notes: null,
           lines: [
-            { account_number: '6570', debit_amount: 60, credit_amount: 0, line_description: null },
-            { account_number: '1930', debit_amount: 0, credit_amount: 60, line_description: null },
+            { account_number: '6570', debit_amount: 60, credit_amount: 0, line_description: null, dimensions: {} },
+            { account_number: '1930', debit_amount: 0, credit_amount: 60, line_description: null, dimensions: {} },
           ],
         },
         meta: META_EXAMPLE,
@@ -674,7 +686,9 @@ export const journalEntriesBatchNoDocumentRequired = defineOperation({
     title: 'Mark Vouchers as No Underlag Required',
     description:
       'Stage marking posted verifikat "Inget underlag krävs" (no external underlag by nature: avskrivning, periodisering, bokslutspost). Removes them from the missing-underlag list; verifikat unchanged. Never for a missing receipt.',
-    keywords: ['inget underlag krävs', 'saknat underlag', 'underlag saknas', 'egen handling', 'utan underlag'],
+    // English too, for guessed waiver names (waive_document_requirement).
+    // Matching only: the description's rule, never for a missing receipt, stands.
+    keywords: ['inget underlag krävs', 'saknat underlag', 'underlag saknas', 'egen handling', 'utan underlag', 'waive', 'waiver', 'not required', 'no document needed'],
     stage: {
       pendingType: 'mark_no_document_required',
       title: (input) => {

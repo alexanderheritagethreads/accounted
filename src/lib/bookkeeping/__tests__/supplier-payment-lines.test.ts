@@ -241,4 +241,43 @@ describe('addSupplierBankFeeLine', () => {
     addSupplierBankFeeLine(lines, '1930', undefined)
     expect(lines).toHaveLength(2)
   })
+
+  it('tags the lines it adds with the payment bag, one copy per line', () => {
+    const bag = { '6': 'P1' }
+    // No payment-account credit yet: the helper adds the bank line too.
+    const lines: Array<{
+      account_number: string
+      debit_amount: number
+      credit_amount: number
+      dimensions?: Record<string, string>
+    }> = [{ account_number: '2440', debit_amount: 100, credit_amount: 0, dimensions: { ...bag } }]
+    addSupplierBankFeeLine(lines, '1930', 10, bag)
+    expect(lines.map((l) => [l.account_number, l.dimensions])).toEqual([
+      ['2440', bag],
+      ['1930', bag],
+      ['6570', bag],
+    ])
+    expect(lines[1].dimensions).not.toBe(lines[2].dimensions)
+    expect(lines[2].dimensions).not.toBe(bag)
+  })
+
+  it('adds untagged lines without a bag, as before', () => {
+    const lines: Array<{
+      account_number: string
+      debit_amount: number
+      credit_amount: number
+      dimensions?: Record<string, string>
+    }> = [
+      { account_number: '2440', debit_amount: 100, credit_amount: 0 },
+      { account_number: '1930', debit_amount: 0, credit_amount: 100 },
+    ]
+    addSupplierBankFeeLine(lines, '1930', 10)
+    expect(lines[2]).toEqual({
+      account_number: '6570',
+      debit_amount: 10,
+      credit_amount: 0,
+      line_description: 'Bankavgift',
+    })
+    expect('dimensions' in lines[2]).toBe(false)
+  })
 })

@@ -57,7 +57,8 @@ vi.mock('@/lib/auth/api-keys', async (importOriginal) => {
     validateApiKey: vi.fn().mockResolvedValue({
       userId: 'user-1',
       companyId: '11111111-1111-4111-8111-111111111111',
-      scopes: ['reports:read', 'transactions:read'],
+      // documents:read: gnubok_ask_document's hint below passes the scope check.
+      scopes: ['reports:read', 'transactions:read', 'documents:read'],
       apiKeyId: 'key-live-1',
       apiKeyName: 'Live Key',
       mode: 'live',
@@ -186,6 +187,38 @@ describe('MCP tools/call unknown-parameter guard', () => {
   it('names the likely parameter for an unknown synonym on a non-aliased tool', async () => {
     const error = await expectValidationError('gnubok_get_ar_ledger', { as_of: '2026-01-01' })
     expect(error.message_en).toContain('Did you mean: "as_of" -> "as_of_date"?')
+  })
+
+  // Prod telemetry 2026-09-23..28: these were rejected with no hint at all.
+  // Still rejected: a hint never runs the call under the name it suggests.
+  it('shows the exact record_ref for a document_id holding a uuid, and still refuses the call', async () => {
+    const uuid = '0b8f6a1e-2c3d-4e5f-8a9b-0c1d2e3f4a5b'
+    const error = await expectValidationError('gnubok_ask_document', {
+      document_id: uuid,
+      question: 'Vad är uppsägningstiden?',
+    })
+    expect(error.message_en).toContain(`Did you mean: "document_id" -> "record_ref": "document:${uuid}"?`)
+    expect(error.message_en).toContain('Unknown keys are rejected, not ignored.')
+  })
+
+  it('points an id-shaped key at the one required identifier (structural fallback)', async () => {
+    const error = await expectValidationError('gnubok_get_inbox_item', { id: '0b8f6a1e-2c3d-4e5f-8a9b-0c1d2e3f4a5b' })
+    expect(error.message_en).toContain('Did you mean: "id" -> "inbox_item_id"?')
+  })
+
+  it('names since for a lower bound and nothing for an upper bound on a since-only list', async () => {
+    const error = await expectValidationError('gnubok_list_verifikat_without_documents', {
+      date_from: '2026-01-01',
+      until: '2026-06-30',
+    })
+    expect(error.message_en).toContain('Unknown parameters "date_from", "until"')
+    expect(error.message_en).toContain('Did you mean: "date_from" -> "since"? ')
+    expect(error.message_en).not.toContain('"until" ->')
+  })
+
+  it('names slug for a skill name on gnubok_load_skill', async () => {
+    const error = await expectValidationError('gnubok_load_skill', { name: 'vat-declaration' })
+    expect(error.message_en).toContain('Did you mean: "name" -> "slug"?')
   })
 
   it('treats Object.prototype names as plain unknown parameters, not as synonyms', async () => {

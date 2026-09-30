@@ -284,6 +284,8 @@ export async function createExpenseClaim(
               account_number: l.account_number,
               debit_amount: l.debit_amount,
               credit_amount: l.credit_amount,
+              // The approver sees the tags the verifikat will carry.
+              ...(l.dimensions ? { dimensions: l.dimensions } : {}),
             })),
             total_debit: totalDebit,
             total_credit: totalCredit,

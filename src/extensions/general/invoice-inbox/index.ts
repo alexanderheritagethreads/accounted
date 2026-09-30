@@ -2969,11 +2969,15 @@ export const invoiceInboxExtension: Extension = {
             })
           }
 
+          // A line's bag is part of what would be posted: a multi-line
+          // template tags its business lines one by one, which the
+          // top-level `dimensions` below cannot express.
           const lines = buildTransactionEntryLines(tx as Transaction, mapping).map((l) => ({
             account_number: l.account_number,
             debit_amount: l.debit_amount,
             credit_amount: l.credit_amount,
             description: l.line_description ?? '',
+            ...(l.dimensions ? { dimensions: l.dimensions } : {}),
           }))
 
           return NextResponse.json({

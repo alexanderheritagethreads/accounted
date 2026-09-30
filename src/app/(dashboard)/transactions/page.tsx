@@ -3475,7 +3475,9 @@ export default function TransactionsPage() {
                 ? t('skv_err_not_settled')
                 : code === 'COMMIT_FAILED'
                   ? t('skv_err_commit_failed')
-                  : t('skv_err_other')
+                  : code === 'LEDGER_TWIN_EXISTS'
+                    ? t('skv_err_ledger_twin')
+                    : t('skv_err_other')
       const parts = [t('skv_bulk_partial_ok', { count: succeeded })]
       for (const [code, n] of codeCounts) parts.push(`${n} ${codeLabel(code)}`)
       toast({

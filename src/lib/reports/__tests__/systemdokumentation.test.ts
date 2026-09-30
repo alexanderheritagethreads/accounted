@@ -110,6 +110,19 @@ describe('buildSystemdokumentation', () => {
     expect(integrations).toMatchObject({ enable_banking: true, skatteverket: true, stripe: true, peppol: false, shopify: false, ai: true })
   })
 
+  it('describes Stripe as a feed the user books, never as automatic booking', () => {
+    // The Stripe connection is feed-only (no cron books payments or payouts),
+    // so the systemdokumentation must not claim automatic booking.
+    const r = buildSystemdokumentation(facts())
+    const stripe = r.delsystem.find((d) => d.key === 'stripe')!
+    expect(stripe.description).toContain('bokförs när användaren godkänner dem')
+    expect(stripe.kontering).toContain('Utbetalning: debet 1930, kredit 1686')
+    // Fee rows are booked one way or the other, never twice.
+    expect(stripe.description).toContain('aldrig båda')
+    const automatic = r.behandlingsregler.find((x) => x.rubrik === 'Maskinell och automatisk bokföring')!
+    expect(automatic.text).not.toContain('Stripe')
+  })
+
   it('carries the shared behandlingsregler and the per-company rounding and lock settings', () => {
     const r = buildSystemdokumentation(facts())
     const byTitle = Object.fromEntries(r.behandlingsregler.map((x) => [x.rubrik, x.text]))

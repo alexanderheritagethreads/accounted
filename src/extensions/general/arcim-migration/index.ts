@@ -73,6 +73,7 @@ import { classifyProviderError } from '@/lib/providers/with-provider-call'
 import { getProviderResourceForbiddenMessage } from '@/lib/errors/get-error-message'
 import { FortnoxApiError, fortnoxErrorMessage } from '@/lib/providers/fortnox/client'
 import { createLogger } from '@/lib/logger'
+import { requestCspNonce } from '@/lib/security/csp'
 import { resolveBrandByHost } from '@/lib/branding/resolve'
 import { findUnfinishedConnect } from '@/lib/providers/unfinished-connect'
 
@@ -690,6 +691,13 @@ export const arcimMigrationExtension: Extension = {
                 details: { provider, reason: error.message },
               })
             }
+            // Bokio: the plan has no API access, so re-pasting the token
+            // cannot help; name the plans that include it instead.
+            if (error.kind === 'plan-no-api') {
+              return errorResponseFromCode('BOKIO_PLAN_NO_API', moduleLog, {
+                details: { provider, reason: error.message },
+              })
+            }
             return errorResponseFromCode('PROVIDER_TOKEN_INVALID', moduleLog, {
               details: { provider, reason: error.message },
             })
@@ -745,6 +753,11 @@ export const arcimMigrationExtension: Extension = {
         const jsLiteral = (value: unknown) =>
           JSON.stringify(value ?? '').replace(/</g, '\\u003c')
 
+        // The proxy's CSP (lib/security/csp.ts) has no 'unsafe-inline': the
+        // popup scripts below run only because they carry this request's
+        // nonce.
+        const scriptNonce = requestCspNonce(request.headers)
+
         const respondWithError = (reason: string, consentId?: string) => {
           const cancelled = reason === OAUTH_CANCELLED_MESSAGE
           const fallbackUrl = new URL(`${responseOrigin}/import`)
@@ -770,7 +783,7 @@ export const arcimMigrationExtension: Extension = {
           // state that is already spent, so a Back or a reload onto it can
           // only fail. no-store keeps it out of the browser cache for the same
           // reason.
-          const html = `<!DOCTYPE html><html><body><script>
+          const html = `<!DOCTYPE html><html><body><script nonce="${scriptNonce}">
             if (window.opener) {
               window.opener.postMessage({ type: 'arcim-oauth-error', reason: ${jsLiteral(reason)}, cancelled: ${cancelled} }, ${jsLiteral(responseOrigin)});
             } else {
@@ -931,7 +944,7 @@ export const arcimMigrationExtension: Extension = {
           // consequence of leaving the URL in history: a second delivery 19
           // seconds after a successful connect, answered with a red "ingen
           // giltig migrationssession" about a connection that had just worked.
-          const html = `<!DOCTYPE html><html><body><script>
+          const html = `<!DOCTYPE html><html><body><script nonce="${scriptNonce}">
             if (window.opener) {
               window.opener.postMessage({ type: 'arcim-oauth-success', consentId: ${jsLiteral(consentId)} }, ${jsLiteral(responseOrigin)});
               window.close();

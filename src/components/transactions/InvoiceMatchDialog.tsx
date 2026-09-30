@@ -15,6 +15,7 @@ import {
   getSupplierInvoiceMatchTargetState,
 } from '@/lib/invoices/matchable-statuses'
 import { CheckCircle2, AlertTriangle, Trash2, Plus, Pencil } from 'lucide-react'
+import { withLineDimensions, type LineDimensions } from '@/components/bookkeeping/payment-line-dimensions'
 import type { TransactionWithInvoice } from './transaction-types'
 
 interface DuplicateCandidate {
@@ -39,6 +40,8 @@ interface PreviewLine {
   debit_amount: number
   credit_amount: number
   description: string
+  /** The bag the booking gives this line (supplier previews); absent when untagged. */
+  dimensions?: LineDimensions
 }
 
 // Cross-currency conversion info returned by the preview route. When
@@ -66,6 +69,8 @@ interface MatchPreview {
   fx_conversion?: FxConversion
   /** Supplier match only: SEK of a bank fee drawn on top of the invoice, booked on 6570. */
   bank_fee_sek?: number
+  /** Supplier match only: the settled invoice's bag, given to a row the user adds. */
+  document_dimensions?: LineDimensions
 }
 
 // String-typed working copy of a line. The amount is a single value plus a
@@ -78,6 +83,8 @@ interface EditableLine {
   side: 'debit' | 'credit'
   amount: string
   description: string
+  /** Kept through every edit of the row and sent with it (payment-line-dimensions). */
+  dimensions?: LineDimensions
 }
 
 export interface ConfirmOpts {
@@ -88,6 +95,7 @@ export interface ConfirmOpts {
     debit_amount: number
     credit_amount: number
     line_description?: string
+    dimensions?: LineDimensions
   }>
   // Manual SEK-per-invoice-currency override used when Riksbanken's rate
   // for the payment date isn't available; the dialog asks the user to type
@@ -111,6 +119,7 @@ function previewToEditable(line: PreviewLine): EditableLine {
     side: isDebit ? 'debit' : 'credit',
     amount: String(isDebit ? line.debit_amount : line.credit_amount),
     description: line.description,
+    ...withLineDimensions(line.dimensions),
   }
 }
 
@@ -334,6 +343,8 @@ export default function InvoiceMatchDialog({
             debit_amount: l.side === 'debit' ? amount : 0,
             credit_amount: l.side === 'credit' ? amount : 0,
             line_description: l.description?.trim() || undefined,
+            // What the grid holds is what gets booked, the row's bag included.
+            ...withLineDimensions(l.dimensions),
           }
         })
       : undefined
@@ -357,7 +368,18 @@ export default function InvoiceMatchDialog({
   }
 
   const addEditLine = () => {
-    setEditLines((prev) => [...prev, { account_number: '', side: 'debit', amount: '', description: '' }])
+    // A row the user adds belongs to the same payment: it starts with the
+    // settled invoice's bag.
+    setEditLines((prev) => [
+      ...prev,
+      {
+        account_number: '',
+        side: 'debit',
+        amount: '',
+        description: '',
+        ...withLineDimensions(preview?.document_dimensions),
+      },
+    ])
   }
 
   const removeEditLine = (i: number) => {

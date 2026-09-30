@@ -7,6 +7,7 @@ import {
   replaceOpeningBalanceEntry,
   reverseEntry,
   assertLinesWellFormed,
+  cancelOrphanedEntry,
 } from '../engine'
 import {
   AccountsNotInChartError,
@@ -1023,6 +1024,152 @@ describe('reverseEntry: unused voucher allocation', () => {
     expect(getUnusedVoucherAllocation(caught)).toBeNull()
     expect(cancelUpdate).toHaveBeenCalledWith({ status: 'cancelled' })
     expect(deleteLines).toHaveBeenCalled()
+  })
+})
+
+describe('reverseEntry: orphan reversal cleanup goes through the gated door', () => {
+  // posted -> cancelled is refused by the database for a direct UPDATE
+  // (migration 20260929220100). Once the reversal may be posted, its cleanup
+  // must call cancel_orphaned_entry, which also keeps the orphan's lines.
+  const original = {
+    id: 'entry-1',
+    company_id: 'company-1',
+    status: 'posted',
+    fiscal_period_id: 'period-1',
+    voucher_series: 'A',
+    voucher_number: 7,
+    entry_date: '2026-02-02',
+    description: 'Hyra februari',
+    source_type: 'manual',
+    source_id: null,
+    lines: [
+      { account_number: '5010', debit_amount: 1000, credit_amount: 0 },
+      { account_number: '1930', debit_amount: 0, credit_amount: 1000 },
+    ],
+  }
+  const reversal = { id: 'reversal-1', reverses_id: 'entry-1', source_type: 'storno' }
+
+  function setup(opts: { postError?: { message: string }; casData?: unknown[] }) {
+    let jeCall = 0
+    const jeResults = [
+      { data: original, error: null }, // fetch original (.single)
+      { data: reversal, error: null }, // insert reversal (.single)
+      { data: null, error: opts.postError ?? null }, // post reversal (await)
+      { data: opts.casData ?? [], error: null }, // CAS original -> reversed (await)
+    ]
+    const jeUpdates: unknown[] = []
+    const lineDeletes: unknown[] = []
+
+    const supabase = {
+      rpc: vi.fn().mockImplementation(async (name: string) =>
+        name === 'cancel_orphaned_entry'
+          ? { data: { cancelled: true }, error: null }
+          : { data: 8, error: null },
+      ),
+      from: vi.fn().mockImplementation((table: string) => {
+        if (table === 'journal_entries') {
+          const b: Record<string, unknown> = {}
+          for (const m of ['select', 'eq', 'in', 'insert']) b[m] = vi.fn().mockReturnValue(b)
+          b.update = vi.fn().mockImplementation((payload: unknown) => {
+            jeUpdates.push(payload)
+            return b
+          })
+          b.single = vi.fn().mockImplementation(async () => jeResults[jeCall++])
+          b.then = (resolve: (v: unknown) => void) => resolve(jeResults[jeCall++])
+          return b
+        }
+        if (table === 'chart_of_accounts') {
+          const b: Record<string, unknown> = {}
+          for (const m of ['select', 'eq', 'in']) b[m] = vi.fn().mockReturnValue(b)
+          b.then = (resolve: (v: unknown) => void) =>
+            resolve({
+              data: [
+                { id: 'acc-5010', account_number: '5010' },
+                { id: 'acc-1930', account_number: '1930' },
+              ],
+              error: null,
+            })
+          return b
+        }
+        if (table === 'journal_entry_lines') {
+          return {
+            insert: vi.fn().mockResolvedValue({ error: null }),
+            delete: vi.fn().mockImplementation(() => {
+              lineDeletes.push(true)
+              return { eq: vi.fn().mockResolvedValue({ error: null }) }
+            }),
+          }
+        }
+        return createMockChain()
+      }),
+    }
+    return { supabase, jeUpdates, lineDeletes }
+  }
+
+  const expectedRpcArgs = {
+    p_company_id: 'company-1',
+    p_entry_id: 'reversal-1',
+    p_user_id: 'user-1',
+    p_gap_explanation: null,
+  }
+
+  it('cancels the orphaned reversal through cancel_orphaned_entry when the CAS loses', async () => {
+    const { supabase, jeUpdates, lineDeletes } = setup({ casData: [] })
+
+    await expect(
+      reverseEntry(supabase as never, 'company-1', 'user-1', 'entry-1'),
+    ).rejects.toThrow(/already reversed/i)
+
+    expect(supabase.rpc).toHaveBeenCalledWith('cancel_orphaned_entry', expectedRpcArgs)
+    expect(jeUpdates).not.toContainEqual({ status: 'cancelled' })
+    expect(lineDeletes).toHaveLength(0)
+  })
+
+  it('cancels through cancel_orphaned_entry when posting the reversal fails', async () => {
+    const { supabase, jeUpdates, lineDeletes } = setup({ postError: { message: 'post failed' } })
+
+    await expect(
+      reverseEntry(supabase as never, 'company-1', 'user-1', 'entry-1'),
+    ).rejects.toThrow(BookkeepingDatabaseError)
+
+    expect(supabase.rpc).toHaveBeenCalledWith('cancel_orphaned_entry', expectedRpcArgs)
+    expect(jeUpdates).not.toContainEqual({ status: 'cancelled' })
+    expect(lineDeletes).toHaveLength(0)
+  })
+})
+
+describe('cancelOrphanedEntry', () => {
+  it('calls the gated RPC with the actor and the optional gap explanation', async () => {
+    const rpc = vi.fn().mockResolvedValue({ data: { cancelled: true }, error: null })
+
+    const result = await cancelOrphanedEntry({ rpc } as never, 'company-1', 'user-1', 'je-1', {
+      gapExplanation: 'Automatiskt makulerad: test',
+    })
+
+    expect(result).toEqual({ error: null })
+    expect(rpc).toHaveBeenCalledWith('cancel_orphaned_entry', {
+      p_company_id: 'company-1',
+      p_entry_id: 'je-1',
+      p_user_id: 'user-1',
+      p_gap_explanation: 'Automatiskt makulerad: test',
+    })
+  })
+
+  it('returns the refusal instead of throwing', async () => {
+    const refusal = { message: 'was not posted within the last 15 minutes', code: '55000' }
+    const rpc = vi.fn().mockResolvedValue({ data: null, error: refusal })
+
+    await expect(
+      cancelOrphanedEntry({ rpc } as never, 'company-1', 'user-1', 'je-1'),
+    ).resolves.toEqual({ error: refusal })
+  })
+
+  it('never throws when the client rejects', async () => {
+    const rpc = vi.fn().mockRejectedValue(new Error('network blip'))
+
+    await expect(
+      cancelOrphanedEntry({ rpc } as never, 'company-1', 'user-1', 'je-1'),
+    ).resolves.toEqual({ error: { message: 'network blip' } })
   })
 })
 

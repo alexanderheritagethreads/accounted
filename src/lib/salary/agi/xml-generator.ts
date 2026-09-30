@@ -47,6 +47,13 @@ import { escapeXml } from '@/lib/xml/escape'
  * (the input for högkostnadsskyddet för sjuklönekostnader) is only valid up
  * to period 202406: the scheme was abolished 2024-07-01 and Skatteverket
  * rejects the whole file when the field appears in a later period.
+ *
+ * Växa-stöd never reaches the AGI either. FK062 ForstaAnstalld and FK063
+ * VaxaStod have no valid period after 202512 (Teknisk beskrivning 1.1.18.2):
+ * from 202601 the IU carries the full avgifter and the employer applies for
+ * the refund separately (Lag 2025:1334, lib/salary/vaxa-stod.ts). Payroll
+ * can only be calculated from 2026, so no declaration generated here has a
+ * period in which the fields were valid.
  */
 
 const INSTANS_NS = 'http://xmls.skatteverket.se/se/skatteverket/da/instans/schema/1.1'
@@ -98,15 +105,6 @@ export interface AGIEmployeeData {
    * AGI declaration filed.
    */
   removed?: boolean
-  /**
-   * Växa-stöd flag: emitted as one of two mutually exclusive boolean fields:
-   *   'forsta_anstalld' → FK062 ForstaAnstalld (anställd före 2024-05-01)
-   *   'vaxa_stod'       → FK063 VaxaStod      (anställd efter 2024-04-30)
-   * Set when the employer claims växa-stöd reduction (10.21% avgifter rate)
-   * for this employee in the period. The cutoff date is hard-coded in the
-   * spec (Prop. 2023/24:80, see Skatteverket FK 1.7 revisionshistorik 1.19).
-   */
-  vaxaStod?: 'forsta_anstalld' | 'vaxa_stod'
   /**
    * FK048 FormanHarJusterats: set when any benefit value on this IU has
    * been adjusted away from the standard schablon. Reflects
@@ -552,15 +550,6 @@ export function generateAGIXml(
     // FK048: FormanHarJusterats (any benefit value adjusted away from schablon)
     if (emp.benefitsAdjusted) {
       lines.push('        <gem:FormanHarJusterats faltkod="048">1</gem:FormanHarJusterats>')
-    }
-
-    // FK062 / FK063: Växa-stöd. Mutually exclusive: FK062 for employees
-    // hired before 2024-05-01 (legacy "första anställda"-reglerna), FK063
-    // for those hired 2024-05-01 and later (utvidgat växa-stöd).
-    if (emp.vaxaStod === 'forsta_anstalld') {
-      lines.push('        <gem:ForstaAnstalld faltkod="062">1</gem:ForstaAnstalld>')
-    } else if (emp.vaxaStod === 'vaxa_stod') {
-      lines.push('        <gem:VaxaStod faltkod="063">1</gem:VaxaStod>')
     }
 
     // Sjuk/VAB/föräldra-dagar flows elsewhere:

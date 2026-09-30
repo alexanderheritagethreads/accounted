@@ -1307,6 +1307,7 @@ export const ARCHIVE_EXCLUDED_TABLES: Record<string, string> = {
   sie_period_read_leases: 'short-lived coordination leases; no accounting content',
   // Operator-side Peppol access grant and sending cap: platform configuration, not the company's räkenskapsinformation.
   peppol_access: 'platform access grant (status, sending cap); no bookkeeping content',
+  peppol_alerts: 'which Peppol problems the health check already mailed about (dedupe claims); the deliveries and inbound documents themselves are exported',
   agent_conversations: 'AI assistant state, not räkenskapsinformation',
   agent_memory: 'AI assistant state, not räkenskapsinformation',
   agent_profiles: 'AI assistant state, not räkenskapsinformation',

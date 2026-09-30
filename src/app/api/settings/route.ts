@@ -72,7 +72,13 @@ export const PUT = withRouteContext(
     )
     if (!outcome.ok) return settingsFailureResponse(outcome, log, requestId)
     if (outcome.dryRun) return NextResponse.json({ data: outcome.preview })
-    return NextResponse.json({ data: outcome.data.settings })
+    // The save itself registers the codes already on journal lines when it
+    // turns dimensions on; the count lets the toggle confirm it without a
+    // second scan (null: not attempted, or the registration failed).
+    return NextResponse.json({
+      data: outcome.data.settings,
+      dimension_codes_imported: outcome.data.dimension_codes_imported,
+    })
   },
   // company_settings is writable by owner/admin only (RLS,
   // user_is_company_admin). With requireWrite a `member` reached the UPDATE,

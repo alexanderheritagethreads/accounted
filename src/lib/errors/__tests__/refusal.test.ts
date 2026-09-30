@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { getStructuredError } from '../get-structured-error'
 import { getErrorEntry } from '../structured-errors'
-import { codedRefusal, fieldValidationError, serviceRefusal, zodFieldIssues } from '../refusal'
+import { codedRefusal, fieldValidationError, serviceRefusal, zodErrorFieldIssues, zodFieldIssues } from '../refusal'
 
 describe('codedRefusal', () => {
   it('keeps the code, takes message_en from the thrown text and message_sv from the registry', () => {
@@ -115,6 +115,13 @@ describe('zodFieldIssues', () => {
     const parsed = schema.safeParse(input)
     if (parsed.success) throw new Error('expected a failure')
     expect(zodFieldIssues(parsed.error, input)[0]).toMatchObject({ field: 'days', en: expect.stringMatching(/>=25/) })
+  })
+
+  it('without the input (zodErrorFieldIssues) gives the same reasons, read from what Zod says it received', () => {
+    const input = { ...valid, days: undefined, rate: 'x', name: null, nested: {}, kind: 'weekly' }
+    const parsed = schema.safeParse(input)
+    if (parsed.success) throw new Error('expected a failure')
+    expect(zodErrorFieldIssues(parsed.error)).toEqual(zodFieldIssues(parsed.error, input))
   })
 })
 

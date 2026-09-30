@@ -4,7 +4,7 @@ import { fetchEntryLines, type EntryLinesQuery } from '@/lib/bookkeeping/entry-l
 import { getOpeningBalances } from '@/lib/reports/opening-balances'
 import { roundOre, ORE_TOLERANCE } from '@/lib/bokslut/rounding'
 import type { EntityType } from '@/types'
-import { movedOffCarry, remainingCarry, type CarryEntry } from './prior-result-guard'
+import { movedOffCarry, overMovedCarry, remainingCarry, type CarryEntry } from './prior-result-guard'
 
 export interface PriorResultCarry {
   /** The form's "årets resultat" account (aktiebolag 2099, ideell förening 2069). */
@@ -18,6 +18,11 @@ export interface PriorResultCarry {
   ibNet: number
   /** What is still carried after the automatic omföring and hand-booked dispositions. */
   remaining: number
+  /**
+   * What the dispositions moved beyond the carry, credit-positive and so of
+   * the opposite sign to `ibNet` (see overMovedCarry); 0 when they did not.
+   */
+  overMoved: number
   /** Vouchers (e.g. "A12") that moved part or all of it. */
   movedBy: string[]
 }
@@ -40,13 +45,6 @@ export async function priorResultCarry(
 ): Promise<PriorResultCarry | null> {
   const accounts = resultClosingAccounts(entityType)
   if (!accounts.priorYearCarry) return null
-  const retainedAccount = retainedResultAccount(entityType)
-  const base = {
-    resultAccount: accounts.closing,
-    resultAccountName: accounts.closingName,
-    priorResultAccount: accounts.priorYearCarry,
-    retainedAccount,
-  }
 
   // Read the result account from the period's INGÅENDE BALANS only: that is
   // what was carried in. getOpeningBalances reads the committed opening_balance
@@ -55,14 +53,51 @@ export async function priorResultCarry(
   const { balances } = await getOpeningBalances(supabase, companyId, period)
   const ib = balances.get(accounts.closing)
   const ibNet = ib ? roundOre(ib.credit - ib.debit) : 0
-  if (Math.abs(ibNet) < ORE_TOLERANCE) return { ...base, ibNet: 0, remaining: 0, movedBy: [] }
+  return carryAfterDispositions(supabase, companyId, period.id, entityType, ibNet)
+}
+
+/**
+ * The carry `ibNet` (credit-positive) into the period `periodId` after the
+ * dispositions already booked there (see movedOffCarry). `periodId` null: the
+ * period does not exist yet, so nothing in it has moved the carry.
+ *
+ * priorResultCarry reads `ibNet` from the period's ingående balans. The
+ * year-end previews pass the ingående balans the close WILL write (this year's
+ * closing balance on the result account) before it exists, so the omföring
+ * they disclose comes from the same computation the close uses.
+ */
+export async function carryAfterDispositions(
+  supabase: SupabaseClient,
+  companyId: string,
+  periodId: string | null,
+  entityType: EntityType,
+  ibNet: number,
+): Promise<PriorResultCarry | null> {
+  const accounts = resultClosingAccounts(entityType)
+  if (!accounts.priorYearCarry) return null
+  const retainedAccount = retainedResultAccount(entityType)
+  const base = {
+    resultAccount: accounts.closing,
+    resultAccountName: accounts.closingName,
+    priorResultAccount: accounts.priorYearCarry,
+    retainedAccount,
+  }
+  if (Math.abs(ibNet) < ORE_TOLERANCE) return { ...base, ibNet: 0, remaining: 0, overMoved: 0, movedBy: [] }
 
   const dispositionAccounts = [...new Set([accounts.priorYearCarry, retainedAccount])].filter(
     (account) => account !== accounts.closing,
   )
-  const entries = await fetchCarryEntries(supabase, companyId, period.id, [accounts.closing, ...dispositionAccounts])
+  const entries = periodId
+    ? await fetchCarryEntries(supabase, companyId, periodId, [accounts.closing, ...dispositionAccounts])
+    : []
   const moved = movedOffCarry(entries, accounts.closing, dispositionAccounts, ibNet)
-  return { ...base, ibNet, remaining: remainingCarry(ibNet, moved.net), movedBy: moved.vouchers }
+  return {
+    ...base,
+    ibNet,
+    remaining: remainingCarry(ibNet, moved.net),
+    overMoved: overMovedCarry(ibNet, moved.net),
+    movedBy: moved.vouchers,
+  }
 }
 
 /** Live (posted) entries in the period with their lines on `accounts`, one item per entry. */

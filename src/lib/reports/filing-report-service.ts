@@ -465,6 +465,8 @@ export interface DimensionPnlInput {
   period_id: string
   /** SIE dimension number, as a string: '6' projekt (default), '1' kostnadsställe. */
   dim_no: string
+  /** The resultatrapport's window inside the period; each bound defaults to the period's. */
+  from_date?: string
   to_date?: string
 }
 
@@ -474,15 +476,16 @@ export async function getDimensionPnl(
 ): Promise<OperationOutcome<DimensionPnlReport>> {
   const period = await loadReportPeriod(ctx, input.period_id)
   if (!period.ok) return period
-  if (input.to_date) {
-    const parsed = parseReportDateRange(new URLSearchParams({ to_date: input.to_date }), period.period)
-    if (!parsed.ok) return { ok: false, code: 'VALIDATION_ERROR', messageSv: parsed.error }
-  }
+  // The dashboard route's rules: inside the period, from not after to.
+  const range = new URLSearchParams()
+  if (input.from_date) range.set('from_date', input.from_date)
+  if (input.to_date) range.set('to_date', input.to_date)
+  const parsed = parseReportDateRange(range, period.period)
+  if (!parsed.ok) return { ok: false, code: 'VALIDATION_ERROR', messageSv: parsed.error }
   try {
-    // Only toDate: the matrix is cumulative from period_start by design
-    // (closing-balance semantics; see lib/reports/dimension-pnl.ts).
     const data = await generateDimensionPnl(ctx.supabase, ctx.companyId, input.period_id, input.dim_no, {
-      toDate: input.to_date,
+      fromDate: parsed.range.fromDate,
+      toDate: parsed.range.toDate,
     })
     return { ok: true, data }
   } catch (err) {

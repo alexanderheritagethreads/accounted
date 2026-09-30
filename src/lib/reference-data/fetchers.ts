@@ -70,7 +70,7 @@ export async function fetchCashAccounts(companyId: string): Promise<CashAccountW
   const supabase = createClient()
   const { data, error } = await supabase
     .from('cash_accounts')
-    .select('*, bank_connection:bank_connections(bank_name)')
+    .select('*, bank_connection:bank_connections(bank_name, status)')
     .eq('company_id', companyId)
     .order('is_primary', { ascending: false })
     .order('ledger_account', { ascending: true })

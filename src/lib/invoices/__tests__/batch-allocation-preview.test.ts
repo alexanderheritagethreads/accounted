@@ -59,6 +59,27 @@ describe('buildBatchAllocationPreview', () => {
     expect(preview.fx).toBe('none')
   })
 
+  // Feedback 708521: a batch of ONE invoice is not a samlingsbetalning. The RPC
+  // (20260929015251) names it like the single-invoice match routes; the
+  // preview states that wording without the invoice number and counterparty.
+  it('one invoice: the single-invoice wording, without number and counterparty', () => {
+    const supplier = buildBatchAllocationPreview({
+      transaction: { amount: -1250, currency: 'SEK', date: '2026-01-16' },
+      bankAccount: '1930',
+      allocations: [{ kind: 'supplier_invoice', supplier_invoice_id: INV_A, amount: 1250 }],
+      invoices: { [INV_A]: { currency: 'SEK', remaining_amount: 1250, total: 1250 } },
+    })
+    expect(supplier.description).toBe('Utbetalning leverantörsfaktura')
+
+    const customer = buildBatchAllocationPreview({
+      transaction: { amount: 500, currency: 'SEK', date: '2026-06-05' },
+      bankAccount: '1930',
+      allocations: [{ kind: 'customer_invoice', invoice_id: INV_A, amount: 500 }],
+      invoices: { [INV_A]: { currency: 'SEK', remaining_amount: 500, total: 500 } },
+    })
+    expect(customer.description).toBe('Inbetalning kundfaktura')
+  })
+
   it('sub-krona öresavrundning: clears the full remaining and lands the residual on 3740 (#1717)', () => {
     // Customer paid 1 250 kr on a 1 250,40 kr invoice: short by 40 öre = Dr 3740.
     const short = buildBatchAllocationPreview({

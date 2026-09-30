@@ -29,8 +29,8 @@ export const GET = withRouteContext(
     // UI-visibility flag only. Agents/MCP and SIE import must operate on the
     // registry regardless of the toggle; the security boundary is company
     // scoping (withRouteContext + RLS).
-    const { supabase, companyId, user, log, requestId } = ctx
-    const outcome = await listDimensions({ supabase, companyId, userId: user.id, log })
+    const { supabase, companyId, log, requestId } = ctx
+    const outcome = await listDimensions({ supabase, companyId, log })
     if (!outcome.ok) return sessionFailureResponse(outcome, log, requestId)
     if (outcome.dryRun) return NextResponse.json(outcome.preview)
     return NextResponse.json({ dimensions: outcome.data.dimensions })

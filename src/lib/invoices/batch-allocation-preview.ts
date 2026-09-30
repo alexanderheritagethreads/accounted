@@ -14,16 +14,22 @@ import { roundOre } from '@/lib/money'
  * cash account, else the only enabled one in its currency, else 1930), which
  * is resolveSettlementAccount's answer (lib/bookkeeping/settlement-account.ts).
  * This file used to hardcode 1930 after that patch and previewed a bank leg
- * the RPC no longer posts (issue #3097). When the RPC changes, this file
+ * the RPC no longer posts (issue #3097). Since 20260929015251 the RPC names a
+ * single invoice in the header ("Utbetalning leverantörsfaktura <number>,
+ * <supplier>", as the single-invoice match routes do) and keeps
+ * "Samlingsbetalning <date>" for two or more. When the RPC changes, this file
  * changes with it; the pg-real suites (tests/pg/match-batch-allocate.pg.test.ts,
- * tests/pg/match-batch-preview-parity.pg.test.ts) are the authority.
+ * tests/pg/match-batch-preview-parity.pg.test.ts,
+ * tests/pg/match-batch-allocate-series-description.pg.test.ts) are the
+ * authority.
  *
  * Why a projection and not a dry run: the RPC posts inside one transaction
  * and has no read-only mode, and an API customer's review flow needs the
  * exact konto, debet, kredit and date before `approve_pending_operation`
  * runs, not after. Line descriptions here are neutral on purpose (GDPR
  * Art. 25, same posture as the rest of preview_data): the RPC writes invoice
- * numbers and supplier names on its own lines, the preview does not.
+ * numbers and supplier names on its own lines and on a single invoice's
+ * header; the preview does not.
  */
 
 export interface BatchAllocationPreviewTransaction {
@@ -59,6 +65,11 @@ export interface BatchAllocationPreviewLine {
 
 export interface BatchAllocationPreview {
   entry_date: string
+  /**
+   * The verifikat header. Two or more invoices: exactly the RPC's text. One
+   * invoice: the RPC's wording without the invoice number and counterparty it
+   * appends ("Utbetalning leverantörsfaktura").
+   */
   description: string
   lines: BatchAllocationPreviewLine[]
   /** Debits equal credits to the öre. Always true for a batch the RPC accepts. */
@@ -197,9 +208,14 @@ export function buildBatchAllocationPreview(input: {
   const debits = roundOre(lines.reduce((sum, l) => sum + l.debit, 0))
   const credits = roundOre(lines.reduce((sum, l) => sum + l.credit, 0))
 
+  // One invoice: the RPC appends "<number>, <counterparty>" to this wording;
+  // the preview leaves both out, like the neutral line descriptions.
+  const singleInvoiceDescription = isCustomer ? 'Inbetalning kundfaktura' : 'Utbetalning leverantörsfaktura'
+  const batchDescription = `${isCustomer ? 'Samlingsinbetalning' : 'Samlingsbetalning'} ${entryDate}`
+
   return {
     entry_date: entryDate,
-    description: `${isCustomer ? 'Samlingsinbetalning' : 'Samlingsbetalning'} ${entryDate}`,
+    description: sorted.length === 1 ? singleInvoiceDescription : batchDescription,
     lines,
     balanced: Math.abs(debits - credits) < 0.005,
     fx,

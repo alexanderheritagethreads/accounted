@@ -376,4 +376,19 @@ describe('computeVatReport', () => {
       computeVatReport({ period_type: 'monthly', year: 1900, period: 1 }, 'c', supabase)
     ).rejects.toThrow(/year must be between/)
   })
+
+  it('answers a missing argument with VALIDATION_ERROR instead of computing on NaN', async () => {
+    const supabase = mockSupabaseWithLines([])
+    // A monthly call without `period` used to pass the range check as NaN
+    // (NaN < 1 is false) and reach the period-date arithmetic.
+    for (const args of [
+      { period_type: 'monthly', year: 2026 },
+      { period_type: 'quarterly', period: 1 },
+      { year: 2026, period: 1 },
+    ]) {
+      await expect(computeVatReport(args, 'c', supabase), JSON.stringify(args)).rejects.toMatchObject({
+        code: 'VALIDATION_ERROR',
+      })
+    }
+  })
 })
