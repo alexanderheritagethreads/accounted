@@ -1318,3 +1318,109 @@ describe('withApiV1: ctx.checkCompanyAccess (company resolved from a resource ro
     expect(seen.denied?.status).toBe(404)
   })
 })
+
+describe('withApiV1: ctx.companyWritable (the URL company gate verdict)', () => {
+  // A read route (the payslip PDF) persists a side effect only when the
+  // caller could also write the URL company. These pin what the extracted
+  // gate hands the handler, so a refactor of the gate cannot flip it.
+  function key(extra: Record<string, unknown>) {
+    mockValidate.mockResolvedValue({
+      userId: 'user-1',
+      companyId: 'company-1',
+      scopes: ['payroll:read', 'payroll:write', 'operations:read'],
+      mode: 'live',
+      allowedCompanyIds: null,
+      readOnlyCompanyIds: null,
+      ...extra,
+    })
+  }
+
+  async function writableOnUrlCompany(): Promise<boolean | undefined> {
+    const seen: { writable?: boolean } = {}
+    const handler = withApiV1<{ params: Promise<{ companyId: string }> }>(
+      'salary-runs.payslip.pdf',
+      async (_req, ctx) => {
+        seen.writable = ctx.companyWritable
+        return ok({ ok: true }, { requestId: ctx.requestId })
+      },
+      { requireScope: 'payroll:read' },
+    )
+    const res = await handler(
+      makeRequest('https://x.test/api/v1/companies/company-1/salary-runs/r/payslips/e/pdf', {
+        headers: { Authorization: 'Bearer gnubok_sk_x' },
+      }),
+      companyParams('company-1'),
+    )
+    expect(res.status).toBe(200)
+    return seen.writable
+  }
+
+  it('is true for an owner on an unrestricted key', async () => {
+    key({})
+    mockServiceClient.mockReturnValue(makeSupabaseStub({ company_id: 'company-1', role: 'owner' }))
+    expect(await writableOnUrlCompany()).toBe(true)
+  })
+
+  it('is true for a non-owner member the seat gate lets through', async () => {
+    key({ allowedCompanyIds: ['company-1'] })
+    mockServiceClient.mockReturnValue(makeSupabaseStub({ company_id: 'company-1', role: 'admin' }))
+    expect(await writableOnUrlCompany()).toBe(true)
+  })
+
+  it('is false for a viewer membership', async () => {
+    key({})
+    mockServiceClient.mockReturnValue(makeSupabaseStub({ company_id: 'company-1', role: 'viewer' }))
+    expect(await writableOnUrlCompany()).toBe(false)
+  })
+
+  it('is false when the key has read-only access to the URL company (case-insensitive)', async () => {
+    key({ allowedCompanyIds: ['company-1'], readOnlyCompanyIds: ['COMPANY-1'] })
+    mockServiceClient.mockReturnValue(makeSupabaseStub({ company_id: 'company-1', role: 'owner' }))
+    expect(await writableOnUrlCompany()).toBe(false)
+  })
+
+  it('is false on a company-less route, even after ctx.checkCompanyAccess passes', async () => {
+    key({})
+    mockServiceClient.mockReturnValue(makeSupabaseStub({ company_id: 'company-2', role: 'owner' }))
+    const seen: { before?: boolean; denied?: Response | null; after?: boolean } = {}
+    const handler = withApiV1<{ params: Promise<{ id: string }> }>(
+      'operations.get',
+      async (_req, ctx) => {
+        seen.before = ctx.companyWritable
+        seen.denied = await ctx.checkCompanyAccess('company-2')
+        seen.after = ctx.companyWritable
+        return ok({ ok: true }, { requestId: ctx.requestId })
+      },
+      { requireScope: 'operations:read' },
+    )
+
+    const res = await handler(
+      makeRequest('https://x.test/api/v1/operations/op-1', {
+        headers: { Authorization: 'Bearer gnubok_sk_x' },
+      }),
+      { params: Promise.resolve({ id: 'op-1' }) },
+    )
+
+    expect(res.status).toBe(200)
+    expect(seen.denied).toBeNull()
+    expect(seen.before).toBe(false)
+    expect(seen.after).toBe(false)
+  })
+
+  it('is false on a public endpoint context, with or without a valid key', async () => {
+    key({})
+    const seen: boolean[] = []
+    const handler = withApiV1('health.check', async (_req, ctx) => {
+      seen.push(ctx.companyWritable)
+      return ok({ status: 'ok' }, { requestId: ctx.requestId })
+    })
+
+    await handler(makeRequest('https://x.test/api/v1/health'), emptyParams())
+    await handler(
+      makeRequest('https://x.test/api/v1/health', { headers: { Authorization: 'Bearer gnubok_sk_x' } }),
+      emptyParams(),
+    )
+
+    expect(seen).toEqual([false, false])
+  })
+})
