@@ -20,10 +20,17 @@
  * documents still get no automatic VAT row. Client-only role and provenance
  * fields stay off the book-direct request: `toBookDirectPayloadLine` is the
  * payload mapping.
+ *
+ * No VAT row is generated for a company that is not VAT-registered: it has
+ * no avdragsrätt (13 kap. ML 2023:200), so the seller's VAT is part of the
+ * cost (`sellerVatIsCost`, the rule the bank and inbox paths already apply).
+ * A generated row the user deleted stays deleted for the rest of the dialog
+ * session; a deleted VAT row leaves the whole total on cost.
  */
 
 import type { InvoiceExtractionResult } from '@/types'
 import { roundOre } from '@/lib/money'
+import { sellerVatIsCost, type VatRegistration } from '@/lib/bookkeeping/vat-registration'
 
 export type BookDirectLineRole = 'cost' | 'vat' | 'settlement'
 
@@ -47,6 +54,21 @@ export interface BookDirectFormLine {
    * resolved cash account; an explicit commit does not.
    */
   account_edited?: boolean
+}
+
+export interface BookDirectPrefillOptions {
+  /**
+   * company_settings.vat_registered as loaded. Only an explicit false changes
+   * the prefill (no VAT row, the full total on cost); null or undefined, as
+   * while settings load, prefills as for a registered company.
+   */
+  vatRegistered?: VatRegistration
+  /**
+   * Generated roles the user deleted in this dialog session. They are never
+   * generated again. A suppressed VAT role also keeps the VAT amount on cost,
+   * so the refreshed rows still balance without the deleted row.
+   */
+  suppressedRoles?: Iterable<BookDirectLineRole>
 }
 
 export interface BookDirectPayloadLine {
@@ -148,11 +170,32 @@ export function buildBookDirectPrefillLines(
   extracted: InvoiceExtractionResult | null,
   selectedTransactionAmount: number | null = null,
   bankAccount: string = DEFAULT_SETTLEMENT_ACCOUNT,
+  options: BookDirectPrefillOptions = {},
 ): BookDirectFormLine[] {
-  const total = canonicalTotal(extracted, selectedTransactionAmount)
+  const suppressed = new Set<BookDirectLineRole>(options.suppressedRoles ?? [])
+  // Seller VAT is cost for a non-registered company (reverse charge never
+  // reaches this prefill: a foreign document gets no VAT row anyway), and a
+  // VAT row the user deleted is not split out again.
+  const splitVat = !sellerVatIsCost(options.vatRegistered, false) && !suppressed.has('vat')
+  const lines = generatedPrefillLines(
+    extracted,
+    canonicalTotal(extracted, selectedTransactionAmount),
+    bankAccount,
+    splitVat,
+  )
+  if (suppressed.size === 0) return lines
+  return lines.filter((line) => !isGeneratedRole(line.role) || !suppressed.has(line.role))
+}
+
+function generatedPrefillLines(
+  extracted: InvoiceExtractionResult | null,
+  total: number | null,
+  bankAccount: string,
+  splitVat: boolean,
+): BookDirectFormLine[] {
   if (total == null) return unresolvedPair()
 
-  const vat = sekDocumentVat(extracted, documentCurrency(extracted))
+  const vat = splitVat ? sekDocumentVat(extracted, documentCurrency(extracted)) : null
   const settlement = generatedLine('settlement', bankAccount, '', oreString(total))
 
   // VAT above the total cannot produce a cost debit. Leave the cost amount
@@ -241,6 +284,8 @@ function mergeGenerated(existing: BookDirectFormLine, next: BookDirectFormLine):
  * the new default, not the account or dimensions of a neighbour. A role the
  * new prefill does not have is dropped, and its account and dimensions go
  * with it. Manual rows (no role) stay after the generated legs, unchanged.
+ * A row the user deleted must not come back as a missing role: build `next`
+ * with that role in `suppressedRoles`.
  *
  * A line set with no generated roles at all is user-owned: an applied
  * template, or every generated row deleted and only manual rows left. The

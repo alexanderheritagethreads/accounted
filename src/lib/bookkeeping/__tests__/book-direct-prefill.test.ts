@@ -65,6 +65,25 @@ function chooseCost(lines: BookDirectFormLine[], account: string): BookDirectFor
   ))
 }
 
+/** The dialog's delete button on a generated row: the row goes and its role is suppressed. */
+function deleteRole(
+  lines: BookDirectFormLine[],
+  role: BookDirectLineRole,
+  suppressed: Set<BookDirectLineRole>,
+): BookDirectFormLine[] {
+  suppressed.add(role)
+  return lines.filter((line) => line.role !== role)
+}
+
+/** The dialog's double-click fill on the cost debit: the amount that balances the other rows. */
+function fillCostBalance(lines: BookDirectFormLine[]): BookDirectFormLine[] {
+  const others = sums(lines.filter((line) => line.role !== 'cost'))
+  const fill = roundOre(others.credit - others.debit)
+  return lines.map((line) => (
+    line.role === 'cost' ? withExplicitAccountEdit(line, { debit_amount: String(fill), credit_amount: '' }) : line
+  ))
+}
+
 function roleLine(
   role: BookDirectLineRole,
   account: string,
@@ -209,6 +228,86 @@ describe('buildBookDirectPrefillLines', () => {
       { role: 'settlement', account: '1930', debit: '', credit: '10.08' },
     ])
     expect(sums(lines)).toEqual({ debit: 10.08, credit: 10.08, balanced: true })
+  })
+
+  it('leaves suppressed roles out, and a suppressed VAT role keeps the VAT on cost', () => {
+    expect(pairs(buildBookDirectPrefillLines(SEK_RECEIPT, -1250, '1930', { suppressedRoles: ['vat'] }))).toEqual([
+      { role: 'cost', account: '', debit: '1250', credit: '' },
+      { role: 'settlement', account: '1930', debit: '', credit: '1250' },
+    ])
+    expect(pairs(buildBookDirectPrefillLines(SEK_RECEIPT, null, '1930', { suppressedRoles: ['settlement'] }))).toEqual([
+      { role: 'cost', account: '', debit: '1000', credit: '' },
+      { role: 'vat', account: '2641', debit: '250', credit: '' },
+    ])
+    expect(pairs(buildBookDirectPrefillLines(SEK_RECEIPT, null, '1930', { suppressedRoles: ['cost'] }))).toEqual([
+      { role: 'vat', account: '2641', debit: '250', credit: '' },
+      { role: 'settlement', account: '1930', debit: '', credit: '1250' },
+    ])
+  })
+})
+
+describe('VAT registration', () => {
+  it('puts the whole total on cost and generates no 2641 row for a company that is not VAT-registered', () => {
+    const noTransaction = buildBookDirectPrefillLines(SEK_RECEIPT, null, '1930', { vatRegistered: false })
+    expect(pairs(noTransaction)).toEqual([
+      { role: 'cost', account: '', debit: '1250', credit: '' },
+      { role: 'settlement', account: '1930', debit: '', credit: '1250' },
+    ])
+    expect(sums(noTransaction).balanced).toBe(true)
+
+    const withTransaction = buildBookDirectPrefillLines(SEK_RECEIPT, -1250, '1940', { vatRegistered: false })
+    expect(pairs(withTransaction)).toEqual([
+      { role: 'cost', account: '', debit: '1250', credit: '' },
+      { role: 'settlement', account: '1940', debit: '', credit: '1250' },
+    ])
+    expect(sums(withTransaction).balanced).toBe(true)
+
+    // A bank amount that differs from the document still lands on cost in full.
+    expect(pairs(buildBookDirectPrefillLines(SEK_RECEIPT, -1300, '1930', { vatRegistered: false }))).toEqual([
+      { role: 'cost', account: '', debit: '1300', credit: '' },
+      { role: 'settlement', account: '1930', debit: '', credit: '1300' },
+    ])
+    // No VAT row to exceed the total: the cost is the total.
+    expect(pairs(buildBookDirectPrefillLines(receipt({ total: 200, vat: 250 }), null, '1930', { vatRegistered: false }))).toEqual([
+      { role: 'cost', account: '', debit: '200', credit: '' },
+      { role: 'settlement', account: '1930', debit: '', credit: '200' },
+    ])
+  })
+
+  it('changes nothing unless vat_registered is explicitly false', () => {
+    for (const vatRegistered of [true, null, undefined]) {
+      for (const amount of [null, -1250]) {
+        const lines = buildBookDirectPrefillLines(SEK_RECEIPT, amount, '1930', { vatRegistered })
+        expect(pairs(lines)).toEqual(pairs(buildBookDirectPrefillLines(SEK_RECEIPT, amount, '1930')))
+        expect(lines.find((line) => line.role === 'vat')?.debit_amount).toBe('250')
+      }
+    }
+  })
+
+  it('drops a VAT row prefilled while settings loaded once vat_registered resolves to false', () => {
+    // Settings unknown at open: the receipt prefills as for a registered company.
+    const seeded = chooseCost(buildBookDirectPrefillLines(SEK_RECEIPT, null, '1930'), '5410')
+    expect(seeded.some((line) => line.role === 'vat')).toBe(true)
+
+    const resolved = reconcileBookDirectLines(
+      seeded,
+      buildBookDirectPrefillLines(SEK_RECEIPT, null, '1930', { vatRegistered: false }),
+    )
+    expect(pairs(resolved)).toEqual([
+      { role: 'cost', account: '5410', debit: '1250', credit: '' },
+      { role: 'settlement', account: '1930', debit: '', credit: '1250' },
+    ])
+
+    const picked = reconcileBookDirectLines(
+      resolved,
+      buildBookDirectPrefillLines(SEK_RECEIPT, -1250, '1940', { vatRegistered: false }),
+    )
+    expect(pairs(picked)).toEqual([
+      { role: 'cost', account: '5410', debit: '1250', credit: '' },
+      { role: 'settlement', account: '1940', debit: '', credit: '1250' },
+    ])
+    expect(sums(picked).balanced).toBe(true)
+    expect(JSON.stringify(picked)).not.toContain('2641')
   })
 })
 
@@ -366,7 +465,45 @@ describe('reconcileBookDirectLines', () => {
     expect(lines.find((line) => line.role === 'vat')?.debit_amount).toBe('250')
   })
 
-  it('does not transfer a deleted VAT row onto settlement, and a missing VAT role gets the default', () => {
+  it('does not bring back a deleted VAT row: delete VAT, fill balance, pick -1250 gives cost 1250, bank 1250, no 2641', () => {
+    const suppressed = new Set<BookDirectLineRole>()
+    let lines = chooseCost(buildBookDirectPrefillLines(SEK_RECEIPT, null, '1930'), '5410')
+    lines = deleteRole(lines, 'vat', suppressed)
+    lines = fillCostBalance(lines)
+    expect(sums(lines)).toEqual({ debit: 1250, credit: 1250, balanced: true })
+
+    lines = reconcileBookDirectLines(
+      lines,
+      buildBookDirectPrefillLines(SEK_RECEIPT, -1250, '1930', { suppressedRoles: suppressed }),
+    )
+    expect(pairs(lines)).toEqual([
+      { role: 'cost', account: '5410', debit: '1250', credit: '' },
+      { role: 'settlement', account: '1930', debit: '', credit: '1250' },
+    ])
+    expect(sums(lines).balanced).toBe(true)
+    expect(JSON.stringify(lines)).not.toContain('2641')
+
+    // The cash account resolving, a different amount and clearing the
+    // selection all re-run the prefill; none of them brings the row back.
+    lines = reconcileBookDirectLines(
+      lines,
+      buildBookDirectPrefillLines(SEK_RECEIPT, -1300, '1940', { suppressedRoles: suppressed }),
+    )
+    expect(pairs(lines)).toEqual([
+      { role: 'cost', account: '5410', debit: '1300', credit: '' },
+      { role: 'settlement', account: '1940', debit: '', credit: '1300' },
+    ])
+    lines = reconcileBookDirectLines(
+      lines,
+      buildBookDirectPrefillLines(SEK_RECEIPT, null, '1940', { suppressedRoles: suppressed }),
+    )
+    expect(pairs(lines)).toEqual([
+      { role: 'cost', account: '5410', debit: '1250', credit: '' },
+      { role: 'settlement', account: '1940', debit: '', credit: '1250' },
+    ])
+  })
+
+  it('does not move a deleted VAT row onto settlement, and keeps committed accounts, dimensions and manual rows', () => {
     const manual = { account_number: '6071', debit_amount: '15', credit_amount: '' }
     const current: BookDirectFormLine[] = [
       roleLine('cost', '5410', '1000', '', { account_edited: true, dimensions: { '1': 'COST' } }),
@@ -378,19 +515,57 @@ describe('reconcileBookDirectLines', () => {
       manual,
     ]
 
-    const lines = reconcileBookDirectLines(current, buildBookDirectPrefillLines(SEK_RECEIPT, -1250, '1940'))
+    const lines = reconcileBookDirectLines(
+      current,
+      buildBookDirectPrefillLines(SEK_RECEIPT, -1250, '1940', { suppressedRoles: ['vat'] }),
+    )
 
-    expect(lines.find((line) => line.role === 'vat')).toMatchObject({
-      account_number: '2641',
-      debit_amount: '250',
-      generated_account: '2641',
-    })
-    expect(lines.find((line) => line.role === 'vat')?.dimensions).toBeUndefined()
-    expect(lines.find((line) => line.role === 'settlement')).toMatchObject({
-      account_number: '1931',
-      dimensions: { '1': 'BANK' },
-    })
+    expect(pairs(lines)).toEqual([
+      { role: 'cost', account: '5410', debit: '1250', credit: '' },
+      { role: 'settlement', account: '1931', debit: '', credit: '1250' },
+      { role: null, account: '6071', debit: '15', credit: '' },
+    ])
+    expect(lines[0]?.dimensions).toEqual({ '1': 'COST' })
+    expect(lines[1]?.dimensions).toEqual({ '1': 'BANK' })
     expect(lines.filter((line) => line.role == null)).toEqual([manual])
+  })
+
+  it('does not regenerate a deleted cost or settlement row; the remaining generated rows follow the transaction', () => {
+    const costSuppressed = new Set<BookDirectLineRole>()
+    let split: BookDirectFormLine[] = [
+      ...buildBookDirectPrefillLines(SEK_RECEIPT, null, '1930'),
+      { account_number: '5410', debit_amount: '600', credit_amount: '' },
+      { account_number: '5460', debit_amount: '400', credit_amount: '' },
+    ]
+    split = deleteRole(split, 'cost', costSuppressed)
+    split = reconcileBookDirectLines(
+      split,
+      buildBookDirectPrefillLines(SEK_RECEIPT, -1250, '1940', { suppressedRoles: costSuppressed }),
+    )
+    expect(pairs(split)).toEqual([
+      { role: 'vat', account: '2641', debit: '250', credit: '' },
+      { role: 'settlement', account: '1940', debit: '', credit: '1250' },
+      { role: null, account: '5410', debit: '600', credit: '' },
+      { role: null, account: '5460', debit: '400', credit: '' },
+    ])
+    expect(sums(split).balanced).toBe(true)
+
+    const settlementSuppressed = new Set<BookDirectLineRole>()
+    let own: BookDirectFormLine[] = [
+      ...chooseCost(buildBookDirectPrefillLines(SEK_RECEIPT, null, '1930'), '5410'),
+      { account_number: '2893', debit_amount: '', credit_amount: '1250' },
+    ]
+    own = deleteRole(own, 'settlement', settlementSuppressed)
+    own = reconcileBookDirectLines(
+      own,
+      buildBookDirectPrefillLines(SEK_RECEIPT, -1250, '1940', { suppressedRoles: settlementSuppressed }),
+    )
+    expect(pairs(own)).toEqual([
+      { role: 'cost', account: '5410', debit: '1000', credit: '' },
+      { role: 'vat', account: '2641', debit: '250', credit: '' },
+      { role: null, account: '2893', debit: '', credit: '1250' },
+    ])
+    expect(own.some((line) => line.account_number === '1940')).toBe(false)
   })
 
   it('does not replace a template, or a line set whose generated rows are gone, with a receipt prefill', () => {

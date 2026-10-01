@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { useTranslations } from 'next-intl'
 import {
   Dialog,
@@ -27,6 +27,7 @@ import {
   toBookDirectPayloadLine,
   withExplicitAccountEdit,
   type BookDirectFormLine,
+  type BookDirectLineRole,
 } from '@/lib/bookkeeping/book-direct-prefill'
 import AccountCombobox from '@/components/bookkeeping/AccountCombobox'
 import LineDimensionFields from '@/components/dimensions/LineDimensionFields'
@@ -142,6 +143,11 @@ export default function BookDirectlyDialog({ open, onOpenChange, item, docUrl = 
   // gate and row affordance as the voucher form, so its wording is reused.
   const { settings: companySettings } = useCompanySettings()
   const dimensionsEnabled = companySettings?.dimensions_enabled === true
+  // Only an explicit false changes the prefill: a non-registered company has
+  // no avdragsrätt, so the receipt's VAT is cost and no 2641 row is generated.
+  // undefined while settings load prefills as before; the reconcile effect
+  // below applies the loaded value by role.
+  const vatRegistered = companySettings?.vat_registered
   const tJournal = useTranslations('journal_form')
   // Full BAS catalogue (static reference data, fetched once per session). Lets
   // the account picker surface standard accounts the company hasn't activated
@@ -164,8 +170,15 @@ export default function BookDirectlyDialog({ open, onOpenChange, item, docUrl = 
   // cash account changes (see the effects below). '1930' is only the
   // temporary settlement default until that account resolves.
   const [lines, setLines] = useState<BookDirectFormLine[]>(() =>
-    buildBookDirectPrefillLines(item.extracted_data),
+    buildBookDirectPrefillLines(item.extracted_data, null, '1930', { vatRegistered }),
   )
+  // Generated roles the user deleted since this item opened. Every later
+  // prefill refresh leaves them out, so picking a transaction or the cash
+  // account resolving cannot bring back a row the user removed (a deleted
+  // VAT row would otherwise return as a 2641 debit). Cleared on open and on
+  // a new item. A ref: it never drives rendering, and the reconcile effect
+  // must see the reset effect's clear in the same commit.
+  const suppressedRolesRef = useRef<Set<BookDirectLineRole>>(new Set())
 
   // Transaction picker: optional selection.
   const [selectedTransactionId, setSelectedTransactionId] = useState<string | null>(
@@ -184,13 +197,18 @@ export default function BookDirectlyDialog({ open, onOpenChange, item, docUrl = 
   const [showSaveTemplate, setShowSaveTemplate] = useState(false)
 
   // Reset state when a different item opens the dialog. Lines are a fresh
-  // prefill (no transaction yet). bankAccount may still be null; '1930' is
-  // the placeholder and the reconcile effect below moves an untouched
-  // settlement leg onto the resolved account once the fetch lands.
+  // prefill (no transaction yet) on the '1930' placeholder. The reconcile
+  // effect below runs in the same commit (it also fires on open and on a new
+  // item) and moves an untouched settlement leg onto the resolved cash
+  // account. vatRegistered is read as known at open but is not a dependency:
+  // a later change is applied by role in the reconcile effect, which keeps
+  // the user's date, description, notes and transaction choice instead of
+  // resetting them on a settings revalidation.
   useEffect(() => {
     if (!open) return
+    suppressedRolesRef.current.clear()
     setEntryDate(item.extracted_data?.invoice?.invoiceDate || new Date().toISOString().slice(0, 10))
-    setLines(buildBookDirectPrefillLines(item.extracted_data, null, bankAccount ?? '1930'))
+    setLines(buildBookDirectPrefillLines(item.extracted_data, null, '1930', { vatRegistered }))
     setSelectedTransactionId(item.matched_transaction_id)
     const supplier = item.extracted_data?.supplier?.name?.trim() || ''
     const invoiceNum = item.extracted_data?.invoice?.invoiceNumber?.trim() || ''
@@ -320,18 +338,17 @@ export default function BookDirectlyDialog({ open, onOpenChange, item, docUrl = 
     // credit. An untouched settlement default follows the resolved cash
     // account; an explicit account commit stays. Manual and template rows
     // have no role and are left as they are. bankAccount is null while cash
-    // accounts load: '1930' is only the temporary generated default.
-    setLines((current) =>
-      reconcileBookDirectLines(
-        current,
-        buildBookDirectPrefillLines(
-          item.extracted_data,
-          selectedTransactionAmount,
-          bankAccount ?? '1930',
-        ),
-      ),
+    // accounts load: '1930' is only the temporary generated default. A
+    // non-registered company gets no VAT row (the total stays on cost), and
+    // roles the user deleted are not generated again.
+    const next = buildBookDirectPrefillLines(
+      item.extracted_data,
+      selectedTransactionAmount,
+      bankAccount ?? '1930',
+      { vatRegistered, suppressedRoles: suppressedRolesRef.current },
     )
-  }, [open, item, selectedTransactionAmount, bankAccount])
+    setLines((current) => reconcileBookDirectLines(current, next))
+  }, [open, item, selectedTransactionAmount, bankAccount, vatRegistered])
 
   // Load the static BAS catalogue on first open (periods and accounts come
   // from the session cache above).
@@ -451,8 +468,12 @@ export default function BookDirectlyDialog({ open, onOpenChange, item, docUrl = 
   }, [])
 
   const removeLine = useCallback((idx: number) => {
-    setLines((prev) => prev.length <= 2 ? prev : prev.filter((_, i) => i !== idx))
-  }, [])
+    if (lines.length <= 2) return
+    // A deleted generated row stays deleted for this item: see suppressedRolesRef.
+    const role = lines[idx]?.role
+    if (role) suppressedRolesRef.current.add(role)
+    setLines(lines.filter((_, i) => i !== idx))
+  }, [lines])
 
   // Open/close a line's kostnadsställe/projekt row; closing clears its bag.
   const toggleLineDimensions = useCallback((idx: number) => {
