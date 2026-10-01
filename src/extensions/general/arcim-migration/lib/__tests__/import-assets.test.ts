@@ -13,6 +13,7 @@ import {
   type FortnoxAsset,
   type FortnoxAssetType,
 } from '../import-assets'
+import { assetResultNeedsDetail } from '../asset-result'
 
 vi.mock('@/lib/providers/resolve-consent', () => ({
   resolveConsent: vi.fn(),
@@ -401,6 +402,65 @@ describe('importProviderAssets', () => {
       errorSample: 'insert failed',
     })
   })
+
+  // The common case the default-accounts warning exists for: every asset
+  // imports, so nothing is skipped, but one landed on its category default
+  // because its type could not be found. The result row has to say so; when
+  // it showed a detail only on skips, this run read as a clean import.
+  it('reports assets on default accounts even when nothing was skipped', async () => {
+    routeFetch(fetchSpy, [
+      { match: '/assets/types', respond: () => jsonResponse({ Types: [EQUIPMENT_TYPE] }) },
+      {
+        match: '/assets',
+        respond: () =>
+          jsonResponse({
+            Assets: [
+              LAPTOP,
+              {
+                ...LAPTOP,
+                Number: 'A-4',
+                Description: 'Utvecklingsprojekt',
+                TypeId: undefined,
+                Type: '1300 - Utveckling',
+              },
+            ],
+          }),
+      },
+    ])
+
+    const result = await importProviderAssets({
+      ...options,
+      supabase: mockSupabaseWithExistingAssets([]),
+    })
+
+    expect(result).toMatchObject({
+      total: 2,
+      imported: 2,
+      skipped: 0,
+      skipReasons: { typeUnresolved: 1 },
+    })
+    expect(assetResultNeedsDetail(result!)).toBe(true)
+    // The unresolved one carries no account of its own: createAsset fills in
+    // the category default, which is what the warning discloses.
+    const unresolvedInput = createAssetMock.mock.calls[1][3]
+    expect(unresolvedInput.bas_asset_account).toBeUndefined()
+  })
+
+  it('has nothing to add when every asset resolved its type and imported', async () => {
+    routeFetch(fetchSpy, [
+      { match: '/assets/types', respond: () => jsonResponse({ Types: [EQUIPMENT_TYPE] }) },
+      { match: '/assets', respond: () => jsonResponse({ Assets: [LAPTOP] }) },
+    ])
+
+    const result = await importProviderAssets({
+      ...options,
+      supabase: mockSupabaseWithExistingAssets([]),
+    })
+
+    expect(result).toMatchObject({ total: 1, imported: 1, skipped: 0 })
+    expect(result?.skipReasons?.typeUnresolved).toBeUndefined()
+    expect(assetResultNeedsDetail(result!)).toBe(false)
+  })
 })
 
 /**
@@ -409,7 +469,15 @@ describe('importProviderAssets', () => {
  * form made it 59. Every such asset then depreciated slightly too fast.
  */
 describe('monthsBetween on the month grid', () => {
+  // The day-counting form gave 59 for both of these: 59 on the month
+  // difference, plus (30 - 28) / 30 or (30 - 17) / 30, which rounds away.
+  // A plan starting on the 1st never showed the bug, so it cannot guard it.
   it('counts a mid-month plan as the whole 60 months', () => {
+    expect(monthsBetween('2026-05-28', '2031-04-30')).toBe(60)
+    expect(monthsBetween('2026-05-17', '2031-04-30')).toBe(60)
+  })
+
+  it('counts the same plan started on the first as 60 months too', () => {
     expect(monthsBetween('2026-05-01', '2031-04-30')).toBe(60)
   })
 
@@ -479,7 +547,10 @@ describe('resolveAssetType', () => {
         Number: '6',
         Description: 'Utvecklingsprojekt',
         AcquisitionDate: '2026-05-28',
-        AcquisitionStart: '2026-05-01',
+        // Mid-month on purpose: a start on the 1st gives 60 under the old
+        // day-counting form too, so the life assertion below would not notice
+        // the fix being reverted.
+        AcquisitionStart: '2026-05-28',
         AcquisitionValue: 3_500_000,
         DepreciationFinal: '2031-04-30',
         Type: '1300 - Utveckling',

@@ -270,6 +270,7 @@ import {
   buildMigrateRequests,
   mergeMigrationResults,
 } from '@/extensions/general/arcim-migration/lib/migrate-plan'
+import { assetResultNeedsDetail } from '@/extensions/general/arcim-migration/lib/asset-result'
 import AccountMappingStep from '@/components/import/AccountMappingStep'
 import ProviderMigrationProgress from './ProviderMigrationProgress'
 import { MIGRATION_RESOURCES, type ProviderMigrationStatus } from '@/lib/providers/migration-contract'
@@ -2335,7 +2336,7 @@ function ResultStep({
         value: results.assets.scopesMissing ? 'Hoppades över' : `${results.assets.imported} importerade`,
         detail: results.assets.scopesMissing
           ? 'Fortnox-anslutningen saknar behörighet till anläggningsregistret (assets-scope). Bokförda värden är ändå med via SIE.'
-          : results.assets.skipped > 0
+          : assetResultNeedsDetail(results.assets)
             ? formatSkipReasons(results.assets.skipReasons, 'asset', results.assets.errorSample) ?? `${results.assets.skipped} hoppades över`
             : undefined,
         failed: !results.assets.scopesMissing &&
