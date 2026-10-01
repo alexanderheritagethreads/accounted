@@ -25,6 +25,9 @@ import { hasSIEFileExtension } from '@/lib/import/sie-file-extensions'
 import { getErrorMessage as getUserErrorMessage } from '@/lib/errors/get-error-message'
 import { readSIERequestFile } from '@/lib/import/sie-intake'
 import { resolveSIEFiscalYear } from '@/lib/import/sie-jobs'
+import { ensureInitialized } from '@/lib/init'
+
+ensureInitialized()
 
 /**
  * POST /api/import/sie/parse
