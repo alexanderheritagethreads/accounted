@@ -134,6 +134,7 @@ import {
   type LinkSupplierInvoiceToVoucherResult,
 } from '@/lib/invoices/supplier-voucher-matching'
 import { clearSettledInvoiceSuggestions } from '@/lib/invoices/clear-settled-invoice-suggestions'
+import { emitInvoicePaidIfSettled } from '@/lib/invoices/paid-events'
 import {
   findCashMethodUnbookedAllocations,
   type BatchAllocationRef,
@@ -145,6 +146,7 @@ import {
   type BatchAllocationResult,
 } from '@/lib/invoices/clear-settled-batch-allocations'
 import { linkTransactionToJournalEntry } from '@/lib/transactions/link-journal-entry'
+import { emitBatchAllocationEvents } from '@/lib/transactions/batch-allocation-events'
 import { matchTransactionToRotRutPayout } from '@/lib/invoices/rot-rut-match-transaction'
 import { linkRotRutPayoutVoucher } from '@/lib/invoices/rot-rut-link-voucher'
 import { attachDocumentToTransaction } from '@/lib/transactions/document-attach'
@@ -2894,29 +2896,23 @@ async function commitMarkInvoicePaid(
   }
 
   // Notify subscribers: invoice.paid fans out to registered webhooks
-  // (lib/webhooks/handler.ts). Best-effort: the payment is already committed,
-  // so an emit failure must not fail the operation. Parity with the v1 and
-  // dashboard mark-paid routes, which previously emitted while this path did not.
-  try {
-    await eventBus.emit({
-      type: 'invoice.paid',
-      payload: {
-        invoice: {
-          ...(invoice as Invoice),
-          status: newStatus,
-          paid_amount: newPaidAmount,
-          remaining_amount: newRemaining,
-          paid_at: paidAt ?? (invoice as Invoice).paid_at,
-        } as Invoice,
-        companyId,
-        userId,
-        paymentAmount,
-        paymentDate,
-      },
-    })
-  } catch (err) {
-    log.warn('invoice.paid emit failed', err)
-  }
+  // (lib/webhooks/handler.ts) once, when this payment settles the invoice in
+  // full. Best-effort: the payment is already committed, so an emit failure
+  // never fails the operation (the helper logs it).
+  await emitInvoicePaidIfSettled({
+    newStatus,
+    invoice: {
+      ...(invoice as Invoice),
+      status: newStatus,
+      paid_amount: newPaidAmount,
+      remaining_amount: newRemaining,
+      paid_at: paidAt ?? (invoice as Invoice).paid_at,
+    } as Invoice,
+    companyId,
+    userId,
+    paymentAmount,
+    paymentDate,
+  })
 
   return { data: { status: newStatus, remaining_amount: newRemaining, journal_entry_id: journalEntryId } }
 }
@@ -3776,17 +3772,18 @@ async function commitMatchTransactionInvoice(
     })
     .eq('id', transactionId)
 
+  const settledInvoice = {
+    ...(invoice as Invoice),
+    status: newStatus,
+    paid_at: paidAt,
+    paid_amount: newPaidAmount,
+    remaining_amount: newRemaining,
+  } as Invoice
   try {
     await eventBus.emit({
       type: 'invoice.match_confirmed',
       payload: {
-        invoice: {
-          ...(invoice as Invoice),
-          status: newStatus,
-          paid_at: paidAt,
-          paid_amount: newPaidAmount,
-          remaining_amount: newRemaining,
-        } as Invoice,
+        invoice: settledInvoice,
         transaction: {
           ...(transaction as Transaction),
           invoice_id: invoiceId,
@@ -3800,6 +3797,16 @@ async function commitMatchTransactionInvoice(
       },
     })
   } catch { /* non-critical */ }
+  // A match that settles the invoice in full is its invoice.paid transition,
+  // exactly as on the dashboard and v1 match routes.
+  await emitInvoicePaidIfSettled({
+    newStatus,
+    invoice: settledInvoice,
+    paymentAmount: roundOre(newPaidAmount - (invoice.paid_amount ?? 0)),
+    paymentDate: transaction.date,
+    userId,
+    companyId,
+  })
 
   return { data: { invoice_status: newStatus, paid_amount: newPaidAmount, journal_entry_id: journalEntryId } }
 }
@@ -6970,6 +6977,16 @@ async function commitMatchBatchAllocate(
   // them on the source tx. Same helper as the HTTP twin
   // (app/api/transactions/[id]/match-batch/route.ts) so the two cannot drift.
   await clearSettledBatchAllocationSuggestions(supabase, companyId, result.allocations ?? [], txId)
+
+  // Same events as the HTTP twin (match_confirmed per allocation, invoice.paid
+  // / supplier_invoice.paid per allocation settled in full), through the same
+  // helper. This door used to emit nothing, so webhooks never heard of an
+  // agent-approved samlingsbetalning. Best-effort: the RPC has committed.
+  await emitBatchAllocationEvents(
+    supabase,
+    { companyId, userId, transactionId: txId, allocations: result.allocations ?? [] },
+    log,
+  )
 
   // The override was acted on: durable behandlingshistorik record (BFNAR
   // 2013:2 p. 9.16), same event the categorize guard writes.
