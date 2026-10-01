@@ -572,6 +572,8 @@ export function makeCompanySettings(
     salary_pay_day: 25,
     salary_default_bank: null,
     salary_net_rounding: false,
+    salary_payslip_show_employer_cost: true,
+    salary_payslip_show_breakdown: true,
     salary_deviation_period: 'same_month',
     salary_vacation_year_basis: 'calendar',
     logo_url: null,
