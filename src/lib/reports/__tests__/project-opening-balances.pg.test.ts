@@ -3,7 +3,7 @@ import { getPool, withUserContext } from '@/tests/pg/setup'
 import { insertAuthUser, insertCompany, insertCompanyMember, insertFiscalPeriod, insertPostedJournalEntry } from '@/tests/pg/fixtures'
 
 /**
- * Issue #3313: project opening balances. Migration 20260930150000 redefines
+ * Issue #3313: project opening balances. Migration 20261001213328 redefines
  * compute_prior_opening_balances with p_dimensions and adds
  * compute_object_closing_balances, both on prior_opening_balance_lines.
  *
