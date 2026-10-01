@@ -156,6 +156,7 @@ import { submitSIEJob, requestSIEJobAction } from '@/lib/import/sie-jobs'
 import type { AccountMapping } from '@/lib/import/types'
 import { AccountsNotInChartError, isBookkeepingError, ACCOUNTS_NOT_IN_CHART } from '@/lib/bookkeeping/errors'
 import { extensionRegistry } from '@/lib/extensions/registry'
+import { applyPaymentLinkToInvoice } from '@/lib/extensions/payment-links'
 import {
   SkatteverketRecoverableError,
   type SkatteverketCommitServices,
@@ -176,7 +177,7 @@ import {
 import { linkToJournalEntry } from '@/lib/core/documents/document-service'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { InvoicePDF } from '@/lib/invoices/pdf-template'
-import { prepareInvoicePdfRender, buildSwishQrDataUrl } from '@/lib/invoices/pdf-render-helpers'
+import { prepareInvoicePdfRender, buildSwishQrDataUrl, buildPaymentLinkQrDataUrl } from '@/lib/invoices/pdf-render-helpers'
 import { resolveInvoicePayeeChoice, resolveInvoiceSettlementAccount, snapshotInvoicePayee } from '@/lib/invoices/invoice-payee'
 import {
   describeMissingInvoicePaymentAccount,
@@ -3086,6 +3087,22 @@ async function commitSendInvoice(
     return { error: `Failed to assign invoice number: ${err instanceof Error ? err.message : 'unknown'}`, status: 500 }
   }
 
+  // Auto-create an online payment link (extension-provided, e.g. Stripe) now
+  // that the number exists, so the email button and PDF QR carry it: the same
+  // shared step the dashboard send, the v1 send and the recurring auto-send
+  // run. A failure never blocks the send: the faktura is legally valid
+  // without a link, so it degrades to a warning, as on the dashboard.
+  const { failure: paymentLinkFailure } = await applyPaymentLinkToInvoice(
+    supabase,
+    companyId,
+    userId,
+    invoice as Invoice,
+    log,
+  )
+  if (paymentLinkFailure) {
+    log.warn('payment link creation failed on agent send', { invoiceId, reason: paymentLinkFailure })
+  }
+
   // Override `status` to 'sent' on the in-memory copy. The DB flip happens
   // when the invoice is issued, right before the email; rendering with the
   // stale 'draft' status would stamp the customer's PDF with "UTKAST".
@@ -3096,6 +3113,7 @@ async function commitSendInvoice(
     { paymentAccountRequired, payee: (invoice as Invoice).payment_details ?? null },
   )
   const swishQrDataUrl = await buildSwishQrDataUrl(renderCompany, renderableInvoice)
+  const paymentLinkQrDataUrl = await buildPaymentLinkQrDataUrl(renderableInvoice)
   const pdfBuffer = await renderToBuffer(
     InvoicePDF({
       invoice: renderableInvoice,
@@ -3105,6 +3123,7 @@ async function commitSendInvoice(
       originalInvoiceNumber,
       branding,
       swishQrDataUrl,
+      paymentLinkQrDataUrl,
     })
   )
 
@@ -3244,6 +3263,10 @@ async function commitSendInvoice(
   })
 
   const warnings = [
+    // The raw provider/DB reason is logged above; the agent-facing text stays Swedish.
+    ...(paymentLinkFailure
+      ? ['Betalningslänken kunde inte skapas. Fakturan skickades utan betalningslänk.']
+      : []),
     ...(result.trackingWarning ? ['Delivery history requires reconciliation.'] : []),
     ...issued.partialFailures.map((failure) => failure.reason),
   ]
