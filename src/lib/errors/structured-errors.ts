@@ -1129,10 +1129,12 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
     message_sv: 'Ett balanskonto (klass 1-2) kan bara användas på rader utan moms. Använd ett intäktskonto (3xxx) för momspliktiga rader.',
     message_en: 'A balance-sheet account (class 1-2) can only be used on zero-VAT lines. Use a revenue account (3xxx) for VAT-bearing lines.',
   },
+  // Code name kept for wire stability; it covers every skattereduktion kind
+  // (ROT, RUT, grön teknik), so the text names none of them.
   INVOICE_CREATE_ROT_RUT_VALIDATION: {
     httpStatus: 400,
-    message_sv: 'ROT/RUT-avdraget kunde inte valideras. Kontrollera personnummer och fastighetsbeteckning.',
-    message_en: 'ROT/RUT deduction failed validation. Check personnummer and housing designation.',
+    message_sv: 'Skattereduktionen kunde inte valideras. Kontrollera personnummer, fastighetsbeteckning och raderna med avdrag.',
+    message_en: 'The tax reduction failed validation. Check the personnummer, the property designation and the deduction lines.',
   },
   INVOICE_CREATE_ACCRUAL_INVALID: {
     httpStatus: 400,
@@ -1161,8 +1163,8 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
   },
   INVOICE_CREATE_ROT_RUT_PERSONNUMMER_INVALID: {
     httpStatus: 400,
-    message_sv: 'Personnumret för ROT/RUT-avdraget är ogiltigt.',
-    message_en: 'The personnummer provided for the ROT/RUT deduction is invalid.',
+    message_sv: 'Personnumret för skattereduktionen är ogiltigt.',
+    message_en: 'The personnummer provided for the tax reduction is invalid.',
   },
   // Rot/rut begäran om utbetalning (Skatteverkets husavdragstjänst)
   ROT_RUT_REQUEST_NOT_FOUND: {
@@ -2133,8 +2135,8 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
   },
   SALES_ORDER_SOURCE_UNSUPPORTED_LINES: {
     httpStatus: 400,
-    message_sv: 'Underlaget innehåller rader som inte kan föras över till en kundorder (ROT/RUT-avdrag, periodisering eller negativt antal). Skapa kundordern manuellt.',
-    message_en: 'The source document has lines that cannot be carried into a sales order (ROT/RUT deduction, accrual period or negative quantity). Create the sales order manually.',
+    message_sv: 'Underlaget innehåller rader som inte kan föras över till en kundorder (skattereduktion som ROT, RUT eller grön teknik, periodisering eller negativt antal). Skapa kundordern manuellt.',
+    message_en: 'The source document has lines that cannot be carried into a sales order (a tax reduction such as ROT, RUT or green technology, an accrual period or a negative quantity). Create the sales order manually.',
   },
   SALES_ORDER_CUSTOMER_VAT_CHANGED: {
     httpStatus: 409,
