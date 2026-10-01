@@ -14,7 +14,22 @@ import { roundOre } from '@/lib/money'
  * keys and drops the rest, as the substrate comment on the column asks
  * (migration 20260702084500): the year-end projection happens in SQL
  * (compute_object_closing_balances), the SIE import's in planObjectBalances.
+ * Which accounts carry object balances at all: carriesObjectBalances.
  */
+
+/**
+ * Whether an account's opening balance is split per object. Every
+ * balance-sheet account is, except the VAT accounts (BAS 26xx, moms): a
+ * project-tagged invoice puts its bag on the output VAT line, but the VAT
+ * settlement (momsredovisning) books 26xx untagged, so a per-project 26xx
+ * balance never clears. Carried, it would put an offsetting project line and
+ * untagged line into every future IB, growing each year. A 26xx IB is
+ * therefore always one untagged line (founder decision 2026-10-01). Account
+ * numbers are identifiers: a prefix check on the string, never arithmetic.
+ */
+export function carriesObjectBalances(accountNumber: string): boolean {
+  return !accountNumber.startsWith('26')
+}
 
 /**
  * The SIE convention the registry seeds (ensure_company_dimensions: 1 resets,

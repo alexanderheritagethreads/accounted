@@ -323,6 +323,46 @@ describe('getOpeningBalances', () => {
       expect(supabase.rpc).not.toHaveBeenCalled()
     })
 
+    it('opens the VAT accounts (26xx) at 0 under a filter on both paths, the rest scoped as usual', async () => {
+      // Fallback: the history holds a project invoice's tagged output VAT
+      // (settled untagged), which the RPC sums per project. Not a project IB.
+      const supabase = createSupabaseWithRpc(async () => ({
+        data: [
+          { account_number: '1510', debit: 1250, credit: 0 },
+          { account_number: '2611', debit: 0, credit: 250 },
+        ],
+        error: null,
+      }))
+      const fallback = await getOpeningBalances(
+        supabase,
+        'company-1',
+        { period_start: '2026-01-01', opening_balance_entry_id: null },
+        { dimensions: { '6': 'P1' } }
+      )
+      expect([...fallback.balances.keys()]).toEqual(['1510'])
+
+      // IB entry path: a hand-tagged 26xx IB line is left out the same way.
+      mockFetchAllRows.mockResolvedValueOnce([{ id: 'ob-entry-123' }]).mockResolvedValueOnce([
+        { id: 'l1', account_number: '1510', debit_amount: 1250, credit_amount: 0 },
+        { id: 'l2', account_number: '2611', debit_amount: 0, credit_amount: 250 },
+      ])
+      const linked = await getOpeningBalances(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { from: vi.fn() } as any,
+        'company-1',
+        { period_start: '2026-01-01', opening_balance_entry_id: 'ob-entry-123' },
+        { dimensions: { '6': 'P1' } }
+      )
+      expect([...linked.balances.keys()]).toEqual(['1510'])
+
+      // Unfiltered, 26xx is an ordinary IB account.
+      const unfiltered = await getOpeningBalances(supabase, 'company-1', {
+        period_start: '2026-01-01',
+        opening_balance_entry_id: null,
+      })
+      expect(unfiltered.balances.get('2611')).toEqual({ debit: 0, credit: 250 })
+    })
+
     it('follows the company registry, not the SIE default', async () => {
       // A company whose custom dimension 20 accumulates carries its IB.
       mockAccumulating.mockResolvedValue(new Set(['6', '20']))

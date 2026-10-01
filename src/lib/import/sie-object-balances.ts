@@ -1,5 +1,5 @@
 import { roundOre } from '@/lib/money'
-import type { ObjectBalanceSplit } from '@/lib/bookkeeping/dimension-carry'
+import { carriesObjectBalances, type ObjectBalanceSplit } from '@/lib/bookkeeping/dimension-carry'
 import { makeNotice, type ImportNotice } from './notices'
 import type { SIEObjectBalance } from './types'
 
@@ -42,6 +42,8 @@ function isBalanceSheetAccountNumber(account: string): boolean {
 export type ObjectBalanceSkipReason =
   /** Class 3-8: result accounts close to equity and have no opening balance. */
   | 'result_account'
+  /** 26xx: the VAT accounts' IB is never split per object (carriesObjectBalances). */
+  | 'vat_account'
   /** The object's dimension resets annually (kostnadsställe, custom). */
   | 'resetting_dimension'
   /** The code cannot exist in the registry (length or `"{}`). */
@@ -76,6 +78,7 @@ export function planObjectBalances(
 ): ObjectBalancePlan {
   const skipped: Record<ObjectBalanceSkipReason, number> = {
     result_account: 0,
+    vat_account: 0,
     resetting_dimension: 0,
     invalid_code: 0,
     second_dimension: 0,
@@ -86,6 +89,10 @@ export function planObjectBalances(
   for (const row of rows) {
     if (!isBalanceSheetAccountNumber(row.account)) {
       skipped.result_account++
+      continue
+    }
+    if (!carriesObjectBalances(row.account)) {
+      skipped.vat_account++
       continue
     }
     if (!accumulating.has(row.dimNo)) {
@@ -156,6 +163,14 @@ export function describeObjectBalancePlan(
     out.push({
       severity: 'info',
       message: `${plan.skipped.result_account} objektbalanser (${label}) på resultatkonton hoppas över: resultatkonton har ingen ingående balans`,
+    })
+  }
+  if (plan.skipped.vat_account > 0) {
+    out.push({
+      severity: 'info',
+      message:
+        `${plan.skipped.vat_account} objektbalanser (${label}) på momskonton (26xx) hoppas över: ` +
+        'momskontonas ingående balans fördelas inte per projekt utan bokförs utan objekt',
     })
   }
   if (plan.skipped.resetting_dimension > 0) {

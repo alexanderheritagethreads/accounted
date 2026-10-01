@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { CreateJournalEntryLineInput } from '@/types'
 import { roundOre, ORE_TOLERANCE } from '@/lib/money'
 import {
+  carriesObjectBalances,
   fetchAccumulatingDimensions,
   splitBalanceLines,
   type ObjectBalanceSplit,
@@ -17,6 +18,7 @@ import { isValidRegistryCode } from '@/lib/import/sie-object-balances'
  * Now each account's IB is split into one line per object of an accumulating
  * dimension (registry `resets_annually = false`, projekt on every company
  * today) holding that object's closing balance, plus one untagged remainder.
+ * The VAT accounts (26xx) stay one untagged line (carriesObjectBalances).
  * Per-account totals are exactly the trial-balance amounts the IB always
  * used, so the entry's balance, the continuity check and every reader that
  * ignores tags see no change.
@@ -82,6 +84,9 @@ function wellFormedBag(value: unknown): Record<string, string> | null {
  * öre-rounded closing balance). An account whose total is zero still carries
  * its objects' lines when they are nonzero (e.g. two projects offsetting on
  * 1470), with a remainder that nets them back to zero.
+ *
+ * The VAT accounts (26xx) are never split (carriesObjectBalances): their
+ * project parts are ignored, so the whole balance is one untagged line.
  */
 export function buildOpeningBalanceLines(
   accounts: ReadonlyArray<{ account_number: string; account_name: string; net: number }>,
@@ -92,14 +97,14 @@ export function buildOpeningBalanceLines(
   for (const account of accounts) {
     seen.add(account.account_number)
     const total = Math.abs(account.net) < ORE_TOLERANCE ? 0 : roundOre(account.net)
-    const parts = objects.get(account.account_number)
+    const parts = carriesObjectBalances(account.account_number) ? objects.get(account.account_number) : undefined
     if (total === 0 && !parts?.length) continue
     lines.push(...splitBalanceLines(account.account_number, total, parts, `Ingående balans: ${account.account_name}`))
   }
   // Defensive: tagged history always shows up in the trial balance, but an
   // object balance on an account the rows lack still nets to zero here.
   for (const [accountNumber, parts] of objects) {
-    if (seen.has(accountNumber) || !parts.length) continue
+    if (seen.has(accountNumber) || !parts.length || !carriesObjectBalances(accountNumber)) continue
     lines.push(...splitBalanceLines(accountNumber, 0, parts, `Ingående balans: ${accountNumber}`))
   }
   return lines

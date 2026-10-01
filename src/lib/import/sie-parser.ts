@@ -1111,10 +1111,15 @@ function addObjectBalanceIssues(parsed: ParsedSIEFile): void {
     }
   }
 
-  // #OUB 0 = #OIB 0 + that object's tagged movements in the file, per
-  // balance-sheet account. Only meaningful when the file carries both the
-  // closing object balances and the year's vouchers; exporters that write no
-  // #OUB at all are not flagged. Informational: never blocks the import.
+  // #OUB 0 = the effective opening object balances (#OIB 0, or #OUB -1 when
+  // the IB is derived from #UB -1) + that object's tagged movements in the
+  // file, per balance-sheet account. Only meaningful when the file carries
+  // both the closing object balances and the year's vouchers; exporters that
+  // write no #OUB at all are not flagged. Skipped when the file has no
+  // per-account IB at all (source 'none', e.g. an IB #VER stands in for it):
+  // there is no opening object balance to compare against. Informational:
+  // never blocks the import.
+  if (source === 'none') return
   const closing = (parsed.objectClosingBalances ?? []).filter(
     (b) => b.yearIndex === 0 && isBalanceSheetAccount(b.account)
   )
@@ -1125,8 +1130,8 @@ function addObjectBalanceIssues(parsed: ParsedSIEFile): void {
   const actual = new Map<string, number>()
   const add = (target: Map<string, number>, k: string, amount: number) =>
     target.set(k, roundOre((target.get(k) ?? 0) + amount))
-  for (const b of parsed.objectOpeningBalances ?? []) {
-    if (b.yearIndex === 0 && isBalanceSheetAccount(b.account)) add(expected, key(b.account, b.dimNo, b.code), b.amount)
+  for (const b of rows) {
+    if (isBalanceSheetAccount(b.account)) add(expected, key(b.account, b.dimNo, b.code), b.amount)
   }
   for (const b of closing) add(actual, key(b.account, b.dimNo, b.code), b.amount)
   for (const voucher of parsed.vouchers) {

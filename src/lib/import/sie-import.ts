@@ -46,7 +46,7 @@ import {
   type ObjectBalancePlan,
   type OpeningBalanceSplitRefusal,
 } from './sie-object-balances'
-import { fetchAccumulatingDimensions } from '@/lib/bookkeeping/dimension-carry'
+import { carriesObjectBalances, fetchAccumulatingDimensions } from '@/lib/bookkeeping/dimension-carry'
 
 // Re-export from the parser (moved there to avoid an import cycle:
 // getEffectiveOpeningBalances needs it) so existing importers keep working.
@@ -942,7 +942,9 @@ export interface SIEObjectOpeningBalances {
  * (IB - sum of the objects), so each account's total is exactly its IB.
  * Accounts with object rows but no #IB row (a zero IB) still get their
  * object lines and an offsetting remainder. Unmapped source accounts are
- * skipped whole, as before.
+ * skipped whole, as before. A target VAT account (26xx) is never split
+ * (carriesObjectBalances), whatever source account maps onto it: its IB
+ * stays one untagged line.
  */
 export function buildSplitOpeningLines(
   balances: ReadonlyArray<{ account: string; amount: number }>,
@@ -955,13 +957,13 @@ export function buildSplitOpeningLines(
   for (const balance of balances) {
     const targetAccount = mapAccount(balance.account)
     if (!targetAccount) continue
-    const parts = pending.get(balance.account)
+    const parts = carriesObjectBalances(targetAccount) ? pending.get(balance.account) : undefined
     pending.delete(balance.account)
     lines.push(...splitBalanceLines(targetAccount, balance.amount, parts, describe(balance.account)))
   }
   for (const [account, parts] of pending) {
     const targetAccount = mapAccount(account)
-    if (!targetAccount) continue
+    if (!targetAccount || !carriesObjectBalances(targetAccount)) continue
     lines.push(...splitBalanceLines(targetAccount, 0, parts, describe(account)))
   }
   return lines

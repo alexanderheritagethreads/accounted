@@ -135,6 +135,57 @@ describe('parseSIEFile: #OIB / #OUB', () => {
     const parsed = parseSIEFile(sie('#OIB 0 1470 {6 "P1"} 1000.00'))
     expect(parsed.issues.some((i) => i.tag === 'OIB' && i.message.includes('används inte'))).toBe(true)
   })
+
+  it('reports #OIB rows on the VAT accounts (26xx) as skipped: their IB is not split per project', () => {
+    const parsed = parseSIEFile(
+      sie('#IB 0 1510 1250.00', '#IB 0 2611 -250.00', '#OIB 0 1510 {6 "P1"} 1250.00', '#OIB 0 2611 {6 "P1"} -250.00')
+    )
+    const messages = parsed.issues.filter((i) => i.tag === 'OIB').map((i) => i.message)
+    expect(messages).toEqual([
+      expect.stringMatching(/^1 objektbalanser \(#OIB\) fördelar den ingående balansen per projekt på 1 konton/),
+      expect.stringMatching(/^1 objektbalanser \(#OIB\) på momskonton \(26xx\) hoppas över/),
+    ])
+  })
+
+  it('checks #OUB 0 against the derived opening rows (#OUB -1) when the IB is derived from #UB -1', () => {
+    const file = (oub0: string) =>
+      parseSIEFile(
+        sie(
+          '#UB -1 1470 800.00',
+          '#UB -1 2081 -800.00',
+          '#OUB -1 1470 {6 "P1"} 300.00',
+          `#OUB 0 1470 {6 "P1"} ${oub0}`,
+          '#VER A 1 20260115 "Arbete"',
+          '{',
+          '#TRANS 1470 {6 "P1"} 200.00',
+          '#TRANS 4010 {6 "P1"} -200.00',
+          '}'
+        )
+      )
+    // 300 (#OUB -1) + 200 tagged = 500: consistent, no false warning.
+    expect(file('500.00').issues.some((i) => i.tag === 'OUB')).toBe(false)
+    expect(file('650.00').issues.filter((i) => i.tag === 'OUB')).toHaveLength(1)
+  })
+
+  it('skips the #OUB check when the file has no per-account IB (an IB #VER stands in for it)', () => {
+    const parsed = parseSIEFile(
+      sie(
+        '#OUB 0 1470 {6 "P1"} 1000.00',
+        '#VER A 1 20260101 "Ingående balans"',
+        '{',
+        '#TRANS 1470 {} 800.00',
+        '#TRANS 2081 {} -800.00',
+        '}',
+        '#VER A 2 20260115 "Arbete"',
+        '{',
+        '#TRANS 1470 {6 "P1"} 200.00',
+        '#TRANS 4010 {6 "P1"} -200.00',
+        '}'
+      )
+    )
+    expect(getEffectiveObjectOpeningBalances(parsed).source).toBe('none')
+    expect(parsed.issues.some((i) => i.tag === 'OUB')).toBe(false)
+  })
 })
 
 describe('planObjectBalances', () => {
@@ -161,6 +212,16 @@ describe('planObjectBalances', () => {
     expect(plan.byAccount.get('1470')).toEqual([{ dimensions: { '6': 'P1' }, amount: 300 }])
     expect(plan.skipped.second_dimension).toBe(1)
     expect(plan.multiDimensionAccounts).toEqual([{ account: '1470', usedDimNo: '6', ignoredDimNos: ['7'] }])
+  })
+
+  it('never splits the VAT accounts (26xx): their rows are skipped and counted', () => {
+    const plan = planObjectBalances(
+      [obRow('1510', '6', 'P1', 1250), obRow('2611', '6', 'P1', -250), obRow('2641', '6', 'P2', 80)],
+      ACC6
+    )
+    expect([...plan.byAccount.keys()]).toEqual(['1510'])
+    expect(plan.skipped.vat_account).toBe(2)
+    expect(plan.applied).toBe(1)
   })
 
   it('skips codes the registry cannot hold', () => {
@@ -248,6 +309,44 @@ describe('buildSIEOpeningBalanceEntry: the IB split per project', () => {
     )
     const entry = buildSIEOpeningBalanceEntry('fp-1', parsed, identity(parsed), 0, 'M', '2099', { accumulating: ACC6 })!
     expect(netByBag(entry.lines)).toEqual({ '1930': 100, '2081': -100, '1470 {"6":"P1"}': 40, '1470 {"6":"P2"}': -40 })
+  })
+
+  it('books a 26xx account with #OIB rows as one untagged IB line and keeps 1510 split per project', () => {
+    const parsed = parseSIEFile(
+      sie(
+        '#IB 0 1510 2500.00',
+        '#IB 0 2611 -500.00',
+        '#IB 0 2081 -2000.00',
+        '#OIB 0 1510 {6 "P1"} 1250.00',
+        '#OIB 0 1510 {6 "P2"} 1250.00',
+        '#OIB 0 2611 {6 "P1"} -250.00',
+        '#OIB 0 2611 {6 "P2"} -250.00'
+      )
+    )
+    const entry = buildSIEOpeningBalanceEntry('fp-1', parsed, identity(parsed), 0, 'M', '2099', { accumulating: ACC6 })!
+    expect(entry.lines.filter((l) => l.account_number === '2611')).toEqual([
+      { account_number: '2611', debit_amount: 0, credit_amount: 500, line_description: 'IB 2611' },
+    ])
+    expect(netByBag(entry.lines)).toEqual({
+      '1510 {"6":"P1"}': 1250,
+      '1510 {"6":"P2"}': 1250,
+      '2611': -500,
+      '2081': -2000,
+    })
+    const debit = Math.round(entry.lines.reduce((sum, l) => sum + l.debit_amount, 0) * 100) / 100
+    const credit = Math.round(entry.lines.reduce((sum, l) => sum + l.credit_amount, 0) * 100) / 100
+    expect(debit).toBe(credit)
+    expect(debit).toBe(2500)
+  })
+
+  it('does not split a source account the company maps onto a 26xx account', () => {
+    const parsed = parseSIEFile(
+      sie('#IB 0 2890 -300.00', '#IB 0 1930 300.00', '#OIB 0 2890 {6 "P1"} -300.00', '#OIB 0 2891 {6 "P2"} -40.00')
+    )
+    const accountMap = new Map([['2890', '2650'], ['2891', '2650'], ['1930', '1930']])
+    const entry = buildSIEOpeningBalanceEntry('fp-1', parsed, accountMap, 0, 'M', '2099', { accumulating: ACC6 })!
+    expect(netByBag(entry.lines)).toEqual({ '2650': -300, '1930': 300 })
+    expect(entry.lines.every((l) => l.dimensions === undefined)).toBe(true)
   })
 
   it('is byte-identical to the per-account IB for a file without object balances', () => {

@@ -122,6 +122,56 @@ describe('buildOpeningBalanceLines', () => {
     expect(netByBag(lines)).toEqual({ '1930 {"6":"P1"}': 40, '1930 {"6":"P2"}': -40 })
     expect(netByAccount(lines)).toEqual({ '1930': 0 })
   })
+
+  describe('VAT accounts (26xx) are never split per project (founder decision 2026-10-01)', () => {
+    // A project invoice: 1510 debit 1250 and 2611 credit 250 tagged P1/P2,
+    // the VAT settled untagged (2611 debit, 2650 credit), so the per-project
+    // 2611 parts net against an untagged settlement on the same account.
+    const vatAccounts = [
+      { account_number: '1510', account_name: 'Kundfordringar', net: 2500 },
+      { account_number: '2611', account_name: 'Utgående moms 25 %', net: -300 },
+      { account_number: '2650', account_name: 'Redovisningskonto för moms', net: -200 },
+      { account_number: '2099', account_name: 'Årets resultat', net: -2000 },
+    ]
+    const vatObjects = new Map([
+      ['1510', [{ dimensions: { '6': 'P1' }, amount: 1250 }, { dimensions: { '6': 'P2' }, amount: 1250 }]],
+      ['2611', [{ dimensions: { '6': 'P1' }, amount: -250 }, { dimensions: { '6': 'P2' }, amount: -250 }]],
+    ])
+
+    it('books a 26xx account with project balances as one untagged IB line', () => {
+      const lines = buildOpeningBalanceLines(vatAccounts, vatObjects)
+      expect(lines.filter((l) => l.account_number === '2611')).toEqual([
+        { account_number: '2611', debit_amount: 0, credit_amount: 300, line_description: 'Ingående balans: Utgående moms 25 %' },
+      ])
+      expect(lines.filter((l) => l.account_number.startsWith('26')).every((l) => l.dimensions === undefined)).toBe(true)
+    })
+
+    it('keeps the per-project lines on 1510', () => {
+      const lines = buildOpeningBalanceLines(vatAccounts, vatObjects)
+      expect(netByBag(lines.filter((l) => l.account_number === '1510'))).toEqual({
+        '1510 {"6":"P1"}': 1250,
+        '1510 {"6":"P2"}': 1250,
+      })
+    })
+
+    it('keeps every account total and the entry balanced', () => {
+      const lines = buildOpeningBalanceLines(vatAccounts, vatObjects)
+      expect(netByAccount(lines)).toEqual({ '1510': 2500, '2611': -300, '2650': -200, '2099': -2000 })
+      const debit = Math.round(lines.reduce((sum, l) => sum + l.debit_amount, 0) * 100) / 100
+      const credit = Math.round(lines.reduce((sum, l) => sum + l.credit_amount, 0) * 100) / 100
+      expect(debit).toBe(credit)
+      expect(debit).toBeGreaterThan(0)
+    })
+
+    it('books nothing for 26xx project balances on an account the rows lack (zero total)', () => {
+      const lines = buildOpeningBalanceLines(
+        [{ account_number: '1930', account_name: 'Företagskonto', net: 100 }, { account_number: '2081', account_name: 'Aktiekapital', net: -100 }],
+        new Map([['2641', [{ dimensions: { '6': 'P1' }, amount: 80 }, { dimensions: { '6': 'P2' }, amount: -80 }]]])
+      )
+      expect(lines.some((l) => l.account_number === '2641')).toBe(false)
+      expect(netByAccount(lines)).toEqual({ '1930': 100, '2081': -100 })
+    })
+  })
 })
 
 describe('fetchObjectClosingBalances', () => {
@@ -267,5 +317,70 @@ describe('generateOpeningBalances: next year\'s IB split per project', () => {
     })
     await expect(generateOpeningBalances(flat.client as never, 'co-1', 'user-1', 'fp-2026', 'fp-2027')).rejects.toThrow(/period locked/)
     expect(createJournalEntry).toHaveBeenCalledTimes(1)
+  })
+
+  describe('the per-account retry never doubles the IB', () => {
+    const splitClient = (journalEntries: Result[] = []) =>
+      makeClient({
+        fiscal_periods: [{ data: NEXT }, { error: null }],
+        dimensions: [{ data: [{ sie_dim_no: 6 }] }],
+        'rpc:compute_object_closing_balances': [{ data: [{ account_number: '1470', dimensions: { '6': 'P1' }, net: 1300 }] }],
+        journal_entries: journalEntries,
+      })
+
+    beforeEach(() => {
+      vi.mocked(generateTrialBalance).mockResolvedValue({ rows: TB_ROWS, totalDebit: 0, totalCredit: 0, isBalanced: true } as never)
+    })
+
+    it('does not retry a commit error without a Postgres code: the commit may have succeeded and its response been lost', async () => {
+      vi.mocked(createJournalEntry).mockRejectedValueOnce(new BookkeepingDatabaseError('commit_entry', 'TypeError: fetch failed', ''))
+      const { client } = splitClient()
+      await expect(generateOpeningBalances(client as never, 'co-1', 'user-1', 'fp-2026', 'fp-2027')).rejects.toThrow(/fetch failed/)
+      expect(createJournalEntry).toHaveBeenCalledTimes(1)
+    })
+
+    it('retries a commit the database rejected once a read confirms no IB is posted', async () => {
+      vi.mocked(createJournalEntry)
+        .mockRejectedValueOnce(new BookkeepingDatabaseError('commit_entry', 'trigger refused the line', 'P0001'))
+        .mockResolvedValueOnce({ id: 'ib-2027-flat' } as never)
+      const { client, calls } = splitClient([{ data: [] }])
+
+      const entry = await generateOpeningBalances(client as never, 'co-1', 'user-1', 'fp-2026', 'fp-2027')
+
+      expect(entry).toEqual({ id: 'ib-2027-flat' })
+      expect(createJournalEntry).toHaveBeenCalledTimes(2)
+      expect(calls).toContainEqual({ table: 'journal_entries', method: 'eq', args: ['fiscal_period_id', 'fp-2027'] })
+      expect(calls).toContainEqual({ table: 'journal_entries', method: 'eq', args: ['source_type', 'opening_balance'] })
+      expect(calls).toContainEqual({ table: 'journal_entries', method: 'eq', args: ['status', 'posted'] })
+    })
+
+    it('does not retry when the next period already holds a posted IB', async () => {
+      vi.mocked(createJournalEntry).mockRejectedValueOnce(new BookkeepingDatabaseError('commit_entry', 'trigger refused the line', 'P0001'))
+      const { client } = splitClient([{ data: [{ id: 'ib-posted' }] }])
+      await expect(generateOpeningBalances(client as never, 'co-1', 'user-1', 'fp-2026', 'fp-2027')).rejects.toThrow(/trigger refused/)
+      expect(createJournalEntry).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not retry when the posted-IB read fails', async () => {
+      vi.mocked(createJournalEntry).mockRejectedValueOnce(
+        new BookkeepingDatabaseError('create_entry_lines', 'violates check constraint "jel_dimensions_well_formed"', '23514')
+      )
+      const { client } = splitClient([{ error: { message: 'connection reset' } }])
+      await expect(generateOpeningBalances(client as never, 'co-1', 'user-1', 'fp-2026', 'fp-2027')).rejects.toThrow(/jel_dimensions_well_formed/)
+      expect(createJournalEntry).toHaveBeenCalledTimes(1)
+    })
+
+    it('treats an IB whose only project balances are on 26xx as unsplit (no tagged line, no retry)', async () => {
+      vi.mocked(createJournalEntry).mockRejectedValueOnce(new BookkeepingDatabaseError('commit_entry', 'period locked', 'P0001'))
+      const { client } = makeClient({
+        fiscal_periods: [{ data: NEXT }, { error: null }],
+        dimensions: [{ data: [{ sie_dim_no: 6 }] }],
+        'rpc:compute_object_closing_balances': [{ data: [{ account_number: '2611', dimensions: { '6': 'P1' }, net: -250 }] }],
+      })
+      await expect(generateOpeningBalances(client as never, 'co-1', 'user-1', 'fp-2026', 'fp-2027')).rejects.toThrow(/period locked/)
+      expect(createJournalEntry).toHaveBeenCalledTimes(1)
+      const input = vi.mocked(createJournalEntry).mock.calls[0][3]
+      expect(input.lines.every((l) => l.dimensions === undefined)).toBe(true)
+    })
   })
 })

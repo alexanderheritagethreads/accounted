@@ -1005,7 +1005,8 @@ export async function executeYearEndClosing(
  * Each account's closing balance becomes its opening balance, split per
  * project (issue #3313, lib/core/bookkeeping/opening-balance-split.ts): one
  * line per object of an accumulating dimension carrying that object's
- * closing balance, plus an untagged remainder. Per-account totals are the
+ * closing balance, plus an untagged remainder. The VAT accounts (26xx) are
+ * never split: their IB stays one untagged line. Per-account totals are the
  * trial balance's, exactly as before the split.
  * The entry must be balanced (total debit openings = total credit openings).
  */
@@ -1096,14 +1097,21 @@ export async function generateOpeningBalances(
     // The period is already closed, so a split that the database refuses
     // (a line insert constraint, e.g. a legacy bag the NOT VALID
     // jel_dimensions_well_formed CHECK never saw, or a commit trigger) must
-    // not leave the year without an IB. Both failures happen before a
-    // voucher is posted (the draft is cancelled), so retrying per account
-    // cannot double the IB. Anything else, or an IB that had no split,
-    // fails as before.
-    const unposted =
+    // not leave the year without an IB. Retrying per account must never
+    // double the IB, so it runs only when nothing can have been posted:
+    // - create_entry_lines: the draft never reached commit_journal_entry;
+    // - commit_entry with a Postgres error code: the database answered with
+    //   a rejection, so the commit transaction rolled back. A commit error
+    //   without one (a transport failure, a lost response) may hide a
+    //   commit that succeeded, so it fails as before;
+    // and only after re-reading that the next period holds no posted IB.
+    // Anything else, or an IB that had no split, fails as before.
+    const refusedBeforePosting =
       err instanceof BookkeepingDatabaseError &&
-      (err.operation === 'create_entry_lines' || err.operation === 'commit_entry')
-    if (objectBalances.size === 0 || !unposted) throw err
+      (err.operation === 'create_entry_lines' || (err.operation === 'commit_entry' && Boolean(err.pgCode)))
+    const hadSplit = openingLines.some((line) => line.dimensions !== undefined)
+    if (!hadSplit || !refusedBeforePosting) throw err
+    if (await mayHavePostedOpeningBalance(supabase, companyId, nextPeriodId)) throw err
     log.error('year-end: opening balance with project split refused, IB booked per account (non-fatal)', err as Error, {
       operation: 'year_end.opening_balance_split',
       alert: true,
@@ -1131,6 +1139,29 @@ export async function generateOpeningBalances(
   }
 
   return openingEntry
+}
+
+/**
+ * True unless a read confirms the period holds no posted opening balance
+ * entry. Guards the per-account IB retry: a second posted IB would double
+ * every balance and count as period activity. A failed read is treated as
+ * "may have posted", so the retry is skipped and the original error stands.
+ */
+async function mayHavePostedOpeningBalance(
+  supabase: SupabaseClient,
+  companyId: string,
+  fiscalPeriodId: string
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('journal_entries')
+    .select('id')
+    .eq('company_id', companyId)
+    .eq('fiscal_period_id', fiscalPeriodId)
+    .eq('source_type', 'opening_balance')
+    .eq('status', 'posted')
+    .limit(1)
+  if (error) return true
+  return Array.isArray(data) && data.length > 0
 }
 
 /**

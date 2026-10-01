@@ -77,8 +77,9 @@ export interface DimensionFilterPartialView {
    * On reports that carry opening balances: the IB is scoped to the filter
    * as well, i.e. the IB lines tagged with the object (issue #3313). The
    * year-end close and the SIE import put a project's opening balance on its
-   * own tagged IB line; a dimension that resets annually (kostnadsställe)
-   * opens at 0.
+   * own tagged IB line (a year without an IB entry derives it from the
+   * object's prior tagged history); a dimension that resets annually
+   * (kostnadsställe) and the VAT accounts (26xx) open at 0.
    */
   opening_balances?: 'dimension_scoped'
   /**

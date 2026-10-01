@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchEntryLines, type EntryLinesQuery } from '@/lib/bookkeeping/entry-lines'
-import { fetchAccumulatingDimensions } from '@/lib/bookkeeping/dimension-carry'
+import { carriesObjectBalances, fetchAccumulatingDimensions } from '@/lib/bookkeeping/dimension-carry'
 
 /**
  * Get opening balances (ingående balans) for a fiscal period.
@@ -29,6 +29,10 @@ import { fetchAccumulatingDimensions } from '@/lib/bookkeeping/dimension-carry'
  * `resets_annually = true`: kostnadsställe, custom dimensions) opens at 0 on
  * both paths: its balances start from zero every year, whatever tags the
  * prior history (fallback) or a hand-edited IB line happens to carry.
+ * Under a filter the VAT accounts (26xx) open at 0 on both paths too: their
+ * IB is never split per object (carriesObjectBalances), so the fallback's
+ * tagged prior VAT lines (a project invoice's output VAT, settled untagged)
+ * are not a project's opening balance.
  */
 export async function getOpeningBalances(
   supabase: SupabaseClient,
@@ -82,6 +86,7 @@ export async function getOpeningBalances(
     })
 
     for (const line of obLines) {
+      if (dimensionFilter && !carriesObjectBalances(line.account_number)) continue
       const existing = balances.get(line.account_number) || { debit: 0, credit: 0 }
       existing.debit += Number(line.debit_amount) || 0
       existing.credit += Number(line.credit_amount) || 0
@@ -108,6 +113,7 @@ export async function getOpeningBalances(
       debit: number | string
       credit: number | string
     }>) {
+      if (dimensionFilter && !carriesObjectBalances(row.account_number)) continue
       balances.set(row.account_number, {
         debit: Number(row.debit) || 0,
         credit: Number(row.credit) || 0,
