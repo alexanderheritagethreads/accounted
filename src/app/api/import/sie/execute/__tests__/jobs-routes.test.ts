@@ -91,6 +91,23 @@ describe('durable SIE HTTP boundaries',()=>{
     expect(response.status).toBe(409)
     expect((await response.json()).error.code).toBe('SIE_IMPORT_PERIOD_ALREADY_IMPORTED')
   })
+  it('answers a klarmarkerat target year with the reopen sentence as a 400, not a generic 500', async () => {
+    // ensureFiscalPeriod throws a plain Error marked user-facing, which the
+    // route hands to errorResponse (it is not a SIEJobValidationError).
+    const { userFacing } = await import('@/lib/errors/user-facing')
+    const refusal = 'Räkenskapsåret 2021 (2021-01-01 till 2021-12-31) är markerat som avslutat i ett tidigare program och tar inte emot verifikationer. ' +
+      'Öppna det igen under Inställningar > Bokföring > Räkenskapsår (knappen Öppna igen), importera filen på nytt och klarmarkera året igen efteråt.'
+    submit.mockRejectedValueOnce(userFacing(new Error(refusal)))
+    const form = new FormData()
+    form.set('file', new File(['#SIETYP 4\n#RAR 0 20210101 20211231'], 'closed.se'))
+    form.set('mappings', '[]')
+    const response = await routes.execute(new Request('https://example.test/api/import/sie/execute', { method: 'POST', body: form }))
+    expect(response.status).toBe(400)
+    const { error } = await response.json()
+    expect(error.code).toBe('VALIDATION_ERROR')
+    expect(error.message).toBe(refusal)
+    expect(error.message_en).toBe(refusal)
+  })
   it('accepts a custom account created during preview without requiring it to be remapped', async () => {
     queued.enqueue({ data: [{ account_number: '9999' }] })
     const created = await createAccounts(request({ accounts: [{ number: '9999', name: 'Custom account' }] }), staticParams)
