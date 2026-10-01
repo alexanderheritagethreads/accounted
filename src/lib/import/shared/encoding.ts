@@ -123,13 +123,28 @@ export function stripBOM(content: string): string {
  * Only the exact one-character form is stripped, so a genuine data row
  * beginning with "sep=" survives.
  */
-const EXCEL_SEPARATOR_HINT_RE = /^"?sep=.?"?\s*$/i
+const EXCEL_SEPARATOR_HINT_RE = /^"?sep=(.?)"?\s*$/i
 
 function stripSeparatorHint(content: string): string {
   const firstBreak = content.indexOf('\n')
   const firstLine = firstBreak === -1 ? content : content.slice(0, firstBreak)
   if (!EXCEL_SEPARATOR_HINT_RE.test(firstLine)) return content
   return firstBreak === -1 ? '' : content.slice(firstBreak + 1)
+}
+
+/**
+ * The delimiter an Excel `sep=X` first line declares, or null when the file
+ * opens with no hint (or an empty one). prepareContent drops the hint line, so
+ * a caller that needs the declared delimiter (the manual mapping UI's
+ * delimiter sniff) reads it here from the raw content first. The line is seen
+ * the way prepareContent sees it: BOM stripped, any line ending.
+ */
+export function readSeparatorHint(content: string): string | null {
+  const firstBreak = content.search(/[\r\n]/)
+  const rawFirstLine = firstBreak === -1 ? content : content.slice(0, firstBreak)
+  const match = EXCEL_SEPARATOR_HINT_RE.exec(stripBOM(decodeStringContent(rawFirstLine)))
+  const hint = match?.[1]
+  return hint && hint !== '"' ? hint : null
 }
 
 /**

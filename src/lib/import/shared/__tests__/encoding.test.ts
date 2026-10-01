@@ -7,6 +7,7 @@ import {
   recoverWordWithFFFD,
   stripBOM,
   prepareContent,
+  readSeparatorHint,
 } from '../encoding'
 
 describe('decodeStringContent', () => {
@@ -220,5 +221,29 @@ describe('prepareContent: Excel separator hint', () => {
 
   it('survives a file that is nothing but the hint', () => {
     expect(prepareContent('sep=;')).toBe('')
+  })
+})
+
+describe('readSeparatorHint', () => {
+  it('returns the delimiter the hint declares', () => {
+    expect(readSeparatorHint('sep=;\r\nDatum;Belopp')).toBe(';')
+    expect(readSeparatorHint('"sep=,"\nDatum,Belopp')).toBe(',')
+    expect(readSeparatorHint('\uFEFFsep=\t\nDatum\tBelopp')).toBe('\t')
+    expect(readSeparatorHint('SEP=;')).toBe(';')
+  })
+
+  it('returns null when there is no usable hint', () => {
+    expect(readSeparatorHint('Datum;Belopp\n2026-01-15;-99,00')).toBeNull()
+    expect(readSeparatorHint('sep=1;2;3\nDatum;Belopp')).toBeNull()
+    expect(readSeparatorHint('sep=\nDatum;Belopp')).toBeNull()
+    expect(readSeparatorHint('"sep="\nDatum;Belopp')).toBeNull()
+    expect(readSeparatorHint('')).toBeNull()
+  })
+
+  it('agrees with prepareContent on which first lines are hints', () => {
+    for (const content of ['sep=;\nDatum;Belopp', '"sep=,"\nDatum,Belopp', '\uFEFFsep=;\r\nDatum;Belopp']) {
+      expect(readSeparatorHint(content)).not.toBeNull()
+      expect(prepareContent(content).startsWith('Datum')).toBe(true)
+    }
   })
 })
