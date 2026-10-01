@@ -204,6 +204,7 @@ import { prompts, findPrompt } from './prompts'
 import { findSkill, loadAllSkills, toSummary, SKILL_MIME_TYPE, SKILL_URI_PREFIX, skillUri, skillSlugFromUri } from './skills'
 import { loadSkillProvenance, skillBodyHash, oauthActorLabel } from '@/lib/agent-skills/provenance'
 import { loadCompanySkillRows, ownSkill } from '@/lib/agent-skills/company-skills'
+import { skillAppliesToCompany } from '@/lib/agent-skills/applicability'
 import { buildOwnSkill, buildOwnText, OWN_SKILL_COPY } from '@/lib/agent-skills/own-skill-body'
 import { loadDocumentClaims, sharedDocumentWarning } from '@/lib/receipt-hunt/document-claims'
 import { SkillBodySchema } from '@/lib/agent-skills/validation'
@@ -6295,14 +6296,7 @@ export const tools: McpTool[] = [
       // applicability declaration are always shown (universal).
       const applicable = includeAll
         ? tagFiltered
-        : tagFiltered.filter((s) => {
-            if (!s.applicability) return true
-            const a = s.applicability
-            if (a.entity_type && a.entity_type !== 'both' && entityType && entityType !== a.entity_type) return false
-            if (a.requires?.includes('employees') && !hasEmployees) return false
-            if (a.requires?.includes('vat_registered') && !vatRegistered) return false
-            return true
-          })
+        : tagFiltered.filter((s) => skillAppliesToCompany(s.applicability, { entityType, hasEmployees, vatRegistered }))
 
       return {
         skills: applicable.map((s) => ({
