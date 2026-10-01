@@ -117,6 +117,8 @@ const ACTIVE_WEBHOOK = {
   webhook_url: 'https://example.com/hooks',
   active: true,
   disabled_at: null,
+  verified_at: '2026-05-15T12:00:00Z',
+  verification_grace_ends_at: null,
 }
 
 beforeEach(() => {

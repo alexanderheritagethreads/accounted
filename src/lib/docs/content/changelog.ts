@@ -35,6 +35,12 @@ The first stable release of the public REST API. Six phases of development cover
 - **Reads**: \`GET /accounts\`, \`GET /fiscal-periods\`.
 - All write surfaces honour strict-mode (commit fully or error with no side effects).
 
+### Webhooks: endpoint verification (2026-09)
+
+- **Behaviour change: webhook URLs must pass an ownership handshake before events are delivered** (#3191, 2026-09-29). Accounted POSTs a signed \`webhook.verification\` event whose \`data.object.challenge\` the endpoint returns as \`{"challenge": "..."}\` with a 2xx within 10 seconds ([contract](/docs/api/webhooks#endpoint-verification)). New webhooks start \`pending\` and receive nothing until they pass; a changed \`webhook_url\` starts over. Run the handshake with the new \`POST /webhooks/{id}/verify\` (\`422 WEBHOOK_VERIFICATION_FAILED\` with \`details.reason\` on a failure, \`429\` inside a 10-second cooldown); Accounted also retries on its own.
+- **Existing webhooks keep receiving events for 30 days** (\`verification_status: "grace_period"\`, end in \`verification_grace_ends_at\`) while Accounted attempts the handshake daily. A webhook still unverified after that is \`paused\`: nothing is delivered until it passes.
+- Every webhook read and write response carries \`verification_status\`, \`verified_at\`, \`verification_grace_ends_at\`, \`verification_attempts\`, \`verification_last_attempt_at\`, \`verification_last_error\` and \`verification_next_attempt_at\`. \`POST /webhooks/{id}/test\` and \`POST /webhook-deliveries/{id}/retry\` answer \`409 WEBHOOK_NOT_VERIFIED\` for \`pending\` and \`paused\` webhooks.
+
 ### Invoices (2026-09)
 
 - **Behaviour change: \`invoice.paid\` and \`supplier_invoice.paid\` webhooks** (2026-09-30): both now fire once, when an invoice becomes fully paid, on every path that settles it: \`/mark-paid\`, a bank-transaction match (\`/transactions/{id}/match-invoice\`, \`/match-supplier-invoice\`, the batch match), linking a bank transaction or an invoice to an existing voucher, the Stripe payment sync and the agent (MCP) equivalents. Before, a bank match emitted neither event (only \`*.match_confirmed\` internally), so an invoice paid through the bank never reached subscribers; and \`/mark-paid\` also fired them for a partial payment. A partial payment now fires neither event. The payload is unchanged and the API version date is unchanged.
