@@ -14,8 +14,10 @@
  * The route lives outside the /companies/{companyId}/ tree because callers
  * referencing a delivery already have its id; nesting under company would
  * force the receiver-debugging UI to round-trip company resolution from
- * the delivery id. Tenancy is still enforced: the wrapper resolves the
- * delivery's company_id via the row and verifies caller membership.
+ * the delivery id. Tenancy is still enforced: the route resolves the
+ * delivery's company_id from the row and runs the wrapper's company gate on
+ * it (`ctx.checkCompanyAccess`): membership, the key's company allowlist,
+ * and the write refusals for a viewer role or read-only key access.
  */
 
 import { z } from 'zod'
@@ -95,21 +97,11 @@ export const POST = withApiV1<{ params: Promise<{ id: string }> }>(
     const o = original as O
 
     // Tenancy check: the wrapper does not have a companyId from the URL
-    // here (deliberate; see file header). Verify the caller is a member of
-    // the delivery's company.
-    const { data: membership, error: membershipErr } = await ctx.supabase
-      .from('company_members')
-      .select('company_id')
-      .eq('user_id', ctx.userId)
-      .eq('company_id', o.company_id)
-      .maybeSingle()
-
-    if (membershipErr) return v1ErrorResponse(membershipErr, ctx.log, { requestId: ctx.requestId })
-    if (!membership) {
-      // 404 (not 403) so we don't leak existence of the delivery to a
-      // non-member; matches the wrapper's standard pattern.
-      return v1ErrorResponseFromCode('NOT_FOUND', ctx.log, { requestId: ctx.requestId })
-    }
+    // here (deliberate; see file header), so run its company gate on the
+    // delivery's company. A non-member and a company outside the key's
+    // allowlist both get the same 404 as an unknown delivery id.
+    const denied = await ctx.checkCompanyAccess(o.company_id)
+    if (denied) return denied
 
     if (o.status !== 'dead' && o.status !== 'delivered') {
       return v1ErrorResponseFromCode('VALIDATION_ERROR', ctx.log, {
