@@ -1,6 +1,6 @@
 import { after, NextResponse } from 'next/server'
 import { detectEncoding, decodeBuffer, parseSIEFile } from '@/lib/import/sie-parser'
-import { suggestMappings } from '@/lib/import/account-mapper'
+import { suggestSIEMappings } from '@/lib/import/sie-preview-mappings'
 import { BAS_REFERENCE } from '@/lib/bookkeeping/bas-data'
 import { withRouteContext } from '@/lib/api/with-route-context'
 import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
@@ -51,7 +51,9 @@ export const POST = withRouteContext('sie_import.execute', async (request,ctx) =
     else {
       const stored = await fetchAllRows<SIEAccountMappingRecord>(({from,to}) => supabase.from('sie_account_mappings')
         .select('*').eq('company_id',companyId).order('source_account').range(from,to))
-      mappings = SIEJobMappingsSchema.parse(suggestMappings(parseSIEFile(content).accounts,BAS_REFERENCE,stored))
+      // The upload's own decision (#3312): a stored 9xxx target for an account
+      // with amounts would otherwise reach the job's class check and refuse.
+      mappings = SIEJobMappingsSchema.parse(suggestSIEMappings(parseSIEFile(content),BAS_REFERENCE,stored).mappings)
     }
     const job = await submitSIEJob(supabase,companyId!,user.id,content,mappings,{...options,filename:file.name},file)
     after(async () => { await runSIEWorker({importId:job.id}) })

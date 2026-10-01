@@ -735,7 +735,7 @@ Accepts a SIE4 file (CP437 / Windows-1252 / UTF-8 auto-detected, up to 50 MB) as
 - An identical retry returns the same execution. Deliberate replacement requires options.onExistingPeriod=replace and options.supersedesImportId naming the reviewed predecessor, and uses a new batch after storno.
 - The operation can take 1-5 minutes for multi-year files. The HTTP response returns immediately with operation_id; poll /operations/{id} every ~2s for status.
 - Chunks are visible while importing. Filing and export are held until completion. Undo uses batch storno and retains accounting history.
-- Account mappings are generated server-side from the file's #KONTO records (plus stored per-company overrides). By default the file's account names are carried into the chart, renaming existing accounts whose names differ: pass options.updateAccountNames=false to keep BAS default names.
+- Account mappings are generated server-side from the file's #KONTO records (plus stored per-company overrides), by the same rules as the dashboard upload: a class 9 account carrying amounts is mapped to 2999 OBS-konto, also over a stored class 9 mapping. By default the file's account names are carried into the chart, renaming existing accounts whose names differ: pass options.updateAccountNames=false to keep BAS default names.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|

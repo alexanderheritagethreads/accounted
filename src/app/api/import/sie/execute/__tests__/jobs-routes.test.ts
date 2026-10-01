@@ -156,6 +156,20 @@ describe('durable SIE HTTP boundaries',()=>{
     expect(supabase.rpc).not.toHaveBeenCalled()
   })
 
+  it('without supplied mappings, applies the upload\'s class 9 decision over a stored 9xxx mapping (#3312)', async () => {
+    // What an earlier provider import saved for the account, which the job refuses as a target for amounts.
+    queued.enqueue({ data: [{ id: 'm-1', user_id: 'actor-1', source_account: '9999', source_name: 'OBS', target_account: '9999',
+      confidence: 1, match_type: 'exact', created_at: '', updated_at: '' }] })
+    const form = new FormData()
+    form.set('file', new File(['#SIETYP 4\n#RAR 0 20260101 20261231\n#KONTO 1930 "Bank"\n#KONTO 9999 "OBS"\n' +
+      '#VER A 1 20260201 "Okänd inbetalning"\n{\n#TRANS 1930 {} 100\n#TRANS 9999 {} -100\n}'], 'no-mappings.se'))
+    const response = await routes.execute(new Request('https://example.test/api/import/sie/execute', { method: 'POST', body: form }))
+    expect(response.status).toBe(202)
+    const mappings = submit.mock.calls[0][4] as Array<{ sourceAccount: string; targetAccount: string }>
+    expect(mappings.find(m => m.sourceAccount === '9999')).toMatchObject({ targetAccount: '2999', matchType: 'class' })
+    expect(mappings.find(m => m.sourceAccount === '1930')).toMatchObject({ targetAccount: '1930' })
+  })
+
   it('carries the submission validator\'s own sentence instead of the generic validation text', async () => {
     const actual = await vi.importActual<typeof import('@/lib/import/sie-jobs')>('@/lib/import/sie-jobs')
     submit.mockRejectedValueOnce(new actual.SIEJobValidationError('SIE-verifikation LESSLIE3 (2025-01-02) ligger utanför räkenskapsåret.'))

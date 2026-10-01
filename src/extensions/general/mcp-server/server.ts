@@ -22170,7 +22170,8 @@ export const tools: McpTool[] = [
       }
 
       const { parseSIEFile, validateSIEFile } = await import('@/lib/import/sie-parser')
-      const { suggestMappings, getMappingStats, isSystemAccount } = await import('@/lib/import/account-mapper')
+      const { getMappingStats, isSystemAccount } = await import('@/lib/import/account-mapper')
+      const { suggestSIEMappings } = await import('@/lib/import/sie-preview-mappings')
       const { scanSieForCp1252Artifacts, formatSieArtifactWarning } = await import('@/lib/import/sie-artifact-scan')
       const { generateImportPreview, checkDuplicateImport, checkDuplicatePeriodImport } = await import('@/lib/import/sie-import')
       const { BAS_REFERENCE } = await import('@/lib/bookkeeping/bas-data')
@@ -22240,10 +22241,14 @@ export const tools: McpTool[] = [
         .from('sie_account_mappings')
         .select('*')
         .eq('company_id', companyId)
-      const mappings = suggestMappings(
-        bookkeepingAccounts,
+      // The dashboard upload's own decision (#3312), so the mappings an agent
+      // passes on to gnubok_import_sie are the ones the job accepts: class 9
+      // amounts to 2999, also over a stored class 9 mapping.
+      const { mappings } = suggestSIEMappings(
+        parsed,
         BAS_REFERENCE,
-        (storedMappings as import('@/lib/import/types').SIEAccountMappingRecord[]) || undefined
+        (storedMappings as import('@/lib/import/types').SIEAccountMappingRecord[]) || undefined,
+        bookkeepingAccounts
       )
       const mappingStats = getMappingStats(mappings)
       const preview = generateImportPreview(parsed, mappings)
