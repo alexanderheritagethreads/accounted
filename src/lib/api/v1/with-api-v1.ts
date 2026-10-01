@@ -147,6 +147,15 @@ export interface ApiV1Context {
    * `/health`).
    */
   companyId?: string
+  /**
+   * Whether this request's caller may write the URL company at all: its
+   * membership is not read-only (viewer) and the key's access to the company
+   * is not read-only. The same two gates that refuse a write request above
+   * the handler; exposed for a READ route that must decide whether a side
+   * effect of the read may be persisted (it also needs the matching write
+   * scope). False when the route has no `:companyId` segment.
+   */
+  companyWritable: boolean
   /** Resolved dry-run flag. Routes that mutate state must honor this. */
   dryRun: boolean
   /** Resolved idempotency key, if supplied. */
@@ -345,6 +354,7 @@ export function withApiV1<P extends DynamicParams = { params: Promise<Record<str
           unattendedCommitLimit: null,
           mode: 'live',
           supabase: createAnonClient(),
+          companyWritable: false,
           dryRun: false,
           idempotencyKey: null,
         }
@@ -427,6 +437,7 @@ export function withApiV1<P extends DynamicParams = { params: Promise<Record<str
       const companyId = typeof rawCompanyId === 'string' ? rawCompanyId : undefined
 
       const supabase = createServiceClientNoCookies()
+      let companyWritable = false
 
       if (companyId !== undefined) {
         const { data: membership, error: membershipErr } = await supabase
@@ -467,6 +478,12 @@ export function withApiV1<P extends DynamicParams = { params: Promise<Record<str
         }
 
         const membershipRole = (membership as { role?: string }).role
+        const roleReadOnly = membershipRole === READ_ONLY_ROLE
+        const connectionReadOnly = Boolean(
+          auth.readOnlyCompanyIds &&
+            auth.readOnlyCompanyIds.some((id) => id.toLowerCase() === companyId.toLowerCase()),
+        )
+        companyWritable = !roleReadOnly && !connectionReadOnly
 
         // Read-only role gate. Cookie routes enforce the viewer role through
         // withRouteContext({ requireWrite }) and the DB enforces it through
@@ -482,7 +499,7 @@ export function withApiV1<P extends DynamicParams = { params: Promise<Record<str
         // saw before (no new company-existence signal), and BEFORE the seat
         // gate so a refused write costs no extra read.
         if (
-          membershipRole === READ_ONLY_ROLE &&
+          roleReadOnly &&
           (!SAFE_METHODS.has(request.method) || scopeKind(requiredScope) === 'write')
         ) {
           userLog.warn('read-only membership refused write request', {
@@ -511,8 +528,7 @@ export function withApiV1<P extends DynamicParams = { params: Promise<Record<str
         // migration 20260928112724). Same write test as the role gate above,
         // and after it, so a viewer keeps the answer that names the role.
         if (
-          auth.readOnlyCompanyIds &&
-          auth.readOnlyCompanyIds.some((id) => id.toLowerCase() === companyId.toLowerCase()) &&
+          connectionReadOnly &&
           (!SAFE_METHODS.has(request.method) || scopeKind(requiredScope) === 'write')
         ) {
           userLog.warn('read-only company access refused write request', {
@@ -670,6 +686,7 @@ export function withApiV1<P extends DynamicParams = { params: Promise<Record<str
         mode: auth.mode,
         supabase,
         companyId,
+        companyWritable,
         dryRun,
         idempotencyKey,
       }
