@@ -17,6 +17,10 @@ ensureInitialized()
  * active begäran per invoice, DB-enforced), archives the file as
  * räkenskapsinformation, and returns the XML for download.
  *
+ * ROT and RUT only: RotRutPayoutFileSchema refuses deduction_type
+ * gron_teknik with a 400 (grön teknik has its own e-tjänst and schema), and a
+ * grön teknik invoice id under rot/rut is blocked by evaluateInvoiceForFile.
+ *
  * All-or-nothing: if any selected invoice fails eligibility the request is
  * rejected with per-invoice blockers: a silently thinner file would be a
  * guess about the user's intent.
