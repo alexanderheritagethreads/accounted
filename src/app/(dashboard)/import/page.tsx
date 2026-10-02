@@ -2342,11 +2342,14 @@ const ShopifyPanel = getSettingsPanel('shopify')
 // And for the Zettle purchase feed: same category as the Shopify feed above.
 const ZettlePanel = getSettingsPanel('zettle')
 
+// And for the Medusa order feed: same category as the WooCommerce feed above.
+const MedusaPanel = getSettingsPanel('medusa')
+
 // ============================================================
 // Import Page with Selection Cards
 // ============================================================
 
-type ImportMode = null | 'psd2' | 'stripe' | 'woocommerce' | 'shopify' | 'zettle' | 'bank' | 'skattekonto' | 'sie' | 'underlag' | 'csv_data' | 'migration'
+type ImportMode = null | 'psd2' | 'stripe' | 'woocommerce' | 'shopify' | 'zettle' | 'medusa' | 'bank' | 'skattekonto' | 'sie' | 'underlag' | 'csv_data' | 'migration'
 
 export default function ImportPage() {
   const { isSandbox, role } = useCompany()
@@ -2382,7 +2385,7 @@ export default function ImportPage() {
     // Manual file-import modes (bank file, CSV/Excel, SIE) stay reachable.
     const allowedModes = isSandbox
       ? ['bank', 'skattekonto', 'sie', 'underlag', 'csv_data']
-      : ['psd2', 'stripe', 'woocommerce', 'shopify', 'zettle', 'bank', 'skattekonto', 'sie', 'underlag', 'csv_data', 'migration']
+      : ['psd2', 'stripe', 'woocommerce', 'shopify', 'zettle', 'medusa', 'bank', 'skattekonto', 'sie', 'underlag', 'csv_data', 'migration']
     if (!isSandbox && searchParams.get('migration')) {
       setMode('migration')
     } else {
@@ -2459,6 +2462,8 @@ export default function ImportPage() {
   const shopifyDisabled = isSandbox
   const hasZettleExtension = ENABLED_EXTENSION_IDS.has('zettle')
   const zettleDisabled = isSandbox
+  const hasMedusaExtension = ENABLED_EXTENSION_IDS.has('medusa')
+  const medusaDisabled = isSandbox
 
   return (
     <div className="space-y-8">
@@ -2544,6 +2549,15 @@ export default function ImportPage() {
                     chips={<LogoChip src="/logos/zettle.svg" name="Zettle" />}
                     disabled={zettleDisabled}
                     onClick={() => setMode('zettle')}
+                  />
+                )}
+                {hasMedusaExtension && (
+                  <ImportRow
+                    title={t('medusa_title')}
+                    sub={t('medusa_description')}
+                    chip={<BetaChip label={t('badge_beta')} />}
+                    disabled={medusaDisabled}
+                    onClick={() => setMode('medusa')}
                   />
                 )}
                 {hasMigrationExtension && (
@@ -2778,6 +2792,17 @@ export default function ImportPage() {
             icon={ShoppingBag}
             title={t('zettle_not_enabled_title')}
             description={t('zettle_not_enabled_description')}
+          />
+        )
+      )}
+      {mode === 'medusa' && (
+        hasMedusaExtension && MedusaPanel ? (
+          <MedusaPanel />
+        ) : (
+          <EmptyState
+            icon={ShoppingBag}
+            title={t('medusa_not_enabled_title')}
+            description={t('medusa_not_enabled_description')}
           />
         )
       )}

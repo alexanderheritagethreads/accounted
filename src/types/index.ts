@@ -4140,7 +4140,7 @@ export interface IngestResult {
 
 // ── Webshop orders (Orders page; synced by the woocommerce/shopify/zettle extensions) ──
 
-export type WebshopPlatform = 'woocommerce' | 'shopify' | 'zettle'
+export type WebshopPlatform = 'woocommerce' | 'shopify' | 'zettle' | 'medusa'
 export type WebshopOrderRowType = 'order' | 'refund'
 
 /** One VAT rate bucket of an order, in the order's currency. */

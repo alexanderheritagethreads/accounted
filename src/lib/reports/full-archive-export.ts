@@ -1401,6 +1401,7 @@ export const ARCHIVE_EXCLUDED_TABLES: Record<string, string> = {
   woocommerce_connections: 'WooCommerce connection state (encrypted API secrets)',
   shopify_connections: 'Shopify connection state (encrypted API secrets)',
   zettle_connections: 'Zettle connection state (encrypted OAuth refresh token)',
+  medusa_connections: 'Medusa connection state (encrypted secret API key)',
 }
 
 /** Max parent ids per `IN (...)` chunk: keeps the PostgREST URL well under limits. */

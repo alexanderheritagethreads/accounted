@@ -177,6 +177,9 @@ export type CoreEvent =
   // Zettle organization lifecycle: same audit doctrine as shopify.*.
   | { type: 'zettle.connected'; payload: { connectionId: string; organizationUuid: string; userId: string; companyId: string } }
   | { type: 'zettle.disconnected'; payload: { connectionId: string; organizationUuid: string | null; reason: 'user' | 'revoked_upstream'; userId: string; companyId: string } }
+  // Medusa store lifecycle: same audit doctrine as woocommerce.*.
+  | { type: 'medusa.connected'; payload: { connectionId: string; storeUrl: string; userId: string; companyId: string } }
+  | { type: 'medusa.disconnected'; payload: { connectionId: string; storeUrl: string | null; reason: 'user' | 'revoked_upstream'; userId: string; companyId: string } }
   // Periods
   | { type: 'period.locked'; payload: { period: FiscalPeriod; userId: string; companyId: string } }
   | { type: 'period.unlocked'; payload: { period: FiscalPeriod; userId: string; companyId: string } }

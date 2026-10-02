@@ -16,6 +16,7 @@ import { woocommerceExtension } from '@/extensions/general/woocommerce'
 import { shopifyExtension } from '@/extensions/general/shopify'
 import { zettleExtension } from '@/extensions/general/zettle'
 import { mailExtension } from '@/extensions/general/mail'
+import { medusaExtension } from '@/extensions/general/medusa'
 
 export const FIRST_PARTY_EXTENSIONS: Extension[] = [
   calendarExtension,
@@ -34,4 +35,5 @@ export const FIRST_PARTY_EXTENSIONS: Extension[] = [
   shopifyExtension,
   zettleExtension,
   mailExtension,
+  medusaExtension,
 ]

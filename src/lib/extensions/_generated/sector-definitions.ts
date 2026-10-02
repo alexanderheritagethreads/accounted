@@ -207,5 +207,16 @@ export const EXTENSION_DEFINITIONS: Record<string, ExtensionDefinition[]> = {
           "hasOwnData": true,
           "subscriptionNotice": "Kräver ett Google-konto. Varje brevlåda kopplas av sin egen ägare och kan kopplas från när som helst."
     },
+    {
+          "slug": "medusa",
+          "name": "Medusa",
+          "sector": "general",
+          "category": "import",
+          "icon": "ShoppingBag",
+          "dataPattern": "manual",
+          "description": "Hämta betalda ordrar från din Medusa-butik till Ordersidan",
+          "longDescription": "Anslut din Medusa-backend med en secret API-nyckel så hämtas betalda ordrar automatiskt varje natt till Ordersidan, med belopp och moms per order. Inget bokförs automatiskt: du bokför varje order själv från Ordersidan.",
+          "hasOwnData": true
+    },
   ],
 }

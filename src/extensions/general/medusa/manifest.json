@@ -1,0 +1,19 @@
+{
+  "id": "medusa",
+  "sector": "general",
+  "exportName": "medusaExtension",
+  "entryPoint": "@/extensions/general/medusa",
+  "workspace": null,
+  "requiredEnvVars": ["MEDUSA_CREDENTIALS_ENCRYPTION_KEY"],
+  "optionalEnvVars": [],
+  "npmDependencies": [],
+  "definition": {
+    "name": "Medusa",
+    "category": "import",
+    "icon": "ShoppingBag",
+    "dataPattern": "manual",
+    "hasOwnData": true,
+    "description": "Hämta betalda ordrar från din Medusa-butik till Ordersidan",
+    "longDescription": "Anslut din Medusa-backend med en secret API-nyckel så hämtas betalda ordrar automatiskt varje natt till Ordersidan, med belopp och moms per order. Inget bokförs automatiskt: du bokför varje order själv från Ordersidan."
+  }
+}

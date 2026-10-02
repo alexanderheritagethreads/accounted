@@ -28,6 +28,9 @@ const SETTINGS_PANELS: Record<string, ComponentType> = {
   zettle: dynamic(
     () => import('@/extensions/general/zettle/components/ZettleSettingsPanel')
   ),
+  medusa: dynamic(
+    () => import('@/extensions/general/medusa/components/MedusaSettingsPanel')
+  ),
 }
 
 /**

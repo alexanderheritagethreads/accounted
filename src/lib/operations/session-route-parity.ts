@@ -674,10 +674,18 @@ export const SESSION_ROUTE_PARITY: Record<string, ParityEntry> = {
   'POST /api/extensions/ext/zettle/sync': gap('P3', EXT_SYNC),
   'POST /api/extensions/ext/zettle/backfill': gap('P3', EXT_SYNC),
   'POST /api/extensions/ext/zettle/transaction-sync': gap('P3', EXT_SYNC),
+
+  // medusa (no OAuth handshake: a merchant-created secret API key, same
+  // manual-entry shape as woocommerce's manual-connect)
+  'POST /api/extensions/ext/medusa/manual-connect': uiOnly('enters a third-party store credential'),
+  'DELETE /api/extensions/ext/medusa/disconnect': gap('P3'),
+  'POST /api/extensions/ext/medusa/sync': gap('P3', EXT_SYNC),
+  'POST /api/extensions/ext/medusa/backfill': gap('P3', EXT_SYNC),
+  'POST /api/extensions/ext/medusa/transaction-sync': gap('P3', EXT_SYNC),
 }
 
 /**
  * The exact number of 'gap' entries today. Covering a gap means lowering
  * this; adding one means raising it in the same diff, visibly.
  */
-export const GAP_CEILING = 133
+export const GAP_CEILING = 137
