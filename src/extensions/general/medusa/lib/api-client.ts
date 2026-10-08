@@ -5,8 +5,12 @@ import type { MedusaOrder, MedusaStoreInfo } from '../types'
 /**
  * Minimal Medusa v2 Admin API client for the order feed.
  *
- * Auth is a Bearer secret API key (Medusa Settings > API Key Management >
- * Secret keys), sent as `Authorization: Bearer sk_...`. Unlike WooCommerce
+ * Auth is a secret API key (Medusa Settings > API Key Management > Secret
+ * keys), sent as HTTP Basic with the key as the username and an empty
+ * password: `Authorization: Basic base64("sk_...:")`. Medusa answers 401 to
+ * `Bearer sk_...` — verified against a live Medusa 2.15 store (2026-10-08);
+ * the first version of this client used Bearer and could not have connected
+ * to any store. Unlike WooCommerce
  * there is no query-string credential fallback: Medusa's Admin API does not
  * document one, and putting a secret key in a URL would log it in every
  * proxy/CDN access log between here and the merchant's host.
@@ -19,11 +23,14 @@ import type { MedusaOrder, MedusaStoreInfo } from '../types'
  * this under the service role, exactly the network position an SSRF would
  * want (mirrors the WooCommerce client's reasoning verbatim).
  *
- * ⚠️ Not verified against a live Medusa instance in this environment (no
- * Medusa/Postgres available here). Endpoint paths, query param names and
- * pagination shape follow Medusa v2's documented Admin API as understood at
- * the time of writing; see types.ts for the same caveat on the order shape.
+ * Verified against a live Medusa 2.15 store (2026-10-08): auth, the
+ * updated_at window filter, offset pagination and the order field list.
  */
+
+/** HTTP Basic header for a Medusa secret API key (key as username, empty password). */
+export function basicAuth(apiKey: string): string {
+  return `Basic ${Buffer.from(`${apiKey}:`).toString('base64')}`
+}
 
 const REQUEST_TIMEOUT_MS = 30_000
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504])
@@ -158,7 +165,7 @@ export async function medusaGet<T>(
       // safeFetch: public address only (checked now, not at connect time),
       // no redirects. A 3xx from the store is a failure, never a hop.
       response = await safeFetch(buildUrl(creds, path, params), {
-        headers: { Accept: 'application/json', Authorization: `Bearer ${creds.adminApiKey}` },
+        headers: { Accept: 'application/json', Authorization: basicAuth(creds.adminApiKey) },
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       })
     } catch (err) {
@@ -192,8 +199,38 @@ export async function medusaGet<T>(
   throw lastError instanceof Error ? lastError : new MedusaApiError('Medusa request failed', 0)
 }
 
-const ORDER_FIELDS =
-  '+items.tax_lines,+items.tax_total,+shipping_methods.tax_lines,+shipping_methods.tax_total,+payment_collections.amount,+payment_collections.captured_amount,+payment_collections.status,+shipping_address.first_name,+shipping_address.last_name,+shipping_address.company,+shipping_address.country_code'
+/**
+ * Explicit field list, verified against a live Medusa 2.15 store. Medusa computes
+ * order and line totals from the relations that are LOADED: a narrower list
+ * (e.g. shipping_methods without its amount or adjustments) silently returns
+ * wrong totals — shipping as 0, the original total without shipping. Hence
+ * whole relations (`*items`, `*shipping_methods`, `*credit_lines` …) rather
+ * than picked columns.
+ */
+const ORDER_FIELDS = [
+  'id',
+  'display_id',
+  'status',
+  'currency_code',
+  'email',
+  'created_at',
+  'updated_at',
+  'canceled_at',
+  'original_total',
+  'total',
+  'tax_total',
+  '*items',
+  '*items.tax_lines',
+  '*items.adjustments',
+  '*shipping_methods',
+  '*shipping_methods.tax_lines',
+  '*shipping_methods.adjustments',
+  '*credit_lines',
+  '*payment_collections',
+  '*payment_collections.payments',
+  '*payment_collections.payments.refunds',
+  '*shipping_address',
+].join(',')
 
 export interface ListOrdersOptions {
   /** ISO timestamp; orders updated at or after this instant. */

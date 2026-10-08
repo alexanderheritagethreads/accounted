@@ -52,7 +52,7 @@ afterEach(() => {
 })
 
 describe('medusaGet: outbound URL guard', () => {
-  it('happy path: Bearer auth, no redirect following, DNS check runs per request', async () => {
+  it('happy path: Basic auth (secret key as username), no redirect following, DNS check runs per request', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ orders: [] }))
 
     await expect(medusaGet(CREDS, '/admin/orders', { limit: '1' })).resolves.toEqual({ orders: [] })
@@ -60,7 +60,7 @@ describe('medusaGet: outbound URL guard', () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('https://backend.example.se/admin/orders?limit=1')
     expect(init.redirect).toBe('manual')
-    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer sk_admin_test')
+    expect((init.headers as Record<string, string>).Authorization).toBe('Basic c2tfYWRtaW5fdGVzdDo=')
     expect(init.signal).toBeInstanceOf(AbortSignal)
     expect(guard.validateUrl).toHaveBeenCalledWith(url, undefined)
   })

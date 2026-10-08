@@ -22,13 +22,16 @@ import {
   buildVatBreakdown,
   mapLineItems,
   mapOrderToWebshopRow,
+  mapRefundsToWebshopRows,
   medusaOrderExternalId,
+  medusaRefundExternalId,
   medusaStoreScope,
   orderQualifies,
   resolveWindowStartIso,
   syncMedusaOrders,
 } from '../lib/order-sync'
 import type { MedusaConnection, MedusaOrder } from '../types'
+import liveOrders from './fixtures/medusa-orders-live.json'
 
 process.env.MEDUSA_CREDENTIALS_ENCRYPTION_KEY = 'test-key'
 
@@ -69,25 +72,22 @@ function makeOrder(overrides: Partial<MedusaOrder> = {}): MedusaOrder {
     status: 'completed',
     currency_code: 'sek',
     email: 'kund@example.se',
-    region_id: 'reg_1',
     created_at: '2026-08-01T09:00:00.000Z',
     updated_at: '2026-08-01T09:05:00.000Z',
-    total: 125000,
-    tax_total: 25000,
-    item_total: 100000,
-    shipping_total: 0,
+    total: 1250,
+    tax_total: 250,
     items: [
       {
         id: 'item_1',
         title: 'Produkt A',
         quantity: 2,
-        total: 125000,
-        tax_total: 25000,
-        tax_lines: [{ rate: 25, code: null, total: 25000 }],
+        total: 1250,
+        tax_total: 250,
+        tax_lines: [{ rate: 25, code: null, total: 250 }],
       },
     ],
     shipping_methods: [],
-    payment_collections: [{ status: 'captured', amount: 125000, captured_amount: 125000 }],
+    payment_collections: [{ status: 'captured', amount: 1250, captured_amount: 1250 }],
     shipping_address: {
       first_name: 'Test',
       last_name: 'Person',
@@ -157,7 +157,7 @@ describe('orderQualifies', () => {
   it('qualifies a partially captured payment', () => {
     expect(
       orderQualifies(
-        makeOrder({ payment_collections: [{ status: 'partially_captured', amount: 125000, captured_amount: 50000 }] }),
+        makeOrder({ payment_collections: [{ status: 'partially_captured', amount: 1250, captured_amount: 500 }] }),
       ),
     ).toBe(true)
   })
@@ -167,25 +167,38 @@ describe('orderQualifies', () => {
   })
 
   it('refuses an order with no captured funds', () => {
-    expect(orderQualifies(makeOrder({ payment_collections: [{ status: 'not_paid', amount: 125000 }] }))).toBe(false)
+    expect(orderQualifies(makeOrder({ payment_collections: [{ status: 'not_paid', amount: 1250 }] }))).toBe(false)
     expect(orderQualifies(makeOrder({ payment_collections: [] }))).toBe(false)
     expect(orderQualifies(makeOrder({ payment_collections: undefined }))).toBe(false)
   })
 })
 
 describe('buildVatBreakdown', () => {
-  it('derives a single bucket from item_total/shipping_total/tax_total', () => {
+  it('builds one bucket per rate from the lines', () => {
     expect(buildVatBreakdown(makeOrder())).toEqual([{ rate: 25, net: 1000, tax: 250 }])
   })
 
-  it('includes shipping in the net before deriving the rate', () => {
-    expect(
-      buildVatBreakdown(makeOrder({ item_total: 100000, shipping_total: 4900, tax_total: 26225 })),
-    ).toEqual([{ rate: 25, net: 1049, tax: 262.25 }])
+  it('splits a mixed-rate order into separate buckets, highest rate first', () => {
+    const order = makeOrder({
+      items: [
+        { id: 'a', title: 'Tröja', quantity: 1, total: 1250, tax_total: 250, tax_lines: [{ rate: 25, code: null, total: 250 }] },
+        { id: 'b', title: 'Bok', quantity: 1, total: 106, tax_total: 6, tax_lines: [{ rate: 6, code: null, total: 6 }] },
+      ],
+      shipping_methods: [{ name: 'Postnord', total: 49, tax_total: 9.8, tax_lines: [{ rate: 25, code: null, total: 9.8 }] }],
+    })
+    expect(buildVatBreakdown(order)).toEqual([
+      { rate: 25, net: 1039.2, tax: 259.8 },
+      { rate: 6, net: 100, tax: 6 },
+    ])
+  })
+
+  it('falls back to one balancing bucket when a taxed line has no rate', () => {
+    const order = makeOrder({ shipping_methods: [{ name: 'Postnord', total: 49, tax_total: 9.8 }] })
+    expect(buildVatBreakdown(order)).toEqual([{ rate: 25, net: 1039.2, tax: 259.8 }])
   })
 
   it('returns [] for a zero-money order', () => {
-    expect(buildVatBreakdown(makeOrder({ item_total: 0, shipping_total: 0, tax_total: 0 }))).toEqual([])
+    expect(buildVatBreakdown(makeOrder({ items: [] }))).toEqual([])
   })
 })
 
@@ -200,51 +213,15 @@ describe('mapLineItems', () => {
 
   it('includes a non-zero shipping method as its own line', () => {
     const order = makeOrder({
-      total: 129900,
-      item_total: 100000,
-      tax_total: 29900,
-      shipping_total: 4900,
-      items: [
-        {
-          id: 'item_1',
-          title: 'Produkt A',
-          quantity: 2,
-          total: 125000,
-          tax_total: 25000,
-          tax_lines: [{ rate: 25, code: null, total: 25000 }],
-        },
-      ],
-      shipping_methods: [
-        { name: 'Postnord', total: 4900, tax_total: 980, tax_lines: [{ rate: 20, code: null, total: 980 }] },
-      ],
+      shipping_methods: [{ name: 'Postnord', total: 49, tax_total: 9.8, tax_lines: [{ rate: 25, code: null, total: 9.8 }] }],
     })
     const items = mapLineItems(order)
     expect(items).toHaveLength(2)
-    expect(items[1]).toEqual({ name: 'Postnord', quantity: 1, total: 39.2, total_tax: 9.8, vat_rate: 20 })
-  })
-
-  it('returns [] when the line snapshot does not cover order.total exactly', () => {
-    const order = makeOrder({ total: 999999 })
-    expect(mapLineItems(order)).toEqual([])
+    expect(items[1]).toEqual({ name: 'Postnord', quantity: 1, total: 39.2, total_tax: 9.8, vat_rate: 25 })
   })
 
   it('falls back to Frakt when a shipping method has no name', () => {
-    const order = makeOrder({
-      total: 125980,
-      tax_total: 25980,
-      shipping_total: 980,
-      items: [
-        {
-          id: 'item_1',
-          title: 'Produkt A',
-          quantity: 2,
-          total: 125000,
-          tax_total: 25000,
-          tax_lines: [{ rate: 25, code: null, total: 25000 }],
-        },
-      ],
-      shipping_methods: [{ name: '', total: 980, tax_total: 196 }],
-    })
+    const order = makeOrder({ shipping_methods: [{ name: '', total: 9.8, tax_total: 1.96 }] })
     expect(mapLineItems(order)[1].name).toBe('Frakt')
   })
 })
@@ -294,7 +271,7 @@ describe('mapOrderToWebshopRow', () => {
       mapOrderToWebshopRow(
         connection,
         's',
-        makeOrder({ total: 0, tax_total: 0, item_total: 0, items: [], payment_collections: [{ status: 'captured', amount: 0, captured_amount: 0 }] }),
+        makeOrder({ total: 0, tax_total: 0, items: [], payment_collections: [{ status: 'captured', amount: 0, captured_amount: 0 }] }),
       ),
     ).toEqual([])
   })
@@ -304,6 +281,62 @@ describe('mapOrderToWebshopRow', () => {
     expect(rows[0].customer_name).toBeNull()
     expect(rows[0].customer_company).toBeNull()
     expect(rows[0].customer_country).toBeNull()
+  })
+})
+
+describe('frozen refund external_id format', () => {
+  it('refund id format is frozen', () => {
+    expect(medusaRefundExternalId('backend.example.se', 'ref_01')).toBe('medusa_backend.example.se_refund_ref_01')
+  })
+})
+
+/**
+ * Real Admin API payloads from a live Medusa 2.15 store (2026-10-08), fetched
+ * with the ORDER_FIELDS list: a partly refunded SEK order, a fully refunded
+ * EUR order (Finland, 25.5 %) and a discounted SEK order.
+ */
+describe('live Medusa payloads', () => {
+  const connection = { id: 'conn-1', store_name: 'Testbutiken' }
+  const [partlyRefunded, fullyRefundedEur, discounted] = liveOrders.orders as unknown as MedusaOrder[]
+  const rowsFor = (order: MedusaOrder) => [
+    ...mapOrderToWebshopRow(connection, 's', order),
+    ...mapRefundsToWebshopRows(connection, 's', order),
+  ]
+
+  it('books what was sold, not order.total (which drops after a refund)', () => {
+    expect(partlyRefunded.total).toBe(248)
+    const [order, refund] = rowsFor(partlyRefunded)
+    expect(order).toMatchObject({ row_type: 'order', total: 447, total_tax: 89.4, currency: 'SEK', refunded_total: 199 })
+    expect(order.vat_breakdown).toEqual([{ rate: 25, net: 357.6, tax: 89.4 }])
+    const lines = order.line_items as Array<{ total: number; total_tax: number }>
+    expect(lines.reduce((sum, l) => sum + l.total + l.total_tax, 0)).toBeCloseTo(447, 2)
+    expect(refund).toMatchObject({
+      row_type: 'refund',
+      status: 'refund',
+      parent_external_id: 'medusa_s_order_' + partlyRefunded.id,
+      external_id: 'medusa_s_refund_ref_01M4E5NP7QE33RY2CAZZ15T2CZ',
+      total: -199,
+      total_tax: -39.8,
+      order_date: '2026-10-08',
+      line_items: [],
+      refunded_total: 0,
+    })
+    expect(refund.vat_breakdown).toEqual([{ rate: 25, net: 159.2, tax: 39.8 }])
+  })
+
+  it('maps a fully refunded EUR order with the Finnish 25.5 % rate', () => {
+    const [order, refund] = rowsFor(fullyRefundedEur)
+    expect(order).toMatchObject({ total: 24.9, total_tax: 5.06, currency: 'EUR', refunded_total: 24.9 })
+    expect(order.vat_breakdown).toEqual([{ rate: 25.5, net: 19.84, tax: 5.06 }])
+    expect(refund).toMatchObject({ total: -24.9, total_tax: -5.06, currency: 'EUR' })
+    expect(refund.vat_breakdown).toEqual([{ rate: 25.5, net: 19.84, tax: 5.06 }])
+  })
+
+  it('books a discounted order at the discounted price, with no refund rows', () => {
+    const rows = rowsFor(discounted)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ total: 547.97, total_tax: 109.59, refunded_total: 0 })
+    expect(rows[0].vat_breakdown).toEqual([{ rate: 25, net: 438.38, tax: 109.59 }])
   })
 })
 
@@ -354,6 +387,20 @@ describe('syncMedusaOrders', () => {
     expect(cursors).toHaveLength(1)
     expect(cursors[0].values.last_order_synced_at).toBe('2026-08-01T09:05:00.000Z')
     expect(cursors[0].values.error_message).toBeNull()
+  })
+
+  it('upserts a refunded order together with its refund row', async () => {
+    const { client } = makeSupabaseMock()
+    const refunded = (liveOrders.orders as unknown as MedusaOrder[])[0]
+    listOrdersPage.mockResolvedValueOnce({ orders: [refunded], count: 1, offset: 0, limit: 100 })
+
+    await syncMedusaOrders(client, makeConnection())
+
+    const rows = vi.mocked(upsertWebshopOrders).mock.calls[0][3] as WebshopOrderUpsert[]
+    expect(rows.map((r) => [r.row_type, r.total])).toEqual([
+      ['order', 447],
+      ['refund', -199],
+    ])
   })
 
   it('advances the cursor past a non-qualifying order without upserting it', async () => {

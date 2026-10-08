@@ -49,52 +49,73 @@ export interface MedusaStatusResponse {
 }
 
 /**
- * Minor-unit money field shared by Medusa v2's order/item/tax-line
- * payloads (the Admin API returns integers in the currency's minor unit,
- * e.g. öre for SEK, not decimal strings like Shopify/WooCommerce).
+ * Money field in Medusa v2's Admin API: a number in the currency's MAJOR unit
+ * (kronor/euro), with decimals — e.g. 199, 547.9726, 5.059362549800797. Verified
+ * against a live Medusa 2.15 store (2026-10-08); the first version of this
+ * extension assumed minor units (öre) and divided by 100, which would have
+ * booked a 447 kr order as 4.47 kr. Amounts are rounded to öre with roundOre
+ * where they become bookkeeping values.
  */
-export type MedusaMinorAmount = number
+export type MedusaAmount = number
 
-/** One tax line on an order item or shipping method (Medusa v2). */
+/** One tax line on an order item or shipping method. `rate` is a percentage (25, 25.5). */
 export interface MedusaTaxLine {
   rate: number
   code: string | null
-  total: MedusaMinorAmount
+  total: MedusaAmount
 }
 
 export interface MedusaOrderItem {
   id: string
   title: string
   quantity: number
-  /** Line total actually charged, tax included (Medusa's `item.total`). */
-  total: MedusaMinorAmount
-  tax_total: MedusaMinorAmount
+  /** Line total actually charged: tax INCLUDED, discounts applied. */
+  total: MedusaAmount
+  tax_total: MedusaAmount
   tax_lines?: MedusaTaxLine[]
 }
 
 export interface MedusaShippingMethod {
   name: string
-  total: MedusaMinorAmount
-  tax_total: MedusaMinorAmount
+  /** Tax included, discounts applied. */
+  total: MedusaAmount
+  tax_total: MedusaAmount
   tax_lines?: MedusaTaxLine[]
+}
+
+/** A refund of a captured payment. Medusa records refunds per payment, not per order. */
+export interface MedusaRefund {
+  id: string
+  amount: MedusaAmount
+  created_at: string
+  note?: string | null
+}
+
+export interface MedusaPayment {
+  id: string
+  amount: MedusaAmount
+  captured_at?: string | null
+  refunds?: MedusaRefund[]
 }
 
 export interface MedusaPaymentCollection {
   status: string
-  amount: MedusaMinorAmount
-  captured_amount?: MedusaMinorAmount
+  amount: MedusaAmount
+  captured_amount?: MedusaAmount
+  refunded_amount?: MedusaAmount
+  payments?: MedusaPayment[]
 }
 
 /**
- * Minimal Medusa v2 Admin API order shape consumed by the feed. Money
- * fields are MINOR-UNIT integers (see MedusaMinorAmount), unlike the
- * decimal-string amounts the Shopify/WooCommerce feeds parse.
+ * The Admin API order shape the feed consumes, as returned for the field list
+ * in lib/api-client.ts (ORDER_FIELDS). Verified against a live Medusa 2.15
+ * store, including a partly refunded, a fully refunded EUR and a discounted
+ * order (see __tests__/fixtures/medusa-orders-live.json).
  *
- * ⚠️ Field names follow Medusa v2's documented Admin API order object as
- * understood at the time of writing; not verified against a live Medusa
- * instance in this environment (no Medusa/Postgres available here). Shapes
- * that do not match a real deployment will surface as sync errors (unparsed
- * fields fail closed, see lib/order-sync.ts), not as corrupted bookings.
+ * ⚠️ order.total is the CURRENT total — a refund lowers it through a credit
+ * line — and order.original_total is the total BEFORE discounts. Neither is
+ * the amount sold, so the feed derives the sale from the item and shipping
+ * lines instead (see lib/order-sync.ts).
  */
 export interface MedusaOrder {
   id: string
@@ -102,13 +123,11 @@ export interface MedusaOrder {
   status: string
   currency_code: string
   email: string | null
-  region_id: string | null
   created_at: string
   updated_at: string
-  total: MedusaMinorAmount
-  tax_total: MedusaMinorAmount
-  item_total: MedusaMinorAmount
-  shipping_total: MedusaMinorAmount
+  total: MedusaAmount
+  tax_total: MedusaAmount
+  original_total?: MedusaAmount
   items: MedusaOrderItem[]
   shipping_methods: MedusaShippingMethod[]
   payment_collections?: MedusaPaymentCollection[]

@@ -7,47 +7,44 @@ import { resolveWindowStartMs } from '@/lib/feed-sync/cursor-window'
 import type { WebshopOrderLineItem, WebshopVatBreakdownLine } from '@/types'
 import { credentialsOf } from './credentials'
 import { isRevokedCredentialsError, listOrdersPage, MEDUSA_PAGE_SIZE } from './api-client'
-import type { MedusaConnection, MedusaOrder } from '../types'
+import type { MedusaConnection, MedusaOrder, MedusaRefund } from '../types'
 
 const defaultLog = createLogger('medusa/order-sync')
 
 /**
- * Medusa order sync: the store's paid orders as rows in public.webshop_orders
- * (the Orders page), same feed-only doctrine as the WooCommerce/Shopify/
- * Zettle syncs: nothing is auto-booked, the user books each row from the
- * Orders page.
+ * Medusa order sync: the store's paid orders and their refunds as rows in
+ * public.webshop_orders (the Orders page), same feed-only doctrine as the
+ * WooCommerce/Shopify/Zettle syncs: nothing is auto-booked, the user books
+ * each row from the Orders page.
  *
- * v1 scope, deliberately narrower than the WooCommerce/Shopify syncs:
+ * Verified against a live Medusa 2.15 store (2026-10-08) with a partly
+ * refunded SEK order, a fully refunded EUR order and a discounted order; the
+ * payloads are the test fixture __tests__/fixtures/medusa-orders-live.json.
+ * What that established, and what the mapping relies on:
  *
- *   - ORDERS ONLY, no refund rows. Medusa v2 tracks refunds at the payment
- *     level (payment.refunds), a different shape from the order-level
- *     refunds array WooCommerce/Shopify expose, and this was not verified
- *     against a live Medusa instance (no Medusa/Postgres available in this
- *     environment). Shipping a wrong refund mapping risks a silently wrong
- *     negative row; shipping none is an honest, visible gap instead. Follow-
- *     up once the real payload shape is confirmed against a live store.
- *   - SINGLE-BUCKET VAT, not the per-rate reconstruction the Shopify/
- *     WooCommerce syncs do. Medusa v2 does expose per-line tax_lines (see
- *     types.ts), but the field names were not confirmed live either; a
- *     single bucket derived from order.tax_total/order.item_total is a
- *     correct total (it has to balance, see buildVatBreakdown below) even
- *     if it does not split mixed-rate orders into separate buckets. The
- *     booking dialog already supports editing/splitting a prefilled bucket
- *     (same fallback the WooCommerce sync uses for hardened stores).
- *
- * Money fields arrive as MINOR-UNIT integers (öre for SEK), not decimal
- * strings like Shopify/WooCommerce — see MedusaMinorAmount in types.ts.
+ *   - Amounts are MAJOR units with decimals (199, 547.9726), rounded to öre
+ *     here. (The first version assumed minor units and divided by 100.)
+ *   - The amount sold is the sum of the item and shipping lines (tax
+ *     included, discounts applied). order.total drops when a refund is made
+ *     (a credit line) and order.original_total is before discounts, so
+ *     neither is used.
+ *   - VAT is split per rate from each line's tax_lines (25, 25.5 ...).
+ *   - Refunds live on the payments (payment_collections[].payments[].refunds[]
+ *     with amount and created_at). Each becomes its own negative 'refund'
+ *     row, like the WooCommerce sync, its VAT prorated from the order's mix
+ *     since a Medusa refund carries no line allocation.
  *
  * Pagination: Medusa's Admin API is offset/limit, not cursor-based. One
  * fixed updated_at window per run, walked by offset until the page is short
  * of a full page (the store has nothing further matching the window) or the
- * returned count is exhausted. The persisted cursor is
- * medusa_connections.last_order_synced_at: per page, the max updated_at
- * processed, and after a fully-listed window the run's start time (same
- * watermark-advance reasoning as the WooCommerce sync, so a quiet store
- * does not permanently stall the cron's oldest-first selection). Re-polled
- * with a 24h overlap; upsert-on-(company_id, external_id) makes overlaps
- * idempotent.
+ * returned count is exhausted. A refund bumps the order's updated_at, so a
+ * refunded order re-enters the window and its refund row is picked up. The
+ * persisted cursor is medusa_connections.last_order_synced_at: per page, the
+ * max updated_at processed, and after a fully-listed window the run's start
+ * time (same watermark-advance reasoning as the WooCommerce sync, so a quiet
+ * store does not permanently stall the cron's oldest-first selection).
+ * Re-polled with a 24h overlap; upsert-on-(company_id, external_id) makes
+ * overlaps idempotent.
  */
 
 export const MEDUSA_IMPORT_SOURCE = 'medusa'
@@ -67,6 +64,11 @@ export function medusaStoreScope(storeUrl: string): string {
 
 export function medusaOrderExternalId(storeScope: string, orderId: string): string {
   return `medusa_${storeScope}_order_${orderId}`
+}
+
+/** ⚠️ STORED-KEY FORMAT, same rule as the order id above. */
+export function medusaRefundExternalId(storeScope: string, refundId: string): string {
+  return `medusa_${storeScope}_refund_${refundId}`
 }
 
 export interface MedusaSyncSummary {
@@ -89,62 +91,137 @@ export function orderQualifies(order: Pick<MedusaOrder, 'canceled_at' | 'payment
   )
 }
 
-/**
- * Single VAT bucket for the whole order, rate derived from tax_total versus
- * the pre-tax total. Always balances to the order total by construction
- * (net + tax = item_total + shipping_total + tax_total, i.e. order.total),
- * so a malformed rate never produces an unbalanced booking, only an
- * imprecise one for mixed-rate orders (documented limitation above).
- */
-export function buildVatBreakdown(
-  order: Pick<MedusaOrder, 'item_total' | 'shipping_total' | 'tax_total'>,
-): WebshopVatBreakdownLine[] {
-  const net = round((order.item_total + order.shipping_total) / 100)
-  const tax = round(order.tax_total / 100)
-  if (net === 0 && tax === 0) return []
-  const rate = net > 0 ? Math.round((tax / net) * 100) : 0
-  return [{ rate, net, tax }]
+interface SaleLine {
+  name: string
+  quantity: number
+  /** Tax included, discounts applied, öre-rounded. */
+  gross: number
+  tax: number
+  rate: number | null
+}
+
+type SaleSource = Pick<MedusaOrder, 'items' | 'shipping_methods'>
+
+/** The item and shipping lines that make up the sale (zero shipping skipped). */
+function saleLines(order: SaleSource): SaleLine[] {
+  const lines: SaleLine[] = []
+  for (const item of order.items ?? []) {
+    lines.push({
+      name: item.title,
+      quantity: item.quantity,
+      gross: round(item.total),
+      tax: round(item.tax_total),
+      rate: item.tax_lines?.[0]?.rate ?? null,
+    })
+  }
+  for (const method of order.shipping_methods ?? []) {
+    if (method.total === 0 && method.tax_total === 0) continue
+    lines.push({
+      name: method.name || 'Frakt',
+      quantity: 1,
+      gross: round(method.total),
+      tax: round(method.tax_total),
+      rate: method.tax_lines?.[0]?.rate ?? null,
+    })
+  }
+  return lines
+}
+
+/** What was sold: the sum of the lines (tax included, after discounts) and its VAT. */
+export function saleTotals(order: SaleSource): { total: number; tax: number } {
+  const lines = saleLines(order)
+  return {
+    total: round(lines.reduce((sum, l) => sum + l.gross, 0)),
+    tax: round(lines.reduce((sum, l) => sum + l.tax, 0)),
+  }
 }
 
 /**
- * The stored line snapshot covers EVERYTHING inside order.total (product
- * lines + shipping) or nothing, same invariant the WooCommerce/Shopify
- * syncs enforce: the invoice conversion builds its rows from this snapshot,
- * so a diverging one would silently bill the wrong amount. Checked with an
- * öre-exact sum against order.total.
+ * VAT per rate from the lines' tax_lines. If a taxed line lacks a rate, one
+ * bucket derived from the totals instead. Either way net + tax equals the
+ * sale total, so the booking always balances.
  */
-export function mapLineItems(order: MedusaOrder): WebshopOrderLineItem[] {
-  const items: WebshopOrderLineItem[] = []
-  for (const item of order.items) {
-    items.push({
-      name: item.title,
-      quantity: item.quantity,
-      total: round((item.total - item.tax_total) / 100),
-      total_tax: round(item.tax_total / 100),
-      vat_rate: item.tax_lines?.[0]?.rate ?? null,
-    })
+export function buildVatBreakdown(order: SaleSource): WebshopVatBreakdownLine[] {
+  const lines = saleLines(order)
+  const { total, tax } = saleTotals(order)
+  if (total === 0 && tax === 0) return []
+  if (lines.some((l) => l.rate === null && l.tax !== 0)) {
+    const net = round(total - tax)
+    return [{ rate: net > 0 ? Math.round((tax / net) * 1000) / 10 : 0, net, tax }]
   }
-  for (const method of order.shipping_methods) {
-    if (method.total === 0 && method.tax_total === 0) continue
-    items.push({
-      name: method.name || 'Frakt',
-      quantity: 1,
-      total: round((method.total - method.tax_total) / 100),
-      total_tax: round(method.tax_total / 100),
-      vat_rate: method.tax_lines?.[0]?.rate ?? null,
-    })
+  const buckets = new Map<number, { net: number; tax: number }>()
+  for (const l of lines) {
+    const rate = l.rate ?? 0
+    const bucket = buckets.get(rate) ?? { net: 0, tax: 0 }
+    bucket.net = round(bucket.net + l.gross - l.tax)
+    bucket.tax = round(bucket.tax + l.tax)
+    buckets.set(rate, bucket)
   }
+  return Array.from(buckets.entries())
+    .map(([rate, b]) => ({ rate, net: b.net, tax: b.tax }))
+    .sort((x, y) => y.rate - x.rate)
+}
 
-  const total = round(order.total / 100)
-  const covered = round(items.reduce((sum, i) => sum + i.total + i.total_tax, 0))
-  if (Math.abs(covered - total) > 0.005) return []
-  return items
+/**
+ * The stored line snapshot covers EVERYTHING in the sale (product lines +
+ * shipping), same invariant the WooCommerce/Shopify syncs enforce: the
+ * invoice conversion builds its rows from this snapshot. By construction it
+ * sums to saleTotals().total.
+ */
+export function mapLineItems(order: SaleSource): WebshopOrderLineItem[] {
+  return saleLines(order).map((l) => ({
+    name: l.name,
+    quantity: l.quantity,
+    total: round(l.gross - l.tax),
+    total_tax: l.tax,
+    vat_rate: l.rate,
+  }))
+}
+
+/** Every non-zero refund on the order's payments, oldest first. */
+export function orderRefunds(order: Pick<MedusaOrder, 'payment_collections'>): MedusaRefund[] {
+  return (order.payment_collections ?? [])
+    .flatMap((pc) => (pc.payments ?? []).flatMap((p) => p.refunds ?? []))
+    .filter((r) => round(r.amount) !== 0)
+    .sort((a, b) => a.created_at.localeCompare(b.created_at))
+}
+
+/**
+ * A refund's VAT reversal, prorated from the order's mix (Medusa's refund has
+ * no line allocation). Buckets hold positive magnitudes; row_type 'refund'
+ * carries the direction, as in the WooCommerce sync. Per-bucket rounding
+ * drift lands on the booking's residual line.
+ */
+export function buildRefundVatBreakdown(
+  order: SaleSource,
+  refundAmount: number,
+): { breakdown: WebshopVatBreakdownLine[]; totalTax: number } {
+  const { total } = saleTotals(order)
+  const orderBreakdown = buildVatBreakdown(order)
+  const amount = Math.abs(round(refundAmount))
+  if (orderBreakdown.length === 0 || total === 0 || amount === 0) return { breakdown: [], totalTax: 0 }
+  const ratio = Math.min(1, amount / total)
+  const breakdown = orderBreakdown.map(({ rate, net, tax }) => ({ rate, net: round(net * ratio), tax: round(tax * ratio) }))
+  return { breakdown, totalTax: round(breakdown.reduce((sum, b) => sum + b.tax, 0)) }
 }
 
 function customerName(order: MedusaOrder): string | null {
   const addr = order.shipping_address
   const name = [addr?.first_name, addr?.last_name].filter(Boolean).join(' ')
   return name || null
+}
+
+function customerFields(order: MedusaOrder) {
+  return {
+    customer_name: customerName(order),
+    customer_company: order.shipping_address?.company ?? null,
+    customer_email: order.email,
+    customer_orgnr: null,
+    customer_country: order.shipping_address?.country_code?.toUpperCase() ?? null,
+    payment_method: null,
+    payment_method_title: null,
+    gateway_reference: null,
+  }
 }
 
 /** Map one paid order to its webshop_orders upsert row. */
@@ -154,7 +231,7 @@ export function mapOrderToWebshopRow(
   order: MedusaOrder,
 ): WebshopOrderUpsert[] {
   if (!orderQualifies(order)) return []
-  const total = round(order.total / 100)
+  const { total, tax } = saleTotals(order)
   // Zero-total orders (100% discount) carry no bookable money event; the
   // engine refuses zero-sum entries, so importing them would strand an
   // unbookable row (same guard as the WooCommerce/Shopify syncs).
@@ -176,20 +253,49 @@ export function mapOrderToWebshopRow(
       paid_date: order.created_at.slice(0, 10),
       currency: order.currency_code.toUpperCase(),
       total,
-      total_tax: round(order.tax_total / 100),
+      total_tax: tax,
       vat_breakdown: buildVatBreakdown(order),
       line_items: mapLineItems(order),
-      customer_name: customerName(order),
-      customer_company: order.shipping_address?.company ?? null,
-      customer_email: order.email,
-      customer_orgnr: null,
-      customer_country: order.shipping_address?.country_code?.toUpperCase() ?? null,
-      payment_method: null,
-      payment_method_title: null,
-      gateway_reference: null,
-      refunded_total: 0,
+      ...customerFields(order),
+      refunded_total: round(orderRefunds(order).reduce((sum, r) => sum + r.amount, 0)),
     },
   ]
+}
+
+/** One negative 'refund' row per refund of a paid order, linked to the order row. */
+export function mapRefundsToWebshopRows(
+  connection: Pick<MedusaConnection, 'id' | 'store_name'>,
+  storeScope: string,
+  order: MedusaOrder,
+): WebshopOrderUpsert[] {
+  if (!orderQualifies(order)) return []
+  return orderRefunds(order).map((refund) => {
+    const amount = Math.abs(round(refund.amount))
+    const { breakdown, totalTax } = buildRefundVatBreakdown(order, amount)
+    const date = refund.created_at.slice(0, 10)
+    return {
+      platform: 'medusa',
+      store_scope: storeScope,
+      store_label: connection.store_name,
+      connection_id: connection.id,
+      row_type: 'refund',
+      parent_external_id: medusaOrderExternalId(storeScope, order.id),
+      external_id: medusaRefundExternalId(storeScope, refund.id),
+      platform_order_id: refund.id,
+      order_number: String(order.display_id),
+      status: 'refund',
+      is_paid: true,
+      order_date: date,
+      paid_date: date,
+      currency: order.currency_code.toUpperCase(),
+      total: -amount,
+      total_tax: -totalTax,
+      vat_breakdown: breakdown,
+      line_items: [],
+      ...customerFields(order),
+      refunded_total: 0,
+    }
+  })
 }
 
 /**
@@ -265,6 +371,7 @@ export async function syncMedusaOrders(
       const rows: WebshopOrderUpsert[] = []
       for (const order of page.orders) {
         rows.push(...mapOrderToWebshopRow(connection, storeScope, order))
+        rows.push(...mapRefundsToWebshopRows(connection, storeScope, order))
       }
 
       const firstMs = Date.parse(page.orders[0].updated_at)

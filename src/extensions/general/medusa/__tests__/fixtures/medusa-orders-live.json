@@ -1,0 +1,1345 @@
+{
+  "orders": [
+    {
+      "id": "order_01M4E5NNNY7SQH8P4XDT20Y12N",
+      "display_id": 1,
+      "status": "pending",
+      "currency_code": "sek",
+      "email": "retur@example.com",
+      "created_at": "2026-10-08T16:31:17.700Z",
+      "updated_at": "2026-10-08T16:31:18.494Z",
+      "canceled_at": null,
+      "original_total": 447,
+      "total": 248,
+      "tax_total": 89.4,
+      "version": 2,
+      "items": [
+        {
+          "id": "ordli_01M4E5NNP1DTEPFWTQQJWBWYXW",
+          "title": "Ullsocka",
+          "subtitle": "S / Svart",
+          "thumbnail": null,
+          "variant_id": "variant_01M4E5K7NAFPBSPEJ8Y4R95AK4",
+          "product_id": "prod_01M4E5K7G0VRBZAKSS7XWKTXMB",
+          "product_title": "Ullsocka",
+          "product_description": "Varm socka i merinoull.",
+          "product_subtitle": null,
+          "product_type": null,
+          "product_type_id": null,
+          "product_collection": null,
+          "product_handle": "ullsocka",
+          "variant_sku": "ULLSOCKA-S-SVART",
+          "variant_barcode": null,
+          "variant_title": "S / Svart",
+          "variant_option_values": null,
+          "requires_shipping": true,
+          "is_giftcard": false,
+          "is_discountable": true,
+          "is_tax_inclusive": true,
+          "is_custom_price": false,
+          "metadata": {},
+          "raw_compare_at_unit_price": null,
+          "raw_unit_price": {
+            "value": "199",
+            "precision": 20
+          },
+          "created_at": "2026-10-08T16:31:17.701Z",
+          "updated_at": "2026-10-08T16:31:17.701Z",
+          "deleted_at": null,
+          "tax_lines": [
+            {
+              "id": "ordlitxl_01M4E5NNP1KVR2NM2X182FCJP3",
+              "description": "Moms",
+              "tax_rate_id": "txr_01M4E5JW0C7NB56SDHRSDCGSVW",
+              "code": "MOMS-SE",
+              "provider_id": "system",
+              "item_id": "ordli_01M4E5NNP1DTEPFWTQQJWBWYXW",
+              "raw_rate": {
+                "value": "25",
+                "precision": 20
+              },
+              "created_at": "2026-10-08T16:31:17.702Z",
+              "updated_at": "2026-10-08T16:31:17.702Z",
+              "deleted_at": null,
+              "rate": 25,
+              "total": 79.6,
+              "subtotal": 79.6,
+              "raw_total": {
+                "value": "79.6",
+                "precision": 20
+              },
+              "raw_subtotal": {
+                "value": "79.6",
+                "precision": 20
+              }
+            }
+          ],
+          "adjustments": [],
+          "compare_at_unit_price": null,
+          "unit_price": 199,
+          "quantity": 2,
+          "raw_quantity": {
+            "value": "2",
+            "precision": 20
+          },
+          "detail": {
+            "id": "orditem_01M4E5NPE8G39YZBHM6VMBF6EE",
+            "version": 2,
+            "metadata": {},
+            "order_id": "order_01M4E5NNNY7SQH8P4XDT20Y12N",
+            "raw_unit_price": {
+              "value": "199",
+              "precision": 20
+            },
+            "raw_compare_at_unit_price": null,
+            "raw_quantity": {
+              "value": "2",
+              "precision": 20
+            },
+            "raw_fulfilled_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_delivered_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_shipped_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_return_requested_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_return_received_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_return_dismissed_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_written_off_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "created_at": "2026-10-08T16:31:18.475Z",
+            "updated_at": "2026-10-08T16:31:18.475Z",
+            "deleted_at": null,
+            "item_id": "ordli_01M4E5NNP1DTEPFWTQQJWBWYXW",
+            "unit_price": 199,
+            "compare_at_unit_price": null,
+            "quantity": 2,
+            "fulfilled_quantity": 0,
+            "delivered_quantity": 0,
+            "shipped_quantity": 0,
+            "return_requested_quantity": 0,
+            "return_received_quantity": 0,
+            "return_dismissed_quantity": 0,
+            "written_off_quantity": 0
+          },
+          "subtotal": 318.4,
+          "total": 398,
+          "original_subtotal": 318.4,
+          "original_total": 398,
+          "discount_subtotal": 0,
+          "discount_tax_total": 0,
+          "discount_total": 0,
+          "tax_total": 79.6,
+          "original_tax_total": 79.6,
+          "refundable_total_per_unit": 199,
+          "refundable_total": 398,
+          "fulfilled_total": 0,
+          "shipped_total": 0,
+          "return_requested_total": 0,
+          "return_received_total": 0,
+          "return_dismissed_total": 0,
+          "write_off_total": 0,
+          "raw_subtotal": {
+            "value": "318.4",
+            "precision": 20
+          },
+          "raw_total": {
+            "value": "398",
+            "precision": 20
+          },
+          "raw_original_subtotal": {
+            "value": "318.4",
+            "precision": 20
+          },
+          "raw_original_total": {
+            "value": "398",
+            "precision": 20
+          },
+          "raw_discount_subtotal": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_discount_tax_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_discount_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_tax_total": {
+            "value": "79.6",
+            "precision": 20
+          },
+          "raw_original_tax_total": {
+            "value": "79.6",
+            "precision": 20
+          },
+          "raw_refundable_total_per_unit": {
+            "value": "199",
+            "precision": 20
+          },
+          "raw_refundable_total": {
+            "value": "398",
+            "precision": 20
+          },
+          "raw_fulfilled_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_shipped_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_return_requested_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_return_received_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_return_dismissed_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_write_off_total": {
+            "value": "0",
+            "precision": 20
+          }
+        }
+      ],
+      "shipping_methods": [
+        {
+          "id": "ordsm_01M4E5NNNXEA8ZNXNS6NZWY0GC",
+          "name": "Frakt upp till 3 st",
+          "description": null,
+          "is_tax_inclusive": true,
+          "is_custom_amount": false,
+          "shipping_option_id": "so_01M4E5JW6HPR9RR34H3RPTTDHX",
+          "data": {},
+          "metadata": null,
+          "raw_amount": {
+            "value": "49",
+            "precision": 20
+          },
+          "created_at": "2026-10-08T16:31:17.702Z",
+          "updated_at": "2026-10-08T16:31:17.702Z",
+          "deleted_at": null,
+          "tax_lines": [
+            {
+              "id": "ordsmtxl_01M4E5NNNXBMXA08HEX3VEY8JX",
+              "description": "Moms",
+              "tax_rate_id": "txr_01M4E5JW0C7NB56SDHRSDCGSVW",
+              "code": "MOMS-SE",
+              "provider_id": "system",
+              "shipping_method_id": "ordsm_01M4E5NNNXEA8ZNXNS6NZWY0GC",
+              "raw_rate": {
+                "value": "25",
+                "precision": 20
+              },
+              "created_at": "2026-10-08T16:31:17.702Z",
+              "updated_at": "2026-10-08T16:31:17.702Z",
+              "deleted_at": null,
+              "rate": 25,
+              "total": 9.8,
+              "subtotal": 9.8,
+              "raw_total": {
+                "value": "9.8",
+                "precision": 20
+              },
+              "raw_subtotal": {
+                "value": "9.8",
+                "precision": 20
+              }
+            }
+          ],
+          "adjustments": [],
+          "amount": 49,
+          "order_id": "order_01M4E5NNNY7SQH8P4XDT20Y12N",
+          "detail": {
+            "id": "ordspmv_01M4E5NPE905CH6GQJG8R77CMK",
+            "version": 2,
+            "order_id": "order_01M4E5NNNY7SQH8P4XDT20Y12N",
+            "shipping_method_id": "ordsm_01M4E5NNNXEA8ZNXNS6NZWY0GC"
+          },
+          "subtotal": 39.2,
+          "total": 49,
+          "original_subtotal": 39.2,
+          "original_total": 49,
+          "discount_total": 0,
+          "discount_subtotal": 0,
+          "discount_tax_total": 0,
+          "tax_total": 9.8,
+          "original_tax_total": 9.8,
+          "raw_subtotal": {
+            "value": "39.2",
+            "precision": 20
+          },
+          "raw_total": {
+            "value": "49",
+            "precision": 20
+          },
+          "raw_original_subtotal": {
+            "value": "39.2",
+            "precision": 20
+          },
+          "raw_original_total": {
+            "value": "49",
+            "precision": 20
+          },
+          "raw_discount_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_discount_subtotal": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_discount_tax_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_tax_total": {
+            "value": "9.8",
+            "precision": 20
+          },
+          "raw_original_tax_total": {
+            "value": "9.8",
+            "precision": 20
+          }
+        }
+      ],
+      "credit_lines": [
+        {
+          "id": "ordcl_01M4E5NPEAFSJETMSK3EGY4G3T",
+          "version": 2,
+          "reference": "payment_collection",
+          "reference_id": "pay_col_01M4E5NNCY8HE6RY8RZXA7RKYH",
+          "raw_amount": {
+            "value": "199",
+            "precision": 20
+          },
+          "metadata": {
+            "created_in_version": 2
+          },
+          "order_id": "order_01M4E5NNNY7SQH8P4XDT20Y12N",
+          "created_at": "2026-10-08T16:31:18.476Z",
+          "updated_at": "2026-10-08T16:31:18.476Z",
+          "deleted_at": null,
+          "amount": 199,
+          "subtotal": 199,
+          "total": 199,
+          "raw_subtotal": {
+            "value": "199",
+            "precision": 20
+          },
+          "raw_total": {
+            "value": "199",
+            "precision": 20
+          }
+        }
+      ],
+      "shipping_address": {
+        "id": "ordaddr_01M4E5NNNM3YQMT5C6S8MFW2DK",
+        "customer_id": null,
+        "company": null,
+        "first_name": "Retur",
+        "last_name": "Test",
+        "address_1": "Gata 1",
+        "address_2": null,
+        "city": "Sthlm",
+        "country_code": "se",
+        "province": null,
+        "postal_code": "11122",
+        "phone": null,
+        "metadata": null,
+        "created_at": "2026-10-08T16:31:15.993Z",
+        "updated_at": "2026-10-08T16:31:15.993Z",
+        "deleted_at": null
+      },
+      "payment_collections": [
+        {
+          "id": "pay_col_01M4E5NNCY8HE6RY8RZXA7RKYH",
+          "currency_code": "sek",
+          "completed_at": "2026-10-08T16:31:18.284Z",
+          "status": "completed",
+          "metadata": null,
+          "raw_amount": {
+            "value": "447",
+            "precision": 20
+          },
+          "raw_authorized_amount": {
+            "value": "447",
+            "precision": 20
+          },
+          "raw_captured_amount": {
+            "value": "447",
+            "precision": 20
+          },
+          "raw_refunded_amount": {
+            "value": "199",
+            "precision": 20
+          },
+          "created_at": "2026-10-08T16:31:17.407Z",
+          "updated_at": "2026-10-08T16:31:18.288Z",
+          "deleted_at": null,
+          "payments": [
+            {
+              "id": "pay_01M4E5NNYP113QR4SFE1YJ03A1",
+              "currency_code": "sek",
+              "provider_id": "pp_system_default",
+              "data": {},
+              "metadata": null,
+              "captured_at": "2026-10-08T16:31:18.114Z",
+              "canceled_at": null,
+              "payment_collection_id": "pay_col_01M4E5NNCY8HE6RY8RZXA7RKYH",
+              "payment_session": {
+                "id": "payses_01M4E5NNFJ49RXG1FYTZZ0TMZV"
+              },
+              "raw_amount": {
+                "value": "447",
+                "precision": 20
+              },
+              "created_at": "2026-10-08T16:31:17.974Z",
+              "updated_at": "2026-10-08T16:31:18.118Z",
+              "deleted_at": null,
+              "payment_session_id": "payses_01M4E5NNFJ49RXG1FYTZZ0TMZV",
+              "refunds": [
+                {
+                  "id": "ref_01M4E5NP7QE33RY2CAZZ15T2CZ",
+                  "payment_id": "pay_01M4E5NNYP113QR4SFE1YJ03A1",
+                  "refund_reason_id": null,
+                  "refund_reason": null,
+                  "note": null,
+                  "created_by": null,
+                  "metadata": null,
+                  "raw_amount": {
+                    "value": "199",
+                    "precision": 20
+                  },
+                  "created_at": "2026-10-08T16:31:18.264Z",
+                  "updated_at": "2026-10-08T16:31:18.264Z",
+                  "deleted_at": null,
+                  "amount": 199
+                }
+              ],
+              "amount": 447
+            }
+          ],
+          "amount": 447,
+          "authorized_amount": 447,
+          "captured_amount": 447,
+          "refunded_amount": 199
+        }
+      ],
+      "payment_status": "partially_refunded",
+      "fulfillment_status": "not_fulfilled"
+    },
+    {
+      "id": "order_01M4E5W127KS5JRZ414SFA9PT6",
+      "display_id": 2,
+      "status": "pending",
+      "currency_code": "eur",
+      "email": "retur@example.com",
+      "created_at": "2026-10-08T16:34:45.965Z",
+      "updated_at": "2026-10-08T16:34:46.864Z",
+      "canceled_at": null,
+      "original_total": 24.9,
+      "total": 0,
+      "tax_total": 5.059362549800797,
+      "version": 2,
+      "items": [
+        {
+          "id": "ordli_01M4E5W12AM54NPHMQMZ34H8JB",
+          "title": "Ullsocka",
+          "subtitle": "S / Svart",
+          "thumbnail": null,
+          "variant_id": "variant_01M4E5K7NAFPBSPEJ8Y4R95AK4",
+          "product_id": "prod_01M4E5K7G0VRBZAKSS7XWKTXMB",
+          "product_title": "Ullsocka",
+          "product_description": "Varm socka i merinoull.",
+          "product_subtitle": null,
+          "product_type": null,
+          "product_type_id": null,
+          "product_collection": null,
+          "product_handle": "ullsocka",
+          "variant_sku": "ULLSOCKA-S-SVART",
+          "variant_barcode": null,
+          "variant_title": "S / Svart",
+          "variant_option_values": null,
+          "requires_shipping": true,
+          "is_giftcard": false,
+          "is_discountable": true,
+          "is_tax_inclusive": true,
+          "is_custom_price": false,
+          "metadata": {},
+          "raw_compare_at_unit_price": null,
+          "raw_unit_price": {
+            "value": "19",
+            "precision": 20
+          },
+          "created_at": "2026-10-08T16:34:45.965Z",
+          "updated_at": "2026-10-08T16:34:45.966Z",
+          "deleted_at": null,
+          "tax_lines": [
+            {
+              "id": "ordlitxl_01M4E5W12ATK9JJX3PJ95V7KRM",
+              "description": "Moms",
+              "tax_rate_id": "txr_01M4E5JW0CS8W63VC0KM5Q8NT0",
+              "code": "MOMS-FI",
+              "provider_id": "system",
+              "item_id": "ordli_01M4E5W12AM54NPHMQMZ34H8JB",
+              "raw_rate": {
+                "value": "25.5",
+                "precision": 20
+              },
+              "created_at": "2026-10-08T16:34:45.967Z",
+              "updated_at": "2026-10-08T16:34:45.967Z",
+              "deleted_at": null,
+              "rate": 25.5,
+              "total": 3.860557768924303,
+              "subtotal": 3.860557768924303,
+              "raw_total": {
+                "value": "3.8605577689243027888",
+                "precision": 20
+              },
+              "raw_subtotal": {
+                "value": "3.8605577689243027888",
+                "precision": 20
+              }
+            }
+          ],
+          "adjustments": [],
+          "compare_at_unit_price": null,
+          "unit_price": 19,
+          "quantity": 1,
+          "raw_quantity": {
+            "value": "1",
+            "precision": 20
+          },
+          "detail": {
+            "id": "orditem_01M4E5W1XR76B2DJYBRY6JSTB2",
+            "version": 2,
+            "metadata": {},
+            "order_id": "order_01M4E5W127KS5JRZ414SFA9PT6",
+            "raw_unit_price": {
+              "value": "19",
+              "precision": 20
+            },
+            "raw_compare_at_unit_price": null,
+            "raw_quantity": {
+              "value": "1",
+              "precision": 20
+            },
+            "raw_fulfilled_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_delivered_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_shipped_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_return_requested_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_return_received_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_return_dismissed_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_written_off_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "created_at": "2026-10-08T16:34:46.843Z",
+            "updated_at": "2026-10-08T16:34:46.843Z",
+            "deleted_at": null,
+            "item_id": "ordli_01M4E5W12AM54NPHMQMZ34H8JB",
+            "unit_price": 19,
+            "compare_at_unit_price": null,
+            "quantity": 1,
+            "fulfilled_quantity": 0,
+            "delivered_quantity": 0,
+            "shipped_quantity": 0,
+            "return_requested_quantity": 0,
+            "return_received_quantity": 0,
+            "return_dismissed_quantity": 0,
+            "written_off_quantity": 0
+          },
+          "subtotal": 15.139442231075698,
+          "total": 19,
+          "original_subtotal": 15.139442231075698,
+          "original_total": 19,
+          "discount_subtotal": 0,
+          "discount_tax_total": 0,
+          "discount_total": 0,
+          "tax_total": 3.860557768924303,
+          "original_tax_total": 3.860557768924303,
+          "refundable_total_per_unit": 19,
+          "refundable_total": 19,
+          "fulfilled_total": 0,
+          "shipped_total": 0,
+          "return_requested_total": 0,
+          "return_received_total": 0,
+          "return_dismissed_total": 0,
+          "write_off_total": 0,
+          "raw_subtotal": {
+            "value": "15.139442231075697211",
+            "precision": 20
+          },
+          "raw_total": {
+            "value": "19",
+            "precision": 20
+          },
+          "raw_original_subtotal": {
+            "value": "15.139442231075697211",
+            "precision": 20
+          },
+          "raw_original_total": {
+            "value": "19",
+            "precision": 20
+          },
+          "raw_discount_subtotal": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_discount_tax_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_discount_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_tax_total": {
+            "value": "3.8605577689243027888",
+            "precision": 20
+          },
+          "raw_original_tax_total": {
+            "value": "3.8605577689243027888",
+            "precision": 20
+          },
+          "raw_refundable_total_per_unit": {
+            "value": "19",
+            "precision": 20
+          },
+          "raw_refundable_total": {
+            "value": "19",
+            "precision": 20
+          },
+          "raw_fulfilled_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_shipped_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_return_requested_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_return_received_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_return_dismissed_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_write_off_total": {
+            "value": "0",
+            "precision": 20
+          }
+        }
+      ],
+      "shipping_methods": [
+        {
+          "id": "ordsm_01M4E5W126WX2WDS3HEWD5E4A9",
+          "name": "Frakt upp till 3 st",
+          "description": null,
+          "is_tax_inclusive": true,
+          "is_custom_amount": false,
+          "shipping_option_id": "so_01M4E5JW6HPR9RR34H3RPTTDHX",
+          "data": {},
+          "metadata": null,
+          "raw_amount": {
+            "value": "5.9",
+            "precision": 20
+          },
+          "created_at": "2026-10-08T16:34:45.966Z",
+          "updated_at": "2026-10-08T16:34:45.966Z",
+          "deleted_at": null,
+          "tax_lines": [
+            {
+              "id": "ordsmtxl_01M4E5W126W7KNH696W3BT5GH1",
+              "description": "Moms",
+              "tax_rate_id": "txr_01M4E5JW0CS8W63VC0KM5Q8NT0",
+              "code": "MOMS-FI",
+              "provider_id": "system",
+              "shipping_method_id": "ordsm_01M4E5W126WX2WDS3HEWD5E4A9",
+              "raw_rate": {
+                "value": "25.5",
+                "precision": 20
+              },
+              "created_at": "2026-10-08T16:34:45.967Z",
+              "updated_at": "2026-10-08T16:34:45.967Z",
+              "deleted_at": null,
+              "rate": 25.5,
+              "total": 1.1988047808764941,
+              "subtotal": 1.1988047808764941,
+              "raw_total": {
+                "value": "1.1988047808764940239",
+                "precision": 20
+              },
+              "raw_subtotal": {
+                "value": "1.1988047808764940239",
+                "precision": 20
+              }
+            }
+          ],
+          "adjustments": [],
+          "amount": 5.9,
+          "order_id": "order_01M4E5W127KS5JRZ414SFA9PT6",
+          "detail": {
+            "id": "ordspmv_01M4E5W1XSR235Y9SAFE0CKTE4",
+            "version": 2,
+            "order_id": "order_01M4E5W127KS5JRZ414SFA9PT6",
+            "shipping_method_id": "ordsm_01M4E5W126WX2WDS3HEWD5E4A9"
+          },
+          "subtotal": 4.701195219123506,
+          "total": 5.9,
+          "original_subtotal": 4.701195219123506,
+          "original_total": 5.9,
+          "discount_total": 0,
+          "discount_subtotal": 0,
+          "discount_tax_total": 0,
+          "tax_total": 1.1988047808764941,
+          "original_tax_total": 1.1988047808764941,
+          "raw_subtotal": {
+            "value": "4.7011952191235059761",
+            "precision": 20
+          },
+          "raw_total": {
+            "value": "5.9",
+            "precision": 20
+          },
+          "raw_original_subtotal": {
+            "value": "4.7011952191235059761",
+            "precision": 20
+          },
+          "raw_original_total": {
+            "value": "5.9",
+            "precision": 20
+          },
+          "raw_discount_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_discount_subtotal": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_discount_tax_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_tax_total": {
+            "value": "1.1988047808764940239",
+            "precision": 20
+          },
+          "raw_original_tax_total": {
+            "value": "1.1988047808764940239",
+            "precision": 20
+          }
+        }
+      ],
+      "credit_lines": [
+        {
+          "id": "ordcl_01M4E5W1XTFEB4F812N4W0DXPE",
+          "version": 2,
+          "reference": "payment_collection",
+          "reference_id": "pay_col_01M4E5W0TFWE0JCA0TNVR9XJQM",
+          "raw_amount": {
+            "value": "24.9",
+            "precision": 20
+          },
+          "metadata": {
+            "created_in_version": 2
+          },
+          "order_id": "order_01M4E5W127KS5JRZ414SFA9PT6",
+          "created_at": "2026-10-08T16:34:46.843Z",
+          "updated_at": "2026-10-08T16:34:46.843Z",
+          "deleted_at": null,
+          "amount": 24.9,
+          "subtotal": 24.9,
+          "total": 24.9,
+          "raw_subtotal": {
+            "value": "24.9",
+            "precision": 20
+          },
+          "raw_total": {
+            "value": "24.9",
+            "precision": 20
+          }
+        }
+      ],
+      "shipping_address": {
+        "id": "ordaddr_01M4E5W11YQX3GP3YZJZTZPXXZ",
+        "customer_id": null,
+        "company": null,
+        "first_name": "Retur",
+        "last_name": "Test",
+        "address_1": "Gata 1",
+        "address_2": null,
+        "city": "Sthlm",
+        "country_code": "fi",
+        "province": null,
+        "postal_code": "11122",
+        "phone": null,
+        "metadata": null,
+        "created_at": "2026-10-08T16:34:44.318Z",
+        "updated_at": "2026-10-08T16:34:44.318Z",
+        "deleted_at": null
+      },
+      "payment_collections": [
+        {
+          "id": "pay_col_01M4E5W0TFWE0JCA0TNVR9XJQM",
+          "currency_code": "eur",
+          "completed_at": "2026-10-08T16:34:46.646Z",
+          "status": "completed",
+          "metadata": null,
+          "raw_amount": {
+            "value": "24.9",
+            "precision": 20
+          },
+          "raw_authorized_amount": {
+            "value": "24.9",
+            "precision": 20
+          },
+          "raw_captured_amount": {
+            "value": "24.9",
+            "precision": 20
+          },
+          "raw_refunded_amount": {
+            "value": "24.9",
+            "precision": 20
+          },
+          "created_at": "2026-10-08T16:34:45.711Z",
+          "updated_at": "2026-10-08T16:34:46.650Z",
+          "deleted_at": null,
+          "payments": [
+            {
+              "id": "pay_01M4E5W1C70S05EZWH265ANBBA",
+              "currency_code": "eur",
+              "provider_id": "pp_system_default",
+              "data": {},
+              "metadata": null,
+              "captured_at": "2026-10-08T16:34:46.445Z",
+              "canceled_at": null,
+              "payment_collection_id": "pay_col_01M4E5W0TFWE0JCA0TNVR9XJQM",
+              "payment_session": {
+                "id": "payses_01M4E5W0WJNYVFZ73XN4F6CJ2F"
+              },
+              "raw_amount": {
+                "value": "24.9",
+                "precision": 20
+              },
+              "created_at": "2026-10-08T16:34:46.279Z",
+              "updated_at": "2026-10-08T16:34:46.450Z",
+              "deleted_at": null,
+              "payment_session_id": "payses_01M4E5W0WJNYVFZ73XN4F6CJ2F",
+              "refunds": [
+                {
+                  "id": "ref_01M4E5W1PZEME44MN2MVBNS1TN",
+                  "payment_id": "pay_01M4E5W1C70S05EZWH265ANBBA",
+                  "refund_reason_id": null,
+                  "refund_reason": null,
+                  "note": null,
+                  "created_by": null,
+                  "metadata": null,
+                  "raw_amount": {
+                    "value": "24.9",
+                    "precision": 20
+                  },
+                  "created_at": "2026-10-08T16:34:46.624Z",
+                  "updated_at": "2026-10-08T16:34:46.624Z",
+                  "deleted_at": null,
+                  "amount": 24.9
+                }
+              ],
+              "amount": 24.9
+            }
+          ],
+          "amount": 24.9,
+          "authorized_amount": 24.9,
+          "captured_amount": 24.9,
+          "refunded_amount": 24.9
+        }
+      ],
+      "payment_status": "refunded",
+      "fulfillment_status": "not_fulfilled"
+    },
+    {
+      "id": "order_01M4E5W37GDS1E7V971VW96Z4H",
+      "display_id": 3,
+      "status": "pending",
+      "currency_code": "sek",
+      "email": "retur@example.com",
+      "created_at": "2026-10-08T16:34:48.179Z",
+      "updated_at": "2026-10-08T16:34:48.179Z",
+      "canceled_at": null,
+      "original_total": 646,
+      "total": 547.9726,
+      "tax_total": 109.59452,
+      "version": 1,
+      "items": [
+        {
+          "id": "ordli_01M4E5W37JVN9BKT4ZYQRASDVD",
+          "title": "Ullsocka",
+          "subtitle": "S / Svart",
+          "thumbnail": null,
+          "variant_id": "variant_01M4E5K7NAFPBSPEJ8Y4R95AK4",
+          "product_id": "prod_01M4E5K7G0VRBZAKSS7XWKTXMB",
+          "product_title": "Ullsocka",
+          "product_description": "Varm socka i merinoull.",
+          "product_subtitle": null,
+          "product_type": null,
+          "product_type_id": null,
+          "product_collection": null,
+          "product_handle": "ullsocka",
+          "variant_sku": "ULLSOCKA-S-SVART",
+          "variant_barcode": null,
+          "variant_title": "S / Svart",
+          "variant_option_values": null,
+          "requires_shipping": true,
+          "is_giftcard": false,
+          "is_discountable": true,
+          "is_tax_inclusive": true,
+          "is_custom_price": false,
+          "metadata": {},
+          "raw_compare_at_unit_price": null,
+          "raw_unit_price": {
+            "value": "199",
+            "precision": 20
+          },
+          "created_at": "2026-10-08T16:34:48.179Z",
+          "updated_at": "2026-10-08T16:34:48.179Z",
+          "deleted_at": null,
+          "tax_lines": [
+            {
+              "id": "ordlitxl_01M4E5W37HB2QV6GT27PXBVACS",
+              "description": "Moms",
+              "tax_rate_id": "txr_01M4E5JW0C7NB56SDHRSDCGSVW",
+              "code": "MOMS-SE",
+              "provider_id": "system",
+              "item_id": "ordli_01M4E5W37JVN9BKT4ZYQRASDVD",
+              "raw_rate": {
+                "value": "25",
+                "precision": 20
+              },
+              "created_at": "2026-10-08T16:34:48.180Z",
+              "updated_at": "2026-10-08T16:34:48.180Z",
+              "deleted_at": null,
+              "rate": 25,
+              "total": 99.79452,
+              "subtotal": 119.4,
+              "raw_total": {
+                "value": "99.79452",
+                "precision": 20
+              },
+              "raw_subtotal": {
+                "value": "119.4",
+                "precision": 20
+              }
+            }
+          ],
+          "adjustments": [
+            {
+              "id": "ordliadj_01M4E5W37JR9TMF47ZQ52X0WYH",
+              "version": 1,
+              "description": null,
+              "promotion_id": "promo_01M4E5KJA9BAW8SY8XGAPWZKP3",
+              "code": "PACK-ULLSOCKA-3-SEK-te1e7320742",
+              "provider_id": null,
+              "is_tax_inclusive": false,
+              "item_id": "ordli_01M4E5W37JVN9BKT4ZYQRASDVD",
+              "raw_amount": {
+                "value": "78.42192",
+                "precision": 20
+              },
+              "created_at": "2026-10-08T16:34:48.180Z",
+              "updated_at": "2026-10-08T16:34:48.180Z",
+              "deleted_at": null,
+              "amount": 78.42192,
+              "subtotal": 78.42192,
+              "total": 98.0274,
+              "raw_subtotal": {
+                "value": "78.42192",
+                "precision": 20
+              },
+              "raw_total": {
+                "value": "98.0274",
+                "precision": 20
+              }
+            }
+          ],
+          "compare_at_unit_price": null,
+          "unit_price": 199,
+          "quantity": 3,
+          "raw_quantity": {
+            "value": "3",
+            "precision": 20
+          },
+          "detail": {
+            "id": "orditem_01M4E5W37K56279RE4K1SC091Q",
+            "version": 1,
+            "metadata": {},
+            "order_id": "order_01M4E5W37GDS1E7V971VW96Z4H",
+            "raw_unit_price": null,
+            "raw_compare_at_unit_price": null,
+            "raw_quantity": {
+              "value": "3",
+              "precision": 20
+            },
+            "raw_fulfilled_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_delivered_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_shipped_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_return_requested_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_return_received_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_return_dismissed_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "raw_written_off_quantity": {
+              "value": "0",
+              "precision": 20
+            },
+            "created_at": "2026-10-08T16:34:48.179Z",
+            "updated_at": "2026-10-08T16:34:48.180Z",
+            "deleted_at": null,
+            "item_id": "ordli_01M4E5W37JVN9BKT4ZYQRASDVD",
+            "unit_price": null,
+            "compare_at_unit_price": null,
+            "quantity": 3,
+            "fulfilled_quantity": 0,
+            "delivered_quantity": 0,
+            "shipped_quantity": 0,
+            "return_requested_quantity": 0,
+            "return_received_quantity": 0,
+            "return_dismissed_quantity": 0,
+            "written_off_quantity": 0
+          },
+          "subtotal": 477.6,
+          "total": 498.9726,
+          "original_subtotal": 477.6,
+          "original_total": 597,
+          "discount_subtotal": 78.42192,
+          "discount_tax_total": 19.60548,
+          "discount_total": 98.0274,
+          "tax_total": 99.79452,
+          "original_tax_total": 119.4,
+          "refundable_total_per_unit": 166.3242,
+          "refundable_total": 498.9726,
+          "fulfilled_total": 0,
+          "shipped_total": 0,
+          "return_requested_total": 0,
+          "return_received_total": 0,
+          "return_dismissed_total": 0,
+          "write_off_total": 0,
+          "raw_subtotal": {
+            "value": "477.6",
+            "precision": 20
+          },
+          "raw_total": {
+            "value": "498.9726",
+            "precision": 20
+          },
+          "raw_original_subtotal": {
+            "value": "477.6",
+            "precision": 20
+          },
+          "raw_original_total": {
+            "value": "597",
+            "precision": 20
+          },
+          "raw_discount_subtotal": {
+            "value": "78.42192",
+            "precision": 20
+          },
+          "raw_discount_tax_total": {
+            "value": "19.60548",
+            "precision": 20
+          },
+          "raw_discount_total": {
+            "value": "98.0274",
+            "precision": 20
+          },
+          "raw_tax_total": {
+            "value": "99.79452",
+            "precision": 20
+          },
+          "raw_original_tax_total": {
+            "value": "119.4",
+            "precision": 20
+          },
+          "raw_refundable_total_per_unit": {
+            "value": "166.3242",
+            "precision": 20
+          },
+          "raw_refundable_total": {
+            "value": "498.9726",
+            "precision": 20
+          },
+          "raw_fulfilled_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_shipped_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_return_requested_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_return_received_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_return_dismissed_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_write_off_total": {
+            "value": "0",
+            "precision": 20
+          }
+        }
+      ],
+      "shipping_methods": [
+        {
+          "id": "ordsm_01M4E5W37GEZFAQ34JZBGX92KJ",
+          "name": "Frakt upp till 3 st",
+          "description": null,
+          "is_tax_inclusive": true,
+          "is_custom_amount": false,
+          "shipping_option_id": "so_01M4E5JW6HPR9RR34H3RPTTDHX",
+          "data": {},
+          "metadata": null,
+          "raw_amount": {
+            "value": "49",
+            "precision": 20
+          },
+          "created_at": "2026-10-08T16:34:48.180Z",
+          "updated_at": "2026-10-08T16:34:48.180Z",
+          "deleted_at": null,
+          "tax_lines": [
+            {
+              "id": "ordsmtxl_01M4E5W37GYQ5AW83MK0XY87RX",
+              "description": "Moms",
+              "tax_rate_id": "txr_01M4E5JW0C7NB56SDHRSDCGSVW",
+              "code": "MOMS-SE",
+              "provider_id": "system",
+              "shipping_method_id": "ordsm_01M4E5W37GEZFAQ34JZBGX92KJ",
+              "raw_rate": {
+                "value": "25",
+                "precision": 20
+              },
+              "created_at": "2026-10-08T16:34:48.180Z",
+              "updated_at": "2026-10-08T16:34:48.180Z",
+              "deleted_at": null,
+              "rate": 25,
+              "total": 9.8,
+              "subtotal": 9.8,
+              "raw_total": {
+                "value": "9.8",
+                "precision": 20
+              },
+              "raw_subtotal": {
+                "value": "9.8",
+                "precision": 20
+              }
+            }
+          ],
+          "adjustments": [],
+          "amount": 49,
+          "order_id": "order_01M4E5W37GDS1E7V971VW96Z4H",
+          "detail": {
+            "id": "ordspmv_01M4E5W37GH7QQYD3WB5WZNPJ7",
+            "version": 1,
+            "order_id": "order_01M4E5W37GDS1E7V971VW96Z4H",
+            "shipping_method_id": "ordsm_01M4E5W37GEZFAQ34JZBGX92KJ"
+          },
+          "subtotal": 39.2,
+          "total": 49,
+          "original_subtotal": 39.2,
+          "original_total": 49,
+          "discount_total": 0,
+          "discount_subtotal": 0,
+          "discount_tax_total": 0,
+          "tax_total": 9.8,
+          "original_tax_total": 9.8,
+          "raw_subtotal": {
+            "value": "39.2",
+            "precision": 20
+          },
+          "raw_total": {
+            "value": "49",
+            "precision": 20
+          },
+          "raw_original_subtotal": {
+            "value": "39.2",
+            "precision": 20
+          },
+          "raw_original_total": {
+            "value": "49",
+            "precision": 20
+          },
+          "raw_discount_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_discount_subtotal": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_discount_tax_total": {
+            "value": "0",
+            "precision": 20
+          },
+          "raw_tax_total": {
+            "value": "9.8",
+            "precision": 20
+          },
+          "raw_original_tax_total": {
+            "value": "9.8",
+            "precision": 20
+          }
+        }
+      ],
+      "credit_lines": [],
+      "shipping_address": {
+        "id": "ordaddr_01M4E5W37EFD78Y565YV0FQB6V",
+        "customer_id": null,
+        "company": null,
+        "first_name": "Retur",
+        "last_name": "Test",
+        "address_1": "Gata 1",
+        "address_2": null,
+        "city": "Sthlm",
+        "country_code": "se",
+        "province": null,
+        "postal_code": "11122",
+        "phone": null,
+        "metadata": null,
+        "created_at": "2026-10-08T16:34:47.029Z",
+        "updated_at": "2026-10-08T16:34:47.029Z",
+        "deleted_at": null
+      },
+      "payment_collections": [
+        {
+          "id": "pay_col_01M4E5W32G6WWJ7B6EFMYNBTWW",
+          "currency_code": "sek",
+          "completed_at": "2026-10-08T16:34:48.497Z",
+          "status": "completed",
+          "metadata": null,
+          "raw_amount": {
+            "value": "547.9726",
+            "precision": 20
+          },
+          "raw_authorized_amount": {
+            "value": "547.9726",
+            "precision": 20
+          },
+          "raw_captured_amount": {
+            "value": "547.9726",
+            "precision": 20
+          },
+          "raw_refunded_amount": {
+            "value": "0",
+            "precision": 20
+          },
+          "created_at": "2026-10-08T16:34:48.017Z",
+          "updated_at": "2026-10-08T16:34:48.500Z",
+          "deleted_at": null,
+          "payments": [
+            {
+              "id": "pay_01M4E5W3CXEGWJ516N99FCDHVT",
+              "currency_code": "sek",
+              "provider_id": "pp_system_default",
+              "data": {},
+              "metadata": null,
+              "captured_at": "2026-10-08T16:34:48.480Z",
+              "canceled_at": null,
+              "payment_collection_id": "pay_col_01M4E5W32G6WWJ7B6EFMYNBTWW",
+              "payment_session": {
+                "id": "payses_01M4E5W33BAMAFRPDM3EN5JAPF"
+              },
+              "raw_amount": {
+                "value": "547.9726",
+                "precision": 20
+              },
+              "created_at": "2026-10-08T16:34:48.350Z",
+              "updated_at": "2026-10-08T16:34:48.483Z",
+              "deleted_at": null,
+              "payment_session_id": "payses_01M4E5W33BAMAFRPDM3EN5JAPF",
+              "refunds": [],
+              "amount": 547.9726
+            }
+          ],
+          "amount": 547.9726,
+          "authorized_amount": 547.9726,
+          "captured_amount": 547.9726,
+          "refunded_amount": 0
+        }
+      ],
+      "payment_status": "captured",
+      "fulfillment_status": "not_fulfilled"
+    }
+  ],
+  "count": 3,
+  "offset": 0,
+  "limit": 50
+}
