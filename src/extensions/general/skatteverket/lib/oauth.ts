@@ -69,7 +69,11 @@ const DEFAULT_OAUTH_BASE_URL = 'https://peroauth2.test.skatteverket.se/oauth2/v1
 //                              APIGW subscription gap (#973), which is why the
 //                              gateway/token distinction has to be made with
 //                              the APIGW client, not from this string alone.
+// HT patch: SKATTEVERKET_OAUTH_SCOPES overrides the list. Requesting a scope
+// the OAuth client is not approved for can make SKV reject the authorize step,
+// and approvals differ per registered client.
 const DEFAULT_SCOPES =
+  process.env.SKATTEVERKET_OAUTH_SCOPES?.trim() ||
   'momsdeklaration inkforetag skahmst skattekonto ska agd agdredovisningperiod'
 
 function getOAuthBaseUrl(): string {

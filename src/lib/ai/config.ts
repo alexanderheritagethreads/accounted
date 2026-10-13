@@ -1,5 +1,6 @@
 import {
   hasAiCredentials,
+  isGeminiBackend,
   resolveAiProvider,
   toProviderModelId,
   type AiProvider,
@@ -184,6 +185,7 @@ export function getAiStatus(): AiStatus {
     models,
     pdfMode: cfg.pdfMode,
     // The chat loop still speaks the Anthropic messages surface directly.
-    assistantAvailable: cfg.configured && cfg.provider !== 'openai-compatible',
+    // HT patch: on Gemini it does so through the adapter (isGeminiBackend).
+    assistantAvailable: cfg.configured && (cfg.provider !== 'openai-compatible' || isGeminiBackend()),
   }
 }

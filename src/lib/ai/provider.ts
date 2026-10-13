@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk'
 import type { AiProviderKind } from './types'
+import { createGeminiAgentClient } from './gemini-anthropic-adapter'
 
 
 /**
@@ -107,8 +108,22 @@ export function hasAiCredentials(): boolean {
  * at all; go through getAiService() from @/lib/ai (antipattern guard
  * direct-ai-client enforces that outside lib/ai/services).
  */
+/**
+ * HT patch: true when the OpenAI-compatible backend is Google's Gemini. Gemini
+ * also has a native API that the Anthropic-shaped adapter in
+ * ./gemini-anthropic-adapter speaks, so the assistant and the other direct
+ * SDK callers work there instead of being refused.
+ */
+export function isGeminiBackend(): boolean {
+  return (
+    resolveAiProvider() === 'openai-compatible' &&
+    /generativelanguage\.googleapis\.com/.test(process.env.AI_BASE_URL ?? '')
+  )
+}
+
 export function createAiClient(): AiClient {
   const provider = resolveAiProvider()
+  if (isGeminiBackend()) return createGeminiAgentClient() as unknown as AiClient
   if (provider === 'openai-compatible') throw new AiProviderUnsupportedError(provider)
   if (provider === 'anthropic') {
     const apiKey = process.env.ANTHROPIC_API_KEY

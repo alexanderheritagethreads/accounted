@@ -620,6 +620,20 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
 
     const documentType: InvoiceDocumentType = input.document_type || 'invoice'
 
+    // HT patch: external_invoice_number on a NON-self-billed invoice mirrors an
+    // invoice an upstream system (webshop, B2B portal) already issued to the
+    // customer, so it keeps that number instead of minting a competing F-number
+    // (ML 17 kap 24§ p.2). Delivery notes and quotes draw from their own series.
+    if (input.external_invoice_number && (documentType === 'delivery_note' || documentType === 'quote')) {
+      return v1ErrorResponseFromCode('VALIDATION_ERROR', ctx.log, {
+        requestId: ctx.requestId,
+        details: {
+          field: 'external_invoice_number',
+          message: `external_invoice_number is not supported for document_type '${documentType}' (own number series).`,
+        },
+      })
+    }
+
     // Customer fetch (scoped to company). Not '*': customer PII stays out of
     // this path. `country` was missing from this list until #2783, so an
     // eu_business established in Sweden got 0 % reverse charge here and 25 %
@@ -704,8 +718,9 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
       const { deduction_personnummer_encrypted: _omit, ...previewFields } = invoiceFields
       return dryRunPreview(
         {
-          // Would-be invoice row.
-          invoice_number: null,
+          // Would-be invoice row. A mirrored upstream invoice (HT patch)
+          // carries its number from create.
+          invoice_number: input.external_invoice_number ?? null,
           status: 'draft' as const,
           ...previewFields,
           payment_cash_account_id: payeeChoice.fields.payment_cash_account_id,
@@ -739,6 +754,11 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
         })
       }
       invoiceNumber = quoteNumber as string
+    } else if (input.external_invoice_number) {
+      // HT patch: mirrored upstream invoice. ensureInvoiceNumber short-circuits
+      // on a non-null invoice_number, so :send / :mark-sent will NOT consume an
+      // F-series value and the company's own series stays gap-free.
+      invoiceNumber = input.external_invoice_number
     }
 
     const { data: invoice, error: invoiceErr } = await ctx.supabase
@@ -755,6 +775,19 @@ export const POST = withApiV1<{ params: Promise<{ companyId: string }> }>(
       .single()
 
     if (invoiceErr) {
+      // HT patch: a unique violation on a caller-supplied external number means
+      // this upstream invoice is already mirrored. Say so explicitly; the
+      // generic insert-failed code would send an integration into a blind
+      // retry loop against a permanently failing write.
+      if (invoiceErr.code === '23505' && input.external_invoice_number) {
+        return v1ErrorResponseFromCode('VALIDATION_ERROR', ctx.log, {
+          requestId: ctx.requestId,
+          details: {
+            field: 'external_invoice_number',
+            message: `Invoice number ${input.external_invoice_number} already exists for this company.`,
+          },
+        })
+      }
       // pg_message can interpolate field values from constraint detail:       // log internally, never echo to the client.
       ctx.log.error('invoice insert failed', invoiceErr, {
         invoiceId: undefined,

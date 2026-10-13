@@ -85,6 +85,21 @@ function toSdkTools(defs: AiToolDef[] | undefined): ToolSet | undefined {
  *     json_schema for providers that enforce it.
  */
 
+/** HT patch: see the `fetch` option in createOpenAICompatibleService. */
+export const geminiPdfFetch: typeof fetch = (input, init) => {
+  if (typeof init?.body !== 'string' || !init.body.includes('"type":"file"')) return fetch(input, init)
+  const body = JSON.parse(init.body) as { messages?: Array<{ content?: unknown }> }
+  for (const message of body.messages ?? []) {
+    if (!Array.isArray(message.content)) continue
+    message.content = message.content.map((part: { type?: string; file?: { file_data?: string } }) =>
+      part?.type === 'file' && part.file?.file_data?.startsWith('data:application/pdf')
+        ? { type: 'image_url', image_url: { url: part.file.file_data } }
+        : part,
+    )
+  }
+  return fetch(input, { ...init, body: JSON.stringify(body) })
+}
+
 export function createOpenAICompatibleService(cfg: ResolvedAiConfig): AiService {
   const provider = createOpenAICompatible({
     name: 'accounted-byo',
@@ -93,6 +108,10 @@ export function createOpenAICompatibleService(cfg: ResolvedAiConfig): AiService 
     // reject or ignore an empty Bearer, and omitting it means no auth header.
     ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
     supportsStructuredOutputs: cfg.strictJson,
+    // HT patch: Gemini's OpenAI-compatible endpoint rejects the `file` content
+    // part ("Invalid content part type: file") but reads a PDF passed as an
+    // image_url data URL natively. Rewrite only that part, only for Gemini.
+    ...(/generativelanguage\.googleapis\.com/.test(cfg.baseUrl ?? '') ? { fetch: geminiPdfFetch } : {}),
   })
   const capabilities = capabilitiesFor(cfg)
   const modelFor = (tier: AiTier): string => {
