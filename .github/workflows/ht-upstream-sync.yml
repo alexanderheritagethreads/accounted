@@ -1,0 +1,96 @@
+# HT: weekly upstream check. Merges the upstream (repo variable
+# SYNC_UPSTREAM_URL, default erp-mafia/accounted) into an update branch off
+# SYNC_BASE (default main), runs typecheck + unit tests, and opens a PR (or an
+# issue on conflicts). It NEVER deploys and never touches the database:
+# migrations and deploys stay a reviewed, human step.
+#
+# Chain: erp-mafia/accounted -> alexanderheritagethreads/accounted (factory
+# base, SYNC_BASE=main) -> each customer fork (e.g. ht_bok: SYNC_BASE=staging,
+# SYNC_UPSTREAM_URL=https://github.com/alexanderheritagethreads/accounted.git).
+# The file is identical in every repo; only the repo variables differ.
+name: HT upstream sync
+
+on:
+  schedule:
+    - cron: '0 4 * * 1' # Mondays 04:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: ht-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      BASE: ${{ vars.SYNC_BASE || 'main' }}
+      UPSTREAM_URL: ${{ vars.SYNC_UPSTREAM_URL || 'https://github.com/erp-mafia/accounted.git' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.SYNC_BASE || 'main' }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Merge upstream
+        id: merge
+        run: |
+          set +e
+          bash scripts/ht/upstream-sync.sh "$BASE" report.md
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "branch=$(git branch --show-current)" >> "$GITHUB_OUTPUT"
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          if [ "$code" -ne 0 ] && [ "$code" -ne 10 ] && [ "$code" -ne 11 ]; then exit "$code"; fi
+
+      - name: Open issue on conflicts
+        if: steps.merge.outputs.code == '10' || steps.merge.outputs.code == '11'
+        run: |
+          gh issue create --title "Upstream-uppdatering kräver handpåläggning ($(date -u +%Y-%m-%d))" --body-file report.md
+
+      - uses: actions/setup-node@v4
+        if: steps.merge.outputs.code == '0' && startsWith(steps.merge.outputs.branch, 'update/')
+        with:
+          node-version: 22
+
+      - name: Typecheck and unit tests
+        id: verify
+        if: steps.merge.outputs.code == '0' && startsWith(steps.merge.outputs.branch, 'update/')
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: |
+          set +e
+          npm ci --no-audit --no-fund --allow-remote=root --loglevel=error
+          npx tsc --noEmit -p tsconfig.json > tsc.log 2>&1; tsc=$?
+          npx vitest run --project unit > unit.log 2>&1; unit=$?
+          set -e
+          {
+            echo
+            echo "### Verifiering (Linux)"
+            echo "- Typkontroll: $([ $tsc -eq 0 ] && echo '✅' || echo '❌')"
+            echo "- Enhetstester: $([ $unit -eq 0 ] && echo '✅' || echo '❌') $(grep -E 'Tests +' unit.log | tail -1 | sed 's/\x1b\[[0-9;]*m//g')"
+          } >> report.md
+          if [ $tsc -ne 0 ]; then { echo; echo '```'; grep 'error TS' tsc.log | head -30; echo '```'; } >> report.md; fi
+          if [ $unit -ne 0 ]; then { echo; echo '```'; grep -E '^ FAIL' unit.log | head -30; echo '```'; } >> report.md; fi
+          echo "ok=$([ $tsc -eq 0 ] && [ $unit -eq 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Push branch and open PR
+        if: steps.merge.outputs.code == '0' && startsWith(steps.merge.outputs.branch, 'update/')
+        run: |
+          branch="${{ steps.merge.outputs.branch }}"
+          git push --force-with-lease origin "$branch"
+          title="Upstream Accounted $(date -u +%Y-%m-%d)"
+          [ "${{ steps.verify.outputs.ok }}" = "true" ] || title="$title (tester röda)"
+          if gh pr view "$branch" >/dev/null 2>&1; then
+            gh pr edit "$branch" --title "$title" --body-file report.md
+          else
+            gh pr create --base "$BASE" --head "$branch" --title "$title" --body-file report.md
+          fi
