@@ -18,9 +18,7 @@
  */
 
 import { z } from 'zod'
-import { renderToBuffer } from '@react-pdf/renderer'
-import { InvoicePDF } from '@/lib/invoices/pdf-template'
-import { prepareInvoicePdfRender, buildSwishQrDataUrl } from '@/lib/invoices/pdf-render-helpers'
+import { renderInvoicePdfBuffer } from '@/lib/invoices/render-invoice-pdf'
 import { invoicePdfFilename } from '@/lib/invoices/pdf-filename'
 import { contentDisposition } from '@/lib/api/content-disposition'
 import { registerEndpoint } from '@/lib/api/v1/registry'
@@ -31,6 +29,7 @@ import {
   invoiceRequiresPaymentAccount,
 } from '@/lib/invoices/payment-accounts'
 import { INVOICE_PDF_COLUMNS } from '@/lib/api/v1/invoice-columns'
+import { invoiceLacksCustomer } from '@/lib/invoices/invoice-customer'
 import type { CompanySettings, Customer, Invoice, InvoiceItem } from '@/types'
 
 // The ciphertext is fetched here, for the render only: the template derives
@@ -59,6 +58,7 @@ registerEndpoint({
     'Drafts (no invoice_number yet) render with an "utkast" filename. The PDF carries no F-series number: do not treat it as a finalized invoice.',
     'PDF rendering can take several hundred milliseconds for invoices with many line items. Cache on the client if requesting repeatedly.',
     'Credit notes embed the original invoice\'s löpnummer per ML 17 kap 22-23§: if the original was hard-deleted (not possible via Accounted but theoretically via a manual DB edit), the reference is omitted.',
+    'An invoice without a customer (customer_id null, e.g. its customer was deleted) has no buyer to print: 409 INVOICE_CUSTOMER_MISSING. Set customer_id on the draft or delete it.',
   ],
   example: {
     response: {
@@ -115,6 +115,12 @@ export const GET = withApiV1<{ params: Promise<{ companyId: string; id: string }
       items?: InvoiceItem[]
     }
 
+    // No buyer to print (customer deleted, crm#263): refuse instead of a
+    // render that throws on the missing customer.
+    if (invoiceLacksCustomer(typed)) {
+      return v1ErrorResponseFromCode('INVOICE_CUSTOMER_MISSING', ctx.log, { requestId: ctx.requestId })
+    }
+
     // company_settings is required by the PDF template (header, bank info,
     // entity-type-driven layout). Select * is intentional: see the rationale
     // in the :send route. Same flat owner-facing config object, no sensitive
@@ -162,23 +168,18 @@ export const GET = withApiV1<{ params: Promise<{ companyId: string; id: string }
 
     let pdfBuffer: Buffer
     try {
-      const { branding, company: renderCompany } = await prepareInvoicePdfRender(
-        company as CompanySettings,
-        typed.currency,
-        { paymentAccountRequired: invoiceRequiresPaymentAccount(typed), payee: typed.payment_details ?? null },
-      )
-      const swishQrDataUrl = await buildSwishQrDataUrl(renderCompany, typed as Invoice)
-      pdfBuffer = await renderToBuffer(
-        InvoicePDF({
+      // Same render path, so the same QR code, as the dashboard download and
+      // the sent file.
+      pdfBuffer = (
+        await renderInvoicePdfBuffer({
           invoice: typed as Invoice,
           customer: typed.customer as Customer,
           items,
-          company: renderCompany,
+          company: company as CompanySettings,
           originalInvoiceNumber,
-          branding,
-          swishQrDataUrl,
-        }),
-      )
+          paymentAccountRequired: invoiceRequiresPaymentAccount(typed),
+        })
+      ).buffer
     } catch (err) {
       ctx.log.error('invoices.pdf: render failed', err as Error, {
         invoiceId,

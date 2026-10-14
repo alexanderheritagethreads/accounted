@@ -1,10 +1,9 @@
-import type { Invoice, Customer, CompanySettings, InvoiceDocumentType } from '@/types'
+import type { Invoice, Customer, CompanySettings, InvoiceDocumentType, InvoiceEmailTextOverrides } from '@/types'
 import { formatDate, getCompanyDisplayName } from '@/lib/utils'
 import { getAmountToPay } from '@/lib/invoices/rounding'
 import { companyWithInvoicePaymentAccount } from '@/lib/invoices/payment-accounts'
 import { customerGreetingName } from '@/lib/invoices/customer-greeting-name'
-import { invoiceShowsOcrReference } from '@/lib/invoices/ocr-reference'
-import { generateOcrReference } from '@/lib/bankgiro/luhn'
+import { buildInvoicePaymentRows } from '@/lib/invoices/payment-rows'
 import { applyPlaceholders, escapeHtml, sanitizeSubjectLine, userTextToHtml } from './user-text'
 
 type EmailLang = 'sv' | 'en'
@@ -35,22 +34,9 @@ const LABELS = {
     // A quote is not a payment request, so its grand total is a neutral sum.
     totalQuote: 'Summa:',
     payOnline: 'Betala online',
+    // The payment rows carry their own labels, shared with the PDF
+    // (lib/invoices/payment-rows.ts).
     paymentHeading: 'Betalningsinformation',
-    bank: 'Bank:',
-    account: 'Kontonummer:',
-    iban: 'IBAN:',
-    bic: 'BIC/SWIFT:',
-    bankgiro: 'Bankgiro:',
-    plusgiro: 'Plusgiro:',
-    swish: 'Swish:',
-    routingNumber: 'Routing number (ABA):',
-    sortCode: 'Sort code:',
-    bankCode: 'Bankkod:',
-    foreignAccount: 'Kontonummer:',
-    // Same label as the PDF payment box. The value is the OCR reference
-    // (invoice number + Luhn check digit), never the bare invoice number.
-    ocr: 'OCR/Referens:',
-    message: 'Meddelande:',
     questions: 'Har du frågor om fakturan? Svara direkt på detta mejl så hjälper vi dig.',
     sincerely: 'Med vänliga hälsningar,',
     orgNo: 'Org.nr:',
@@ -87,19 +73,6 @@ const LABELS = {
     totalQuote: 'Total:',
     payOnline: 'Pay online',
     paymentHeading: 'Payment information',
-    bank: 'Bank:',
-    account: 'Account number:',
-    iban: 'IBAN:',
-    bic: 'BIC/SWIFT:',
-    bankgiro: 'Bankgiro:',
-    plusgiro: 'Plusgiro:',
-    swish: 'Swish:',
-    routingNumber: 'Routing number (ABA):',
-    sortCode: 'Sort code:',
-    bankCode: 'Bank code:',
-    foreignAccount: 'Account number:',
-    ocr: 'Reference:',
-    message: 'Reference:',
     questions: 'Questions about the invoice? Reply directly to this email and we will help you.',
     sincerely: 'Kind regards,',
     orgNo: 'Reg. no.:',
@@ -200,6 +173,13 @@ export interface InvoiceEmailData {
   // one the "Svara direkt på detta mejl" line is left out: a reply would
   // land in the platform noreply sender.
   replyTo?: string | null
+  /**
+   * This send's own subject and message (SendInvoiceSchema email_subject /
+   * email_body), typed for this document: they win over the company texts
+   * and apply to every document type. Same placeholders; empty or
+   * whitespace-only = none.
+   */
+  overrides?: { subject?: string | null; body?: string | null }
 }
 
 function buildPlaceholderValues(data: InvoiceEmailData, lang: EmailLang): Record<string, string> {
@@ -222,24 +202,59 @@ interface ResolvedCustomTexts {
   signoff?: string
 }
 
-// Resolves the company's custom email texts for one language. Per-field
-// fallback: missing / non-string / whitespace-only values return undefined
-// and the caller uses the stock text. Returns RAW substituted strings:
-// escaping is the caller's job per output variant (HTML vs text vs subject).
-// Defensive typeof checks: rows can be written outside Zod (scripts, SQL).
+// Resolves the custom email texts for one language: this send's own
+// subject and body first (data.overrides), then the company's texts.
+// Per-field fallback: missing / non-string / whitespace-only values return
+// undefined and the caller uses the stock text. Returns RAW substituted
+// strings: escaping is the caller's job per output variant (HTML vs text vs
+// subject). Defensive typeof checks: rows can be written outside Zod
+// (scripts, SQL).
 function resolveCustomTexts(data: InvoiceEmailData, lang: EmailLang): ResolvedCustomTexts {
-  if (!isStandardInvoice(data.invoice)) return {}
-  const texts = data.company.invoice_email_texts
-  const langTexts = texts && typeof texts === 'object' ? texts[lang] : undefined
-  if (!langTexts || typeof langTexts !== 'object') return {}
   const values = buildPlaceholderValues(data, lang)
   const pick = (v: unknown): string | undefined =>
     typeof v === 'string' && v.trim() !== '' ? applyPlaceholders(v.trim(), values) : undefined
+  const texts = isStandardInvoice(data.invoice) ? data.company.invoice_email_texts : undefined
+  const langTexts = texts && typeof texts === 'object' ? texts[lang] : undefined
+  const companyTexts: InvoiceEmailTextOverrides =
+    langTexts && typeof langTexts === 'object' ? langTexts : {}
   return {
-    subject: pick(langTexts.subject),
-    greeting: pick(langTexts.greeting),
-    body: pick(langTexts.body),
-    signoff: pick(langTexts.signoff),
+    subject: pick(data.overrides?.subject) ?? pick(companyTexts.subject),
+    greeting: pick(companyTexts.greeting),
+    body: pick(data.overrides?.body) ?? pick(companyTexts.body),
+    signoff: pick(companyTexts.signoff),
+  }
+}
+
+/**
+ * The subject and message this email would use, as text a person edits:
+ * this send's own text, else the company's text (a standard faktura only),
+ * else the stock text, with the placeholders ({fakturanummer}, {belopp}, ...)
+ * left in. The invoice editor's "Redigera text för den här fakturan" starts
+ * from these, so an edited subject still gets the number the send
+ * allocates, not the number the preview predicted.
+ */
+export function invoiceEmailEditableTexts(data: InvoiceEmailData): { subject: string; body: string } {
+  const { invoice, customer } = data
+  const lang = resolveLang(customer)
+  const L = LABELS[lang]
+  const raw = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined
+  const texts = isStandardInvoice(invoice) ? data.company.invoice_email_texts : undefined
+  const langTexts = texts && typeof texts === 'object' ? texts[lang] : undefined
+  const companyTexts: InvoiceEmailTextOverrides =
+    langTexts && typeof langTexts === 'object' ? langTexts : {}
+  const docType = (invoice as Invoice & { document_type?: InvoiceDocumentType }).document_type || 'invoice'
+  const stockBody = invoice.credited_invoice_id
+    ? L.bodyCreditNote
+    : docType === 'quote'
+      ? L.bodyQuote(quoteValidUntil(invoice))
+      : L.bodyInvoice
+  return {
+    subject:
+      raw(data.overrides?.subject)
+      ?? raw(companyTexts.subject)
+      ?? L.subjectFrom(getDocumentLabel(invoice, lang), '{fakturanummer}', '{företag}'),
+    body: raw(data.overrides?.body) ?? raw(companyTexts.body) ?? stockBody,
   }
 }
 
@@ -258,51 +273,22 @@ export interface InvoiceEmailPaymentRow {
 }
 
 /**
- * The payment rows, in the same order and under the same conditions as the
- * PDF payment box (lib/invoices/pdf-template.tsx), so the customer never sees
- * one instruction in the email and another on the faktura. The last row is
- * the reference the customer copies into the bank: the OCR reference (with
- * its Luhn check digit) exactly when the PDF prints one, else the invoice
- * number as a plain message. Shared with the reminder email.
+ * The payment rows of the invoice email and the reminder email: the PDF
+ * payment box's rows (lib/invoices/payment-rows.ts, same order, same budget,
+ * same labels), so the customer never sees one instruction in the email and
+ * another on the faktura. The last row is the reference the customer copies
+ * into the bank: the OCR reference exactly when the PDF prints one, else the
+ * invoice number as a plain message. The payment link is left out here: the
+ * invoice email shows it as its own "Betala online" button and line.
  */
 export function invoiceEmailPaymentRows(
   company: CompanySettings,
   invoice: Invoice,
   lang: EmailLang,
 ): InvoiceEmailPaymentRow[] {
-  const L = LABELS[lang]
-  const rows: InvoiceEmailPaymentRow[] = []
-  if (company.bank_name) rows.push({ label: L.bank, value: company.bank_name })
-  if (company.clearing_number && company.account_number) {
-    rows.push({ label: L.account, value: `${company.clearing_number}-${company.account_number}` })
-  }
-  if (company.bankgiro && (company.invoice_show_bankgiro ?? true)) {
-    rows.push({ label: L.bankgiro, value: company.bankgiro })
-  }
-  if (company.plusgiro && (company.invoice_show_plusgiro ?? true)) {
-    rows.push({ label: L.plusgiro, value: company.plusgiro })
-  }
-  if (company.swish && (company.invoice_show_swish ?? false)) {
-    rows.push({ label: L.swish, value: company.swish })
-  }
-  if (company.bank_code) {
-    rows.push({
-      label: invoice.currency === 'USD' ? L.routingNumber : invoice.currency === 'GBP' ? L.sortCode : L.bankCode,
-      value: company.bank_code,
-    })
-  }
-  if (company.foreign_account_number) {
-    rows.push({ label: L.foreignAccount, value: company.foreign_account_number })
-  }
-  if (company.iban) rows.push({ label: L.iban, value: company.iban })
-  if (company.bic) rows.push({ label: L.bic, value: company.bic })
-  const invoiceNumber = invoice.invoice_number ?? ''
-  rows.push(
-    invoiceShowsOcrReference(company, lang)
-      ? { label: L.ocr, value: generateOcrReference(invoiceNumber), emphasis: true }
-      : { label: L.message, value: invoiceNumber, emphasis: true },
-  )
-  return rows
+  return buildInvoicePaymentRows({ company, invoice, lang })
+    .filter((row) => row.key !== 'payment_link')
+    .map(({ label, value, emphasis }) => (emphasis ? { label, value, emphasis } : { label, value }))
 }
 
 /**

@@ -28,11 +28,14 @@ import {
   OmbudApiError,
   resolveOmbudRoleCodes,
   summarizeGrants,
+  grantCountsFor,
+  grantPredatesOptIn,
 } from '../lib/ombud-client'
 import { SkatteverketAuthError } from '../lib/api-client'
 
 const ENV_KEYS = ['SKATTEVERKET_OMBUD_API_BASE_URL', 'SKATTEVERKET_OMBUD_ROLL_LASOMBUD', 'SKATTEVERKET_OMBUD_ROLL_MOMS']
 let savedEnv: Record<string, string | undefined>
+const ACTOR = { companyId: 'company-1', userId: 'user-1' }
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -86,42 +89,54 @@ describe('listOmbudGrants', () => {
   it('accepts a bare array and an enveloped list', async () => {
     const post = { huvudman: '165560000000', roll: 'JLO', rollbeskrivning: 'Juridiskt läsombud', giltigFrom: '2026-01-01' }
     mockSkvRequestWithAuth.mockResolvedValueOnce({ ok: true, status: 200, json: async () => [post] })
-    expect(await listOmbudGrants()).toEqual([post])
+    expect(await listOmbudGrants({}, 'ombud_register')).toEqual([post])
+    // The whole register belongs to no company: not audited in the company table.
+    expect(mockSkvRequestWithAuth.mock.calls[0][3]).toEqual({
+      unaudited: 'ombud_register',
+      operation: 'ombud/autentisieratOmbud',
+    })
 
     mockSkvRequestWithAuth.mockResolvedValueOnce({
       ok: true,
       status: 200,
       json: async () => ({ behorighetsposter: [post] }),
     })
-    expect(await listOmbudGrants({ huvudman: '165560000000' })).toEqual([post])
+    expect(await listOmbudGrants({ huvudman: '165560000000' }, ACTOR)).toEqual([post])
     expect(mockSkvRequestWithAuth.mock.calls[1][2]).toBe('/ombud/autentisieratOmbud?huvudman=165560000000')
+    // One company's grants: audited against that company.
+    expect(mockSkvRequestWithAuth.mock.calls[1][3]).toEqual({
+      endpoint: 'ombud/autentisieratOmbud',
+      ...ACTOR,
+      agRegistreradId: '165560000000',
+      expectJson: true,
+    })
   })
 
   it('404 throws by default (wrong URI per the spec) and is empty only with emptyOn404', async () => {
     mockSkvRequestWithAuth.mockResolvedValueOnce({ ok: false, status: 404, text: async () => '{"message":"Not found"}' })
-    await expect(listOmbudGrants({ huvudman: '165560000000' })).rejects.toMatchObject({
+    await expect(listOmbudGrants({ huvudman: '165560000000' }, ACTOR)).rejects.toMatchObject({
       code: 'OBR_HTTP_ERROR',
       status: 404,
     })
 
     mockSkvRequestWithAuth.mockResolvedValueOnce({ ok: false, status: 404, text: async () => '{"message":"Not found"}' })
-    expect(await listOmbudGrants({}, { emptyOn404: true })).toEqual([])
+    expect(await listOmbudGrants({}, 'ombud_register', { emptyOn404: true })).toEqual([])
   })
 
   it('rejects an unparsable body and other HTTP errors as OmbudApiError', async () => {
     mockSkvRequestWithAuth.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ nope: 1 }) })
-    await expect(listOmbudGrants()).rejects.toMatchObject({ name: 'OmbudApiError', code: 'OBR_BAD_RESPONSE' })
+    await expect(listOmbudGrants({}, 'ombud_register')).rejects.toMatchObject({ name: 'OmbudApiError', code: 'OBR_BAD_RESPONSE' })
 
     mockSkvRequestWithAuth.mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' })
-    await expect(listOmbudGrants()).rejects.toMatchObject({ code: 'OBR_HTTP_ERROR', status: 500 })
+    await expect(listOmbudGrants({}, 'ombud_register')).rejects.toMatchObject({ code: 'OBR_HTTP_ERROR', status: 500 })
   })
 
   it('remaps the system-mode 403 (OMBUD_GRANT_MISSING) to OBR_FORBIDDEN', async () => {
     mockSkvRequestWithAuth.mockRejectedValueOnce(new SkatteverketAuthError('nope', 'OMBUD_GRANT_MISSING'))
-    await expect(listOmbudGrants()).rejects.toMatchObject({ code: 'OBR_FORBIDDEN' })
+    await expect(listOmbudGrants({}, 'ombud_register')).rejects.toMatchObject({ code: 'OBR_FORBIDDEN' })
     // Other auth errors pass through untouched (run-level, classified upstream).
     mockSkvRequestWithAuth.mockRejectedValueOnce(new SkatteverketAuthError('token', 'SYSTEM_AUTH_FAILED'))
-    await expect(listOmbudGrants()).rejects.toBeInstanceOf(SkatteverketAuthError)
+    await expect(listOmbudGrants({}, 'ombud_register')).rejects.toBeInstanceOf(SkatteverketAuthError)
   })
 })
 
@@ -134,6 +149,7 @@ describe('roles and deep links', () => {
     })
     expect(await getOmbudRoleDescriptions()).toEqual([{ roll: 'JLO', rollbeskrivning: 'Juridiskt läsombud' }])
     expect(mockSkvRequestWithAuth.mock.calls[0][2]).toBe('/roller')
+    expect(mockSkvRequestWithAuth.mock.calls[0][3]).toEqual({ unaudited: 'ombud_register', operation: 'roller' })
   })
 
   it('resolveOmbudRoleCodes uses pinned codes without a network call', async () => {
@@ -176,17 +192,25 @@ describe('roles and deep links', () => {
       json: async () => ({ djuplank: 'https://sso.skatteverket.se/ombud?x=1' }),
     })
 
-    const link = await createUtseOmbudDeepLink('165560000000', ['lasombud', 'moms_ombud'], undefined, new Date('2026-09-01T10:00:00Z'))
+    const link = await createUtseOmbudDeepLink(
+      '165560000000', ACTOR, ['lasombud', 'moms_ombud'], undefined, new Date('2026-09-01T10:00:00Z'),
+    )
 
     expect(link).toEqual({
       djuplank: 'https://sso.skatteverket.se/ombud?x=1',
       roller: { lasombud: 'JLO', moms_ombud: 'MOMS' },
       expiresOn: '2026-09-22',
     })
-    const [auth, method, path, body, options] = mockSkvRequestWithAuth.mock.calls[0]
+    const [auth, method, path, audit, body, options] = mockSkvRequestWithAuth.mock.calls[0]
     expect(auth).toEqual({ mode: 'system' })
     expect(method).toBe('POST')
     expect(path).toBe('/ombud/autentisieratOmbud/huvudman/165560000000/djuplank/utseombud')
+    expect(audit).toEqual({
+      endpoint: 'system-connection/deeplink',
+      ...ACTOR,
+      agRegistreradId: '165560000000',
+      expectJson: true,
+    })
     expect(body).toEqual({ ombudsroller: ['JLO', 'MOMS'] })
     expect(options).toMatchObject({ accept: 'application/json' })
   })
@@ -194,7 +218,7 @@ describe('roles and deep links', () => {
   it('createUtseOmbudDeepLink rejects a response without djuplank', async () => {
     process.env.SKATTEVERKET_OMBUD_ROLL_LASOMBUD = 'JLO'
     mockSkvRequestWithAuth.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) })
-    await expect(createUtseOmbudDeepLink('165560000000', ['lasombud'])).rejects.toBeInstanceOf(OmbudApiError)
+    await expect(createUtseOmbudDeepLink('165560000000', ACTOR, ['lasombud'])).rejects.toBeInstanceOf(OmbudApiError)
   })
 
   it('createUtseOmbudDeepLink refuses a deep link that is not an https skatteverket.se URL (open redirect)', async () => {
@@ -207,7 +231,7 @@ describe('roles and deep links', () => {
       'not a url',
     ]) {
       mockSkvRequestWithAuth.mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ djuplank: bad }) })
-      await expect(createUtseOmbudDeepLink('165560000000', ['lasombud'])).rejects.toMatchObject({ code: 'OBR_BAD_RESPONSE' })
+      await expect(createUtseOmbudDeepLink('165560000000', ACTOR, ['lasombud'])).rejects.toMatchObject({ code: 'OBR_BAD_RESPONSE' })
     }
     expect(isAllowedDeepLinkUrl('https://sso.skatteverket.se/ombud?x=1')).toBe(true)
     expect(isAllowedDeepLinkUrl('https://skatteverket.se/ombud')).toBe(true)
@@ -249,6 +273,8 @@ describe('pure helpers', () => {
       moms_ombud: false,
       roles: ['JLO', 'MOMS', 'DEKL'],
       recognized: true,
+      // The future-dated MOMS post is not active, so it sets no signing day.
+      signedFrom: { lasombud: '2026-01-01', moms_ombud: null },
     })
     expect(summary.get('195001011234')).toMatchObject({ lasombud: false, moms_ombud: true, recognized: true })
     expect(summary.size).toBe(2)
@@ -259,5 +285,27 @@ describe('pure helpers', () => {
       '2026-09-01',
     )
     expect(unknown.get('165560000000')).toMatchObject({ roles: ['ZZ'], recognized: false, lasombud: false })
+  })
+
+  it('grantCountsFor: only an active grant signed on or after the opt-in day counts', () => {
+    const summary = summarizeGrants(
+      [
+        { huvudman: '165560000000', roll: 'JLO', rollbeskrivning: 'Juridiskt läsombud', giltigFrom: '2026-03-01' },
+        { huvudman: '165560000000', roll: 'JLO', rollbeskrivning: 'Juridiskt läsombud', giltigFrom: '2026-06-15T00:00:00' },
+        { huvudman: '165560000000', roll: 'MOMS', rollbeskrivning: 'Momsdeklaration, ombud', giltigFrom: '2026-02-01' },
+      ],
+      '2026-09-01',
+    ).get('165560000000')
+
+    // The newest active post decides, compared on its date part.
+    expect(summary?.signedFrom).toEqual({ lasombud: '2026-06-15', moms_ombud: '2026-02-01' })
+    expect(grantCountsFor(summary, 'lasombud', '2026-06-15')).toBe(true)
+    expect(grantCountsFor(summary, 'lasombud', '2026-06-16')).toBe(false)
+    expect(grantPredatesOptIn(summary, 'lasombud', '2026-06-16')).toBe(true)
+    expect(grantCountsFor(summary, 'moms_ombud', '2026-05-01')).toBe(false)
+    expect(grantPredatesOptIn(summary, 'moms_ombud', '2026-05-01')).toBe(true)
+    // Nothing granted is neither counted nor "predating".
+    expect(grantCountsFor(undefined, 'lasombud', '2026-01-01')).toBe(false)
+    expect(grantPredatesOptIn(undefined, 'lasombud', '2026-01-01')).toBe(false)
   })
 })

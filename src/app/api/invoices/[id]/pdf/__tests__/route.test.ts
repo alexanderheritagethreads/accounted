@@ -29,7 +29,6 @@ vi.mock('@react-pdf/renderer', () => ({
 vi.mock('@/lib/invoices/pdf-template', () => ({
   InvoicePDF: vi.fn().mockReturnValue('mock-pdf-element'),
   brandingFromCompanySettings: vi.fn().mockReturnValue({}),
-  SHOW_SWISH_ON_INVOICE: false,
 }))
 
 import { GET } from '../route'
@@ -192,6 +191,23 @@ describe('GET /api/invoices/[id]/pdf', () => {
       expect(response.status).toBe(400)
       expect(body.error.code).toBe('INVOICE_SEND_PAYMENT_ACCOUNT_MISSING')
       expect(body.error.details.currency).toBe('EUR')
+      expect(renderToBufferMock).not.toHaveBeenCalled()
+    })
+
+    it('refuses an invoice whose customer was deleted, so the preview shows why (crm#263)', async () => {
+      enqueue({ data: { ...invoice, status: 'draft', customer_id: null, customer: null }, error: null })
+
+      const response = await GET(
+        createMockRequest('/api/invoices/invoice-1/pdf', {
+          searchParams: { disposition: 'inline', probe: '1' },
+        }),
+        createMockRouteParams({ id: 'invoice-1' }),
+      )
+      const body = await response.json()
+
+      expect(response.status).toBe(409)
+      expect(body.error.code).toBe('INVOICE_CUSTOMER_MISSING')
+      expect(response.headers.get('Cache-Control')).toBe('private, no-store')
       expect(renderToBufferMock).not.toHaveBeenCalled()
     })
 

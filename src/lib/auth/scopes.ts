@@ -322,6 +322,9 @@ export const V1_ENDPOINT_SCOPES: Record<string, ApiKeyScope> = {
   'GET /api/v1/companies/:companyId/fiscal-periods/:id/arsredovisning/ixbrl/validate': 'reports:read',
   'POST /api/v1/companies/:companyId/fiscal-periods/:id/opening-balances/manual': 'bookkeeping:write',
   'POST /api/v1/companies/:companyId/fiscal-periods/:id/opening-balances/correct': 'bookkeeping:write',
+  // #3313: split an existing IB per project (inline rättelse of the IB verifikat).
+  'GET /api/v1/companies/:companyId/fiscal-periods/:id/opening-balances/split-per-project': 'reports:read',
+  'POST /api/v1/companies/:companyId/fiscal-periods/:id/opening-balances/split-per-project': 'bookkeeping:write',
   'POST /api/v1/companies/:companyId/imports/skattekonto-file': 'transactions:write',
   'DELETE /api/v1/companies/:companyId/supplier-invoices/:id': 'suppliers:write',
   'POST /api/v1/companies/:companyId/supplier-invoices/:id/uncredit': 'suppliers:write',
@@ -464,6 +467,7 @@ export const V1_ENDPOINT_SCOPES: Record<string, ApiKeyScope> = {
   'POST /api/v1/companies/:companyId/webhooks/:id/test': 'webhooks:manage',
   'GET /api/v1/companies/:companyId/webhooks/:id/deliveries': 'webhooks:manage',
   'POST /api/v1/companies/:companyId/webhooks/:id/rotate-secret': 'webhooks:manage',
+  'POST /api/v1/companies/:companyId/webhooks/:id/verify': 'webhooks:manage',
   'POST /api/v1/webhook-deliveries/:id/retry': 'webhooks:manage',
 }
 

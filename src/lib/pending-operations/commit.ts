@@ -21,7 +21,6 @@ import { parseEntityType, resolveCompanyEntityType } from '@/lib/company/entity-
 import { eventBus } from '@/lib/events'
 import { bulkBookMatchedInboxItems, categorizeMatchedTransaction } from '@/lib/transactions/categorize-core'
 import { enforceBulkBookDimensionPolicy } from '@/lib/transactions/bulk-book'
-import { explainVatTreatment, getVatRules, getPermittedVatRates } from '@/lib/invoices/vat-rules'
 import { syncDraftVatHeadersForCustomer } from '@/lib/invoices/sync-draft-vat-headers'
 import {
   COUNTRY_CONSISTENCY_MESSAGES,
@@ -67,7 +66,6 @@ import {
 } from '@/lib/invoices/issue-and-book-invoice'
 import { resolveSettlementAccount } from '@/lib/bookkeeping/settlement-account'
 import { buildInvoiceMatchClearingLines } from '@/lib/bookkeeping/invoice-payment-lines'
-import { resolveSekAmount } from '@/lib/bookkeeping/currency-utils'
 import { booksInvoicesOnIssue, cashPartialBlockReason, creditNoteNeedsJournalEntry } from '@/lib/bookkeeping/booking-mode'
 import { ensureManualCashAccount } from '@/lib/cash-accounts/service'
 import { createJournalEntry, findFiscalPeriod, getSwedishLocalDate, reverseEntry, validateBalance } from '@/lib/bookkeeping/engine'
@@ -79,7 +77,6 @@ import { CreditSupplierInvoiceInputSchema, creditSupplierInvoice } from '@/lib/s
 import { resolveInboxKind } from '@/lib/documents/inbox-kind'
 import { coerceDimensionsBag } from '@/lib/bookkeeping/dimension-resolver'
 import { ACCOUNT_NUMBER_RE } from '@/lib/invariants/account-number'
-import { ISO_DATE_RE } from '@/lib/invariants/iso-date'
 import { isSlpPensionAccount } from '@/lib/bookkeeping/slp-lines'
 import { foldSellerVatIntoCost, sellerVatIsCost } from '@/lib/bookkeeping/vat-registration'
 import { isReverseChargeKind } from '@/lib/bookkeeping/vat-entries'
@@ -99,6 +96,11 @@ import {
   KontantmetodCutoffPartialError,
   postKontantmetodCutoff,
 } from '@/lib/core/bookkeeping/kontantmetod-cutoff'
+import {
+  isKontantmetodCutoffSuspended,
+  KONTANTMETOD_CUTOFF_SUSPENDED_CODE,
+  kontantmetodCutoffSuspendedMessageSv,
+} from '@/lib/core/bookkeeping/kontantmetod-cutoff-suspension'
 import { executeCurrencyRevaluation } from '@/lib/bookkeeping/currency-revaluation'
 import {
   AssetCorrectionBlockedError,
@@ -119,6 +121,7 @@ import {
 import { createSupplierInvoiceRegistrationEntry } from '@/lib/bookkeeping/supplier-invoice-entries'
 import { linkInvoiceToVoucher, type LinkInvoiceToVoucherResult } from '@/lib/invoices/voucher-matching'
 import { planInvoicePayment } from '@/lib/invoices/apply-invoice-payment'
+import { planTransactionInvoiceMatch } from '@/lib/invoices/match-payment-plan'
 import { findDuplicatePaymentCandidatesForInvoice } from '@/lib/invoices/duplicate-payment-candidates'
 import {
   alreadyExplainedDetails,
@@ -134,6 +137,7 @@ import {
   type LinkSupplierInvoiceToVoucherResult,
 } from '@/lib/invoices/supplier-voucher-matching'
 import { clearSettledInvoiceSuggestions } from '@/lib/invoices/clear-settled-invoice-suggestions'
+import { emitInvoicePaidIfSettled } from '@/lib/invoices/paid-events'
 import {
   findCashMethodUnbookedAllocations,
   type BatchAllocationRef,
@@ -145,15 +149,18 @@ import {
   type BatchAllocationResult,
 } from '@/lib/invoices/clear-settled-batch-allocations'
 import { linkTransactionToJournalEntry } from '@/lib/transactions/link-journal-entry'
+import { emitBatchAllocationEvents } from '@/lib/transactions/batch-allocation-events'
 import { matchTransactionToRotRutPayout } from '@/lib/invoices/rot-rut-match-transaction'
 import { linkRotRutPayoutVoucher } from '@/lib/invoices/rot-rut-link-voucher'
 import { attachDocumentToTransaction } from '@/lib/transactions/document-attach'
 import { getErrorEntry } from '@/lib/errors/structured-errors'
+import { invoiceLacksCustomer } from '@/lib/invoices/invoice-customer'
 import { createDimensionValue } from '@/lib/dimensions/registry-service'
 import { submitSIEJob, requestSIEJobAction } from '@/lib/import/sie-jobs'
 import type { AccountMapping } from '@/lib/import/types'
 import { AccountsNotInChartError, isBookkeepingError, ACCOUNTS_NOT_IN_CHART } from '@/lib/bookkeeping/errors'
 import { extensionRegistry } from '@/lib/extensions/registry'
+import { applyPaymentLinkToInvoice } from '@/lib/extensions/payment-links'
 import {
   SkatteverketRecoverableError,
   type SkatteverketCommitServices,
@@ -172,9 +179,7 @@ import {
   generateInvoiceEmailSubject,
 } from '@/lib/email/invoice-templates'
 import { linkToJournalEntry } from '@/lib/core/documents/document-service'
-import { renderToBuffer } from '@react-pdf/renderer'
-import { InvoicePDF } from '@/lib/invoices/pdf-template'
-import { prepareInvoicePdfRender, buildSwishQrDataUrl } from '@/lib/invoices/pdf-render-helpers'
+import { renderInvoicePdfBuffer } from '@/lib/invoices/render-invoice-pdf'
 import { resolveInvoicePayeeChoice, resolveInvoiceSettlementAccount, snapshotInvoicePayee } from '@/lib/invoices/invoice-payee'
 import {
   describeMissingInvoicePaymentAccount,
@@ -231,12 +236,12 @@ import {
 } from '@/lib/invoices/recurring-schedule-service'
 import { runDateMatchesDayOfMonth } from '@/lib/invoices/recurring-run-date'
 import { UpdateInvoiceParamsSchema } from '@/lib/pending-operations/schemas/update-invoice'
+import { buildStagedInvoice } from '@/lib/pending-operations/build-staged-invoice'
 import {
   buildInvoiceWriteData,
   type InvoiceWriteInput,
   type InvoiceWriteItemInput,
 } from '@/lib/invoices/build-invoice-write'
-import { computeLineNet } from '@/lib/invoices/line-amounts'
 import { deleteDraftInvoice } from '@/lib/invoices/delete-draft-invoice'
 import { isEditableInvoiceDraft } from '@/lib/invoices/is-editable-draft'
 import { replaceInvoiceItems } from '@/lib/invoices/replace-invoice-items'
@@ -387,6 +392,16 @@ type ExecutorResult = {
   returnToPending?: boolean
 }
 
+/** A draft without a customer (crm#263): refused before anything changes. */
+function customerMissingResult(): ExecutorResult {
+  const entry = getErrorEntry('INVOICE_CUSTOMER_MISSING')
+  return {
+    error: entry?.message_sv ?? 'Fakturan saknar kund.',
+    errorCode: 'INVOICE_CUSTOMER_MISSING',
+    status: entry?.httpStatus ?? 409,
+  }
+}
+
 /**
  * Executor for an operation from the registry: re-validates the staged input
  * at the commit boundary (a tampered pending_operations row must not reach
@@ -419,11 +434,14 @@ async function commitRegisteredOperation(
   if (!outcome.ok) {
     if (outcome.error) throw outcome.error
     const entry = getErrorEntry(outcome.code)
+    const partial = outcome.partialPostedIds && Object.keys(outcome.partialPostedIds).length > 0
     return {
       // Never an empty string: an empty error reads as success downstream.
       error: outcome.messageSv || entry?.message_en || outcome.code,
       errorCode: outcome.code,
       status: entry?.httpStatus ?? 400,
+      // A failure after an irreversible step: failed_partial, not rejected.
+      ...(partial ? { partialPostedIds: outcome.partialPostedIds } : {}),
     }
   }
   if (outcome.dryRun) return { data: outcome.preview }
@@ -2000,32 +2018,7 @@ async function commitCreateInvoice(
   companyId: string,
   params: Record<string, unknown>
 ): Promise<ExecutorResult> {
-  const customerId = params.customer_id as string
-  // Offert (quote): own OF-series allocated at insert, never an F-number,
-  // never books, never emits invoice.created. Only 'quote' is honoured here;
-  // anything else stays an ordinary invoice (staged params are caller JSON).
-  const isQuote = params.document_type === 'quote'
-  const validUntil = typeof params.valid_until === 'string' ? params.valid_until : null
-  if (isQuote && (!validUntil || !ISO_DATE_RE.test(validUntil))) {
-    return { error: 'Giltig till (valid_until) krävs för en offert.', status: 400 }
-  }
-  const items = params.items as Array<{
-    description: string; quantity: number; unit: string; unit_price: number; vat_rate?: number
-    discount_percent?: number | null
-    article_id?: string | null; revenue_account?: string | null
-    line_type?: 'product' | 'text'
-    dimensions?: Record<string, string>
-  }>
-  // Dimensions PR7: bags were resolved against the registry at staging time
-  // (resolveDimensionBags in the MCP tool); coerce is the drift/tamper gate.
-  const defaultDimensions = coerceDimensionsBag(params.default_dimensions)
-
-  // Free-text rows carry no amounts and never book. The MCP staging tool
-  // accepts line_type 'text' (normalized to zeroed amounts at staging), and
-  // the totals math must stay identical to app/api/invoices/route.ts, which
-  // excludes text rows from subtotal, VAT, and the mixed-rate detection.
-  const billableItems = items.filter((item) => item.line_type !== 'text')
-
+  const customerId = typeof params.customer_id === 'string' ? params.customer_id : ''
   const { data: customer, error: customerError } = await supabase
     .from('customers').select('*').eq('id', customerId).eq('company_id', companyId).single()
 
@@ -2033,170 +2026,51 @@ async function commitCreateInvoice(
     return { error: 'Customer not found: they may have been deleted.', status: 404 }
   }
 
-  const vatRules = getVatRules(customer.customer_type, customer.vat_number_validated, customer.country)
-  // Gate on the PERMITTED set, not the picker default, exactly like
-  // buildInvoiceWriteData: the ML 6 kap. supplies taxed where they are performed
-  // (hotel/restaurang 12%, persontransport and event admission 6%,
-  // fastighetstjänst and korttidsuthyrning 25%) carry Swedish VAT even to a
-  // foreign business customer. The default is still 0% (vatRules.rate is the
-  // fallback below), so a Swedish rate only lands here when staged explicitly.
-  const permittedRates = getPermittedVatRates(customer.customer_type, customer.vat_number_validated, customer.country)
-  const allowedRates = new Set(permittedRates.map((r) => r.rate))
-
-  // VAT registration gate (mirrors app/api/invoices/route.ts). A
-  // non-momsregistrerad company books no output VAT: force every line to 0%
-  // (momsfri → treatment 'exempt'). 0% is allowed for every customer type, so
-  // the allowedRates guard below still passes.
-  const { data: vatSettings } = await supabase
-    .from('company_settings')
-    .select('vat_registered')
-    .eq('company_id', companyId)
-    .maybeSingle()
-  const notVatRegistered = vatSettings?.vat_registered === false
-  if (notVatRegistered) for (const item of items) item.vat_rate = 0
-
-  // Line totals net of any per-line discount, same math as the web path
-  // (lib/invoices/line-amounts.ts).
-  const subtotal = billableItems.reduce(
-    (sum, item) => sum + computeLineNet(item.quantity, item.unit_price, item.discount_percent),
-    0,
-  )
-
-  let vatAmount = 0
-  for (const item of billableItems) {
-    const itemRate = item.vat_rate !== undefined ? item.vat_rate : vatRules.rate
-    if (!allowedRates.has(itemRate)) {
-      return { error: `Momssats ${itemRate}% är inte tillåten för denna kundtyp`, status: 400 }
-    }
-    // Strict typeof: staged params are JSON a tampered client could shape;
-    // a string would coerce past a bare range check but be ignored by the
-    // number-typed totals math, then land in the NUMERIC column anyway.
-    const discountPercent = item.discount_percent ?? 0
-    if (typeof discountPercent !== 'number' || !(discountPercent >= 0 && discountPercent <= 100)) {
-      return { error: 'Rabatten per rad måste vara mellan 0 och 100 procent', status: 400 }
-    }
-    const lineTotal = computeLineNet(item.quantity, item.unit_price, discountPercent)
-    vatAmount += Math.round(lineTotal * itemRate / 100 * 100) / 100
-  }
-
-  // Why the treatment is what it is (#2749, #2558): echoed on the commit
-  // result so an agent that auto-approved still sees it. The staging tool
-  // put the same list in preview.vat_warnings for the approval card.
-  const vatWarnings = notVatRegistered
-    ? []
-    : explainVatTreatment(
-        customer,
-        billableItems.map((item) => (item.vat_rate !== undefined ? item.vat_rate : vatRules.rate)),
-      )
-
-  // Validate any per-line posting-account override (defense in depth: the legacy field
-  // is frozen onto invoice_items and flows to generatePerRateLines()).
-  const overrideAccounts = Array.from(
-    new Set(billableItems.map((i) => i.revenue_account).filter((a): a is string => !!a)),
-  )
-  for (const acct of overrideAccounts) {
-    if (!(await isValidRevenueAccount(supabase, companyId, acct))) {
-      return { error: `Bokföringskonto ${acct} är inte ett aktivt balans- eller intäktskonto (klass 1-3)`, status: 400 }
-    }
-  }
-
-  // Drift/tamper gate for staged article references: the FK on
-  // invoice_items.article_id only proves the article exists, not that it
-  // belongs to THIS company, so scope-check here like revenue_account above.
-  const stagedArticleIds = Array.from(
-    new Set(items.map((i) => i.article_id).filter((a): a is string => !!a)),
-  )
-  if (stagedArticleIds.length > 0) {
-    const { data: articleRows, error: articleError } = await supabase
-      .from('articles')
-      .select('id')
-      .eq('company_id', companyId)
-      .in('id', stagedArticleIds)
-    if (articleError) return { error: articleError.message, status: 500 }
-    const foundArticleIds = new Set((articleRows ?? []).map((a: { id: string }) => a.id))
-    const missingArticleId = stagedArticleIds.find((a) => !foundArticleIds.has(a))
-    if (missingArticleId) {
-      return { error: `Artikel ${missingArticleId} finns inte i företaget`, status: 400 }
-    }
-  }
-
-  const total = subtotal + vatAmount
-  const currency = ((params.currency as string) || 'SEK') as Currency
-  const invoiceDate = (params.invoice_date as string) || new Date().toISOString().split('T')[0]
-
-  // Sales-side twin of the supplier-invoice currency policy
-  // (lib/currency/supplier-invoice-rate.ts). Three defects lived here:
-  //
-  //  1. `fetchExchangeRate(currency)` passed NO date, so a back-dated invoice
-  //     was translated at TODAY'S kurs. ML 8 kap 21-23 § anchors the
-  //     beskattningsunderlag on the taxable event, and the registration
-  //     verifikat is posted on invoice_date, so the money and the verifikat
-  //     must be anchored on the same day. The staged params carry no
-  //     delivery_date, so invoice_date IS that event here (the web path,
-  //     lib/invoices/build-invoice-write.ts, prefers delivery_date when the
-  //     form supplied one).
-  //  2. No supabase client, so the shared `exchange_rates` cache was neither
-  //     read nor used as the last-cached-observation fallback when Riksbanken
-  //     rate-limits. One transient 429 left the invoice permanently unconverted.
-  //  3. A null result fell through in silence and stored exchange_rate = NULL,
-  //     which resolveSekAmount() then books 1:1: 1000 EUR posts 1000 kr to 3001
-  //     and 250 kr to 2611 instead of 11 500 and 2 875, understating ruta 05
-  //     and ruta 10 by the whole FX difference.
-  let exchangeRate: number | null = null
-  let exchangeRateDate: string | null = null
-  // Multiplier to SEK. 1 for a SEK invoice, so the *_sek columns equal their
-  // invoice-currency counterparts instead of staying NULL: an ordinary Swedish
-  // invoice legitimately has no exchange_rate, and the old
-  // `if (currency !== 'SEK')` guard therefore left total_sek NULL on every one
-  // of them. Same fix, same reason, as supplierInvoiceSekAmounts().
-  let sekRate = 1
-
-  if (currency !== 'SEK') {
-    const rateDate = new Date(invoiceDate)
-    let rateData: Awaited<ReturnType<typeof fetchExchangeRate>> = null
-    if (!Number.isNaN(rateDate.getTime())) {
-      try {
-        rateData = await fetchExchangeRate(currency, rateDate, supabase)
-      } catch {
-        rateData = null
-      }
-    }
-    if (!rateData || !Number.isFinite(rateData.rate) || rateData.rate <= 0) {
-      // Refuse at the approval boundary. Storing NULL only relocates the
-      // failure: createInvoiceJournalEntry() already refuses such an invoice
-      // with INVOICE_FX_RATE_MISSING, by which point the invoice row (and its
-      // F-series number, once sent) exists and the approver has moved on.
+  // The same build the staging preview ran (buildStagedInvoice): the shared
+  // buildInvoiceWriteData with every rule the web and v1 doors apply (VAT
+  // gate, balance-sheet account on a VAT line, ROT/RUT, accrual, articles,
+  // currency), so what the approver saw is what gets written.
+  const staged = await buildStagedInvoice({ supabase, companyId, customer: customer as Customer, params })
+  if (!staged.ok) {
+    if ('validation' in staged) {
+      const issue = staged.validation.issues[0]
       return {
-        error:
-          getErrorEntry('INVOICE_FX_RATE_MISSING')?.message_sv ??
-          'Fakturan är i utländsk valuta men saknar växelkurs. Ange fakturans växelkurs innan den bokförs.',
+        error: `Invalid ${issue?.path?.join('.') || 'params'}: ${issue?.message ?? 'validation failed'}`,
         status: 400,
       }
     }
-    exchangeRate = rateData.rate
-    exchangeRateDate = rateData.date ?? null
-    sekRate = rateData.rate
-  }
-
-  const subtotalSek = roundOre(subtotal * sekRate)
-  const vatAmountSek = roundOre(vatAmount * sekRate)
-  const totalSek = roundOre(total * sekRate)
-
-  const uniqueRates = new Set(billableItems.map((item) => item.vat_rate ?? vatRules.rate))
-  const isMixedRate = uniqueRates.size > 1
-
-  // Validated https-only at staging time (gnubok_create_invoice); re-checked
-  // here so a hand-crafted pending-operation row can't smuggle a non-https
-  // link into customer-facing emails/PDFs. Invalid → dropped, never blocks.
-  const paymentLinkUrl = (() => {
-    const raw = typeof params.payment_link_url === 'string' ? params.payment_link_url.trim() : ''
-    if (!raw || raw.length > 2048) return null
-    try {
-      return new URL(raw).protocol === 'https:' ? raw : null
-    } catch {
-      return null
+    if ('dbError' in staged) {
+      const message = (staged.dbError as { message?: string } | null)?.message
+      return { error: message ?? 'Database error', status: 500 }
     }
-  })()
+    const entry = getErrorEntry(staged.code)
+    return {
+      error: entry?.message_sv ?? staged.code,
+      errorCode: staged.code,
+      status: entry?.httpStatus ?? 400,
+      data: staged.details as Record<string, unknown> | undefined,
+    }
+  }
+  const { isQuote, build } = staged
+  const { invoiceFields } = build
+
+  // Refuse at the approval boundary rather than store exchange_rate NULL:
+  // createInvoiceJournalEntry() refuses such an invoice with
+  // INVOICE_FX_RATE_MISSING anyway, by which point the invoice row (and its
+  // F-series number, once sent) exists and the approver has moved on. A NULL
+  // rate is booked 1:1 otherwise: 1000 EUR to 3001 as 1000 kr, understating
+  // ruta 05 and ruta 10 by the whole FX difference.
+  if (
+    invoiceFields.currency !== 'SEK' &&
+    !(typeof invoiceFields.exchange_rate === 'number' && Number.isFinite(invoiceFields.exchange_rate) && invoiceFields.exchange_rate > 0)
+  ) {
+    return {
+      error:
+        getErrorEntry('INVOICE_FX_RATE_MISSING')?.message_sv ??
+        'Fakturan är i utländsk valuta men saknar växelkurs. Ange fakturans växelkurs innan den bokförs.',
+      status: 400,
+    }
+  }
 
   // Quotes are numbered at insert from their own OF-series (see
   // generate_quote_number); ensureInvoiceNumber must never run on one.
@@ -2222,8 +2096,8 @@ async function commitCreateInvoice(
   const payeeChoice = await resolveInvoicePayeeChoice(
     supabase,
     companyId,
-    currency as Currency,
-    typeof params.payment_cash_account_id === 'string' ? params.payment_cash_account_id : null,
+    invoiceFields.currency,
+    staged.params.payment_cash_account_id ?? null,
   )
   if (!payeeChoice.ok) {
     const entry = getErrorEntry(payeeChoice.code)
@@ -2235,43 +2109,16 @@ async function commitCreateInvoice(
     .insert({
       user_id: userId,
       company_id: companyId,
-      customer_id: customerId,
       invoice_number: quoteNumber,
-      invoice_date: invoiceDate,
-      // A quote has no payment due date: due_date mirrors valid_until
-      // (build-invoice-write parity).
-      due_date: isQuote ? validUntil : (params.due_date as string) || null,
+      ...invoiceFields,
+      // This door has always stored the SEK twins rounded to whole öre.
+      subtotal_sek: invoiceFields.subtotal_sek === null ? null : roundOre(invoiceFields.subtotal_sek),
+      vat_amount_sek: invoiceFields.vat_amount_sek === null ? null : roundOre(invoiceFields.vat_amount_sek),
+      total_sek: invoiceFields.total_sek === null ? null : roundOre(invoiceFields.total_sek),
       // Explicit keys, not a conditional spread: the phantom-column guard
-      // only reads literal payloads. NULLs on non-quotes satisfy the pairing CHECK.
-      document_type: isQuote ? 'quote' : 'invoice',
-      valid_until: isQuote ? validUntil : null,
+      // only reads literal payloads. NULL on non-quotes satisfies the pairing CHECK.
       quote_status: isQuote ? 'open' : null,
-      currency,
-      exchange_rate: exchangeRate,
-      exchange_rate_date: exchangeRateDate,
-      subtotal,
-      subtotal_sek: subtotalSek,
-      vat_amount: vatAmount,
-      vat_amount_sek: vatAmountSek,
-      total,
-      total_sek: totalSek,
-      // A quote is an offer, not a claim: nothing is owed on it (parity with
-      // build-invoice-write). Otherwise a fresh unpaid receivable:
-      // remaining_amount is what every payment
-      // surface reads as the open balance; leaving the NOT NULL DEFAULT 0
-      // made every agent-created invoice look settled.
-      remaining_amount: isQuote ? 0 : total,
       paid_amount: 0,
-      vat_treatment: notVatRegistered ? 'exempt' : vatRules.treatment,
-      vat_rate: isMixedRate ? null : (uniqueRates.values().next().value ?? vatRules.rate),
-      moms_ruta: notVatRegistered ? null : vatRules.momsRuta,
-      reverse_charge_text: notVatRegistered ? null : (vatRules.reverseChargeText || null),
-      our_reference: (params.our_reference as string) || null,
-      your_reference: (params.your_reference as string) || null,
-      invoice_marking: (params.invoice_marking as string) || null,
-      notes: (params.notes as string) || null,
-      payment_link_url: paymentLinkUrl,
-      default_dimensions: defaultDimensions ?? {},
       payment_cash_account_id: payeeChoice.fields.payment_cash_account_id,
       payment_details: payeeChoice.fields.payment_details,
     })
@@ -2280,53 +2127,9 @@ async function commitCreateInvoice(
 
   if (invoiceError) return { error: invoiceError.message, status: 500 }
 
-  const invoiceItems = items.map((item, index) => {
-    // Text rows store the description only and zero everything else. Keys must
-    // match the product branch exactly: PostgREST rejects a bulk insert whose
-    // objects have differing key sets.
-    if (item.line_type === 'text') {
-      return {
-        invoice_id: invoice.id,
-        sort_order: index,
-        line_type: 'text',
-        description: item.description ?? '',
-        quantity: 0,
-        unit: '',
-        unit_price: 0,
-        discount_percent: 0,
-        line_total: 0,
-        vat_rate: 0,
-        vat_amount: 0,
-        article_id: null,
-        revenue_account: null,
-        dimensions: {},
-      }
-    }
-    const itemRate = item.vat_rate !== undefined ? item.vat_rate : vatRules.rate
-    const discountPercent = item.discount_percent ?? 0
-    const lineTotal = computeLineNet(item.quantity, item.unit_price, discountPercent)
-    const itemVat = Math.round(lineTotal * itemRate / 100 * 100) / 100
-    return {
-      invoice_id: invoice.id,
-      sort_order: index,
-      line_type: 'product',
-      description: item.description,
-      quantity: item.quantity,
-      unit: item.unit,
-      unit_price: item.unit_price,
-      discount_percent: discountPercent,
-      line_total: lineTotal,
-      vat_rate: itemRate,
-      vat_amount: itemVat,
-      // Frozen per-line override so generatePerRateLines() books to the article's
-      // account; null falls back to the VAT-treatment-derived account.
-      article_id: item.article_id ?? null,
-      revenue_account: item.revenue_account ?? null,
-      dimensions: coerceDimensionsBag(item.dimensions) ?? {},
-    }
-  })
-
-  const { error: itemsError } = await supabase.from('invoice_items').insert(invoiceItems)
+  const { error: itemsError } = await supabase
+    .from('invoice_items')
+    .insert(build.items.map((row) => ({ ...row, invoice_id: invoice.id })))
 
   if (itemsError) {
     await supabase.from('invoices').delete().eq('id', invoice.id)
@@ -2354,7 +2157,9 @@ async function commitCreateInvoice(
     data: {
       invoice_id: invoice.id,
       invoice_number: invoice.invoice_number ?? quoteNumber,
-      ...(vatWarnings.length > 0 ? { vat_warnings: vatWarnings } : {}),
+      // Why the treatment is what it is (#2749, #2558): echoed so an agent
+      // that auto-approved still sees what preview.vat_warnings said.
+      ...(build.warnings.length > 0 ? { vat_warnings: build.warnings } : {}),
     },
   }
 }
@@ -2431,10 +2236,10 @@ async function commitUpdateInvoice(
     return { error: 'Customer not found: they may have been deleted.', status: 404 }
   }
 
-  // Drift/tamper gate for staged article references, same as
-  // commitCreateInvoice: the FK on invoice_items.article_id proves the article
-  // exists, not that it belongs to THIS company, and the top-level arg guard
-  // never sees a nested items[].article_id.
+  // Drift/tamper gate for staged article references: the FK on
+  // invoice_items.article_id proves the article exists, not that it belongs
+  // to THIS company, and the top-level arg guard never sees a nested
+  // items[].article_id.
   if (changes.items) {
     const stagedArticleIds = Array.from(
       new Set(changes.items.map((item) => item.article_id).filter((a): a is string => !!a)),
@@ -2495,6 +2300,8 @@ async function commitUpdateInvoice(
     payment_link_url: existing.payment_link_url ?? undefined,
     payment_link_auto: existing.payment_link_auto ?? undefined,
     ore_rounding: existing.ore_rounding ?? undefined,
+    // Omitted = the builder leaves the column alone; null clears it.
+    qr_mode: changes.qr_mode,
     deduction_housing_designation: firstDeduction?.housing_designation ?? undefined,
     deduction_apartment_number: firstDeduction?.apartment_number ?? undefined,
     deduction_brf_org_number: firstDeduction?.brf_org_number ?? undefined,
@@ -2894,29 +2701,23 @@ async function commitMarkInvoicePaid(
   }
 
   // Notify subscribers: invoice.paid fans out to registered webhooks
-  // (lib/webhooks/handler.ts). Best-effort: the payment is already committed,
-  // so an emit failure must not fail the operation. Parity with the v1 and
-  // dashboard mark-paid routes, which previously emitted while this path did not.
-  try {
-    await eventBus.emit({
-      type: 'invoice.paid',
-      payload: {
-        invoice: {
-          ...(invoice as Invoice),
-          status: newStatus,
-          paid_amount: newPaidAmount,
-          remaining_amount: newRemaining,
-          paid_at: paidAt ?? (invoice as Invoice).paid_at,
-        } as Invoice,
-        companyId,
-        userId,
-        paymentAmount,
-        paymentDate,
-      },
-    })
-  } catch (err) {
-    log.warn('invoice.paid emit failed', err)
-  }
+  // (lib/webhooks/handler.ts) once, when this payment settles the invoice in
+  // full. Best-effort: the payment is already committed, so an emit failure
+  // never fails the operation (the helper logs it).
+  await emitInvoicePaidIfSettled({
+    newStatus,
+    invoice: {
+      ...(invoice as Invoice),
+      status: newStatus,
+      paid_amount: newPaidAmount,
+      remaining_amount: newRemaining,
+      paid_at: paidAt ?? (invoice as Invoice).paid_at,
+    } as Invoice,
+    companyId,
+    userId,
+    paymentAmount,
+    paymentDate,
+  })
 
   return { data: { status: newStatus, remaining_amount: newRemaining, journal_entry_id: journalEntryId } }
 }
@@ -2967,6 +2768,8 @@ async function commitSendInvoice(
     }
   }
 
+  // The customer was deleted while the draft pointed at it (crm#263).
+  if (invoiceLacksCustomer(invoice)) return customerMissingResult()
   const customer = invoice.customer as Customer
   if (!customer.email?.trim()) return { error: 'Customer has no email address', status: 400 }
 
@@ -3037,21 +2840,14 @@ async function commitSendInvoice(
   const isFreshAllocation = !invoice.invoice_number
   if (isFreshAllocation) {
     try {
-      const preflight = await prepareInvoicePdfRender(
-        company as CompanySettings,
-        (invoice as Invoice).currency,
-        { paymentAccountRequired, payee: (invoice as Invoice).payment_details ?? null },
-      )
-      await renderToBuffer(
-        InvoicePDF({
-          invoice: { ...(invoice as Invoice), invoice_number: 'F-PREVIEW' },
-          customer,
-          items,
-          company: preflight.company,
-          originalInvoiceNumber,
-          branding: preflight.branding,
-        })
-      )
+      await renderInvoicePdfBuffer({
+        invoice: { ...(invoice as Invoice), invoice_number: 'F-PREVIEW' },
+        customer,
+        items,
+        company: company as CompanySettings,
+        originalInvoiceNumber,
+        paymentAccountRequired,
+      })
     } catch (err) {
       log.error('preflight PDF render failed before invoice number assignment (agent send)', err as Error, {
         companyId,
@@ -3090,27 +2886,34 @@ async function commitSendInvoice(
     return { error: `Failed to assign invoice number: ${err instanceof Error ? err.message : 'unknown'}`, status: 500 }
   }
 
+  // Auto-create an online payment link (extension-provided, e.g. Stripe) now
+  // that the number exists, so the email button and PDF QR carry it: the same
+  // shared step the dashboard send, the v1 send and the recurring auto-send
+  // run. A failure never blocks the send: the faktura is legally valid
+  // without a link, so it degrades to a warning, as on the dashboard.
+  const { failure: paymentLinkFailure } = await applyPaymentLinkToInvoice(
+    supabase,
+    companyId,
+    userId,
+    invoice as Invoice,
+    log,
+  )
+  if (paymentLinkFailure) {
+    log.warn('payment link creation failed on agent send', { invoiceId, reason: paymentLinkFailure })
+  }
+
   // Override `status` to 'sent' on the in-memory copy. The DB flip happens
   // when the invoice is issued, right before the email; rendering with the
   // stale 'draft' status would stamp the customer's PDF with "UTKAST".
   const renderableInvoice = { ...(invoice as Invoice), status: 'sent' as const }
-  const { branding, company: renderCompany } = await prepareInvoicePdfRender(
-    company as CompanySettings,
-    renderableInvoice.currency,
-    { paymentAccountRequired, payee: (invoice as Invoice).payment_details ?? null },
-  )
-  const swishQrDataUrl = await buildSwishQrDataUrl(renderCompany, renderableInvoice)
-  const pdfBuffer = await renderToBuffer(
-    InvoicePDF({
-      invoice: renderableInvoice,
-      customer,
-      items,
-      company: renderCompany,
-      originalInvoiceNumber,
-      branding,
-      swishQrDataUrl,
-    })
-  )
+  const { buffer: pdfBuffer } = await renderInvoicePdfBuffer({
+    invoice: renderableInvoice,
+    customer,
+    items,
+    company: company as CompanySettings,
+    originalInvoiceNumber,
+    paymentAccountRequired,
+  })
 
   const isCreditNote = !!invoice.credited_invoice_id
   const filename = invoicePdfFilename({
@@ -3248,6 +3051,10 @@ async function commitSendInvoice(
   })
 
   const warnings = [
+    // The raw provider/DB reason is logged above; the agent-facing text stays Swedish.
+    ...(paymentLinkFailure
+      ? ['Betalningslänken kunde inte skapas. Fakturan skickades utan betalningslänk.']
+      : []),
     ...(result.trackingWarning ? ['Delivery history requires reconciliation.'] : []),
     ...issued.partialFailures.map((failure) => failure.reason),
   ]
@@ -3282,6 +3089,8 @@ async function commitMarkInvoiceSent(
     }
   }
   if (invoice.status !== 'draft') return { error: 'Only draft invoices can be marked as sent', status: 409 }
+  // Before the number below is taken (crm#263): the draft stays deletable.
+  if (invoiceLacksCustomer(invoice)) return customerMissingResult()
 
   const { data: settings, error: settingsError } = await supabase
     .from('company_settings')
@@ -3456,85 +3265,28 @@ async function commitMatchTransactionInvoice(
     }
   }
 
-  // FX resolution: parity with the dashboard and v1 match routes. paidAmount
-  // MUST be denominated in the INVOICE's currency (the unit of
-  // invoices.paid_amount / remaining_amount and invoice_payments.amount).
-  // This path previously fed the raw bank amount straight in, which (a)
-  // rejected exact whole-krona settlements of öre-carrying invoices and (b)
-  // would corrupt the column units on a cross-currency match.
-  const txIsForeign = !!transaction.currency && transaction.currency !== 'SEK'
-  if (
-    txIsForeign &&
-    transaction.amount_sek == null &&
-    !(transaction.exchange_rate != null && transaction.exchange_rate > 0)
-  ) {
-    return {
-      error:
-        getErrorEntry('MATCH_INVOICE_TX_FX_RATE_MISSING')?.message_sv ??
-        'Transaktionen saknar valutakurs och SEK-belopp.',
-      status: 400,
-    }
-  }
-  const txAbsSek =
-    Math.round(
-      resolveSekAmount(
-        Math.abs(transaction.amount),
-        transaction.amount_sek != null ? Math.abs(transaction.amount_sek) : null,
-        transaction.currency,
-        transaction.exchange_rate,
-      ) * 100,
-    ) / 100
-
-  let fx: { required: false } | { required: true; rate: number; paidInInvoiceCurrency: number } = {
-    required: false,
-  }
-  if (transaction.currency !== invoice.currency) {
-    let rate: number | null = null
-    try {
-      const rateInfo = await fetchExchangeRate(
-        invoice.currency as Currency,
-        new Date(transaction.date),
-        supabase,
-      )
-      if (rateInfo && rateInfo.rate > 0) rate = rateInfo.rate
-    } catch {
-      rate = null
-    }
-    if (rate == null) {
-      return {
-        error:
-          getErrorEntry('MATCH_INVOICE_FX_RATE_UNAVAILABLE')?.message_sv ??
-          'Ingen valutakurs tillgänglig för betalningsdatumet.',
-        status: 400,
-      }
-    }
-    fx = {
-      required: true,
-      rate,
-      paidInInvoiceCurrency: Math.round((txAbsSek / rate) * 10000) / 10000,
-    }
-  }
-  const paidAmount = fx.required ? fx.paidInInvoiceCurrency : transaction.amount
-
-  // Overshoot guard + paid/remaining math: shared with the dashboard and v1
-  // routes via planInvoicePayment. This agent/MCP path previously had NO guard,
-  // so a 1500 payment on a 1000 invoice was silently accepted (paid_amount >
-  // total, AR over-credited). Pure-SEK settlements absorb sub-krona
-  // öresavrundning (booked to 3740 by buildInvoicePaymentClearingLines) so a
-  // whole-krona payment settles in full, exactly as on the other two routes.
+  // FX resolution (paidAmount in the INVOICE's currency) + overshoot guard +
+  // paid/remaining math, through the one helper the staging tools run too, so
+  // a match refused here is refused when it is staged (crm#253). This agent
+  // path previously had NO overshoot guard, so a 1500 payment on a 1000
+  // invoice was silently accepted (paid_amount > total, AR over-credited).
   // Runs BEFORE the storno + JE below, so a rejected match leaves the
   // transaction untouched and never burns a voucher number.
-  const pureSek = transaction.currency === 'SEK' && invoice.currency === 'SEK'
-  const payment = planInvoicePayment(invoice, paidAmount, { absorbOreRounding: pureSek })
-  if (!payment.ok) {
+  const matchPlan = await planTransactionInvoiceMatch(supabase, transaction, invoice)
+  if (!matchPlan.ok) {
     return {
-      error:
-        getErrorEntry('MATCH_AMOUNT_EXCEEDS_REMAINING')?.message_sv ??
-        'Transaktionsbeloppet är större än fakturans återstående belopp.',
+      error: getErrorEntry(matchPlan.code)?.message_sv ?? matchPlan.code,
+      errorCode: matchPlan.code,
       status: 400,
+      // The amounts the stage-time refusal names, so an op staged before that
+      // guard (or whose invoice changed since) is just as actionable here.
+      ...(matchPlan.code === 'MATCH_AMOUNT_EXCEEDS_REMAINING'
+        ? { data: { currency: matchPlan.currency, ...matchPlan.details } }
+        : {}),
     }
   }
-  const { newPaidAmount, newRemaining, isFullyPaid, newStatus } = payment.plan
+  const { fx } = matchPlan
+  const { newPaidAmount, newRemaining, isFullyPaid, newStatus } = matchPlan.plan
   const paidAt = isFullyPaid ? paidAtFromDate(transaction.date) : null
 
   // Read-only prevalidation, deliberately hoisted ABOVE the irreversible
@@ -3776,17 +3528,18 @@ async function commitMatchTransactionInvoice(
     })
     .eq('id', transactionId)
 
+  const settledInvoice = {
+    ...(invoice as Invoice),
+    status: newStatus,
+    paid_at: paidAt,
+    paid_amount: newPaidAmount,
+    remaining_amount: newRemaining,
+  } as Invoice
   try {
     await eventBus.emit({
       type: 'invoice.match_confirmed',
       payload: {
-        invoice: {
-          ...(invoice as Invoice),
-          status: newStatus,
-          paid_at: paidAt,
-          paid_amount: newPaidAmount,
-          remaining_amount: newRemaining,
-        } as Invoice,
+        invoice: settledInvoice,
         transaction: {
           ...(transaction as Transaction),
           invoice_id: invoiceId,
@@ -3800,6 +3553,16 @@ async function commitMatchTransactionInvoice(
       },
     })
   } catch { /* non-critical */ }
+  // A match that settles the invoice in full is its invoice.paid transition,
+  // exactly as on the dashboard and v1 match routes.
+  await emitInvoicePaidIfSettled({
+    newStatus,
+    invoice: settledInvoice,
+    paymentAmount: roundOre(newPaidAmount - (invoice.paid_amount ?? 0)),
+    paymentDate: transaction.date,
+    userId,
+    companyId,
+  })
 
   return { data: { invoice_status: newStatus, paid_amount: newPaidAmount, journal_entry_id: journalEntryId } }
 }
@@ -4287,6 +4050,9 @@ async function commitRunYearEnd(
   }
 }
 
+// Unreachable while isKontantmetodCutoffSuspended() is true (#3440): the
+// dispatcher refuses post_kontantmetod_cutoff before the claim, so a refused
+// op stays pending. A refusal in here would run after the claim and consume it.
 async function commitPostKontantmetodCutoff(
   supabase: SupabaseClient,
   userId: string,
@@ -4738,6 +4504,19 @@ async function commitCreateSupplierInvoiceFromInbox(
     return { error: 'exchange_rate must be a finite number when provided', status: 400 }
   }
 
+  // Every item carries its own account, under the rule the create routes
+  // hold (CreateSupplierInvoiceItemSchema: four digits). Staging resolves
+  // and checks it, so a miss here is a stale or tampered op: refuse it
+  // before an ankomstnummer is drawn instead of guessing one.
+  if (rawItems.some((item) => typeof item.account_number !== 'string' || !ACCOUNT_NUMBER_RE.test(item.account_number))) {
+    const entry = getErrorEntry('SI_CREATE_ITEM_ACCOUNT_MISSING')
+    return {
+      error: entry?.message_sv ?? 'En eller flera fakturarader saknar konto.',
+      errorCode: 'SI_CREATE_ITEM_ACCOUNT_MISSING',
+      status: entry?.httpStatus ?? 400,
+    }
+  }
+
   // Särskild löneskatt (SLP): staged params must respect the same rule the
   // create routes enforce; the 7533/2514 pair is only lawful on 741x pension
   // premiums, so a flag on any other account is tampered or mis-staged.
@@ -4884,7 +4663,7 @@ async function commitCreateSupplierInvoiceFromInbox(
       unit: (item.unit as string | undefined) ?? 'st',
       unit_price: typeof item.unit_price === 'number' && Number.isFinite(item.unit_price) ? item.unit_price : 0,
       line_total: typeof item.line_total === 'number' && Number.isFinite(item.line_total) ? item.line_total : 0,
-      account_number: String(item.account_number ?? '4000'),
+      account_number: item.account_number as string,
       vat_code: null,
       vat_rate: vatRate,
       vat_amount: vatAmt,
@@ -6971,6 +6750,16 @@ async function commitMatchBatchAllocate(
   // (app/api/transactions/[id]/match-batch/route.ts) so the two cannot drift.
   await clearSettledBatchAllocationSuggestions(supabase, companyId, result.allocations ?? [], txId)
 
+  // Same events as the HTTP twin (match_confirmed per allocation, invoice.paid
+  // / supplier_invoice.paid per allocation settled in full), through the same
+  // helper. This door used to emit nothing, so webhooks never heard of an
+  // agent-approved samlingsbetalning. Best-effort: the RPC has committed.
+  await emitBatchAllocationEvents(
+    supabase,
+    { companyId, userId, transactionId: txId, allocations: result.allocations ?? [] },
+    log,
+  )
+
   // The override was acted on: durable behandlingshistorik record (BFNAR
   // 2013:2 p. 9.16), same event the categorize guard writes.
   if (explained.status === 'overridden') {
@@ -7401,6 +7190,25 @@ async function commitPendingOperationInner(
   pendingOp: PendingOperation,
   opts: CommitOptions = {}
 ): Promise<CommitResult> {
+  // ── Kontantmetoden cut-off suspension (#3440). The cut-off as built declares
+  //    unpaid-invoice moms a second time when the invoice is paid next year.
+  //    Refused HERE, before the atomic claim and before any read or write, for
+  //    the same reason as the gates below: a refused op must stay 'pending'
+  //    (not consumed), so it is still there when the fix decides what to do
+  //    with it. The staging door reads the same switch.
+  if (
+    pendingOp.operation_type === 'post_kontantmetod_cutoff' &&
+    isKontantmetodCutoffSuspended()
+  ) {
+    return {
+      status: 'failed',
+      error: kontantmetodCutoffSuspendedMessageSv(),
+      http_status: getErrorEntry(KONTANTMETOD_CUTOFF_SUSPENDED_CODE)?.httpStatus ?? 409,
+      code: KONTANTMETOD_CUTOFF_SUSPENDED_CODE,
+      operation_status: 'pending',
+    }
+  }
+
   // ── Capability gate (commit-time twin of the MCP dispatch gate). The actual
   //    external-service call (email / Skatteverket submit) happens below, so
   //    this is the true paid chokepoint: it also catches an op STAGED during

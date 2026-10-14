@@ -152,6 +152,29 @@ const GENERIC: Record<string, StructuredErrorEntry> = {
       description: 'Use a live key for this endpoint, or pick an endpoint that supports dry-run.',
     },
   },
+  // Webhook endpoint ownership handshake (lib/webhooks/verification.ts).
+  WEBHOOK_NOT_VERIFIED: {
+    httpStatus: 409,
+    message_sv:
+      'Webhookens mottagaradress är inte verifierad. Inga händelser skickas dit förrän den har klarat verifieringen.',
+    message_en:
+      'The webhook endpoint has not passed the ownership verification handshake, so no events are sent to it.',
+    remediation: {
+      description:
+        'Make the endpoint answer the webhook.verification request with 2xx and {"challenge": "<the value sent>"}, then call POST /api/v1/companies/{companyId}/webhooks/{id}/verify.',
+    },
+  },
+  WEBHOOK_VERIFICATION_FAILED: {
+    httpStatus: 422,
+    message_sv:
+      'Webhookens mottagaradress klarade inte verifieringen. Den måste svara med samma challenge-värde som skickades.',
+    message_en:
+      'The webhook endpoint did not pass the verification handshake: it must answer with 2xx and {"challenge": "<the value sent>"} within 10 seconds.',
+    remediation: {
+      description:
+        'Read details.reason, fix the receiver, then call POST /api/v1/companies/{companyId}/webhooks/{id}/verify again.',
+    },
+  },
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1658,6 +1681,19 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
     message_en: 'Customer has no email address.',
     remediation: { description: 'Add an email address on the customer record before sending.' },
   },
+  // customer_id is null, usually because the customer was deleted while the
+  // draft existed (crm#263). Without a buyer there is no invoice to issue or
+  // render (ML 17 kap 24 §).
+  INVOICE_CUSTOMER_MISSING: {
+    httpStatus: 409,
+    message_sv: 'Fakturan saknar kund. Välj en kund på utkastet under Redigera, eller ta bort utkastet.',
+    message_en: 'The invoice has no customer. Choose a customer for the draft under Edit, or delete the draft.',
+    remediation: {
+      description:
+        'The invoice has no customer (customer_id is null, usually because the customer was deleted). Set customer_id on the draft (gnubok_update_invoice, or PATCH the invoice) or delete the draft (gnubok_delete_draft_invoice). An invoice is never issued or rendered without a buyer.',
+      tool: 'gnubok_update_invoice',
+    },
+  },
   INVOICE_SEND_TOO_MANY_RECIPIENTS: {
     httpStatus: 400,
     message_sv: 'Ett fakturautskick får ha högst 20 mottagare totalt.',
@@ -2278,8 +2314,8 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
   },
   PEPPOL_REGISTRATION_ORG_NUMBER_REQUIRED: {
     httpStatus: 422,
-    message_sv: 'Bolaget behöver ett giltigt organisationsnummer i företagsinställningarna innan det kan ta emot e-fakturor via Peppol.',
-    message_en: 'The company needs a valid organisation number in company settings before it can receive e-invoices via Peppol.',
+    message_sv: 'Bolaget behöver ett giltigt organisationsnummer i företagsinställningarna innan det kan använda e-faktura via Peppol.',
+    message_en: 'The company needs a valid organisation number in company settings before it can use e-invoicing via Peppol.',
   },
   PEPPOL_REGISTRATION_PERSONAL_NUMBER: {
     httpStatus: 422,
@@ -2306,8 +2342,8 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
   // default, requested from settings, enabled with a sending cap.
   PEPPOL_ACCESS_REQUIRED: {
     httpStatus: 403,
-    message_sv: 'Peppol är inte aktiverat för det här bolaget. Begär åtkomst under Inställningar > Fakturering > E-faktura via Peppol, så aktiverar vi det.',
-    message_en: 'Peppol is not enabled for this company. Request access under Settings > Invoicing > E-invoicing via Peppol and we will enable it.',
+    message_sv: 'Peppol är inte aktiverat för det här bolaget. Begär åtkomst under Inställningar > Kopplingar > E-faktura via Peppol, så aktiverar vi det.',
+    message_en: 'Peppol is not enabled for this company. Request access under Settings > Connections > E-invoicing via Peppol and we will enable it.',
   },
   PEPPOL_SEND_LIMIT_REACHED: {
     httpStatus: 409,
@@ -2354,8 +2390,8 @@ const INVOICE: Record<string, StructuredErrorEntry> = {
   // behind PEPPOL_SEND_PRECONDITION_FAILED's prefix.
   CONNECTOR_PEPPOL_SENDER_NOT_REGISTERED: {
     httpStatus: 422,
-    message_sv: 'Bolagets Peppol-id är inte registrerat hos operatören. Slå på mottagning under Inställningar > Fakturering > E-faktura via Peppol, eller kontakta support.',
-    message_en: 'The company\'s Peppol id is not registered with the access point. Switch on receiving under Settings > Invoicing > E-invoicing via Peppol, or contact support.',
+    message_sv: 'Bolagets Peppol-id är inte registrerat hos operatören. Slå på mottagning under Inställningar > Kopplingar > E-faktura via Peppol, eller kontakta support.',
+    message_en: 'The company\'s Peppol id is not registered with the access point. Switch on receiving under Settings > Connections > E-invoicing via Peppol, or contact support.',
   },
   CONNECTOR_SCOPE_MISSING: {
     httpStatus: 403,
@@ -2827,6 +2863,25 @@ const YEAR_END: Record<string, StructuredErrorEntry> = {
     message_en:
       'The fiscal period has no posted activity, so no year-end voucher can be created. Post or import the period activity before running year-end closing.',
     retryable: false,
+  },
+  // Interim block (#3440): the kontantmetoden cut-off as built declares the
+  // moms on invoices unpaid at year end a second time when they are paid in
+  // the next year. Both doors refuse while isKontantmetodCutoffSuspended()
+  // (lib/core/bookkeeping/kontantmetod-cutoff-suspension.ts) is true: staging
+  // (gnubok_post_kontantmetod_cutoff) and approval (commitPendingOperation,
+  // before the claim, so a staged operation stays pending). The code stays
+  // registered after the fix ships: agents pattern-match on codes.
+  KONTANTMETOD_CUTOFF_SUSPENDED: {
+    httpStatus: 409,
+    message_sv:
+      'Kontantmetodens bokslutsavgränsning är tillfälligt avstängd medan ett fel i momsredovisningen rättas. Bokför inte kundfordringarna eller leverantörsskulderna manuellt i stället: bokslutet för perioden får vänta tills avgränsningen går att bokföra igen.',
+    message_en:
+      'The kontantmetoden year-end cut-off is temporarily suspended while a VAT defect is fixed (erp-mafia/accounted#3440): as built, it would declare the moms on invoices unpaid at year end a second time when they are paid in the next year. Nothing was posted.',
+    retryable: false,
+    remediation: {
+      description:
+        'Do not retry, and do not work around it: never book the year-end receivables, payables or their moms by hand (gnubok_create_voucher or any other tool), and do not stage the cut-off again through gnubok_stage_tool. Tell the user the cut-off is temporarily unavailable and that the year-end close of this kontantmetoden period waits until it is back. A cut-off operation already staged stays pending; do not approve it again. Other year-end preparation (reconciliation, accruals, depreciation) can continue.',
+    },
   },
 }
 
@@ -3550,6 +3605,81 @@ const OPENING_BALANCE_IMPORT: Record<string, StructuredErrorEntry> = {
     message_sv: 'Ingående balanser får bara bokas på balanskonton (klass 1 och 2).',
     message_en: 'Opening balances may only use balance sheet accounts (class 1 and 2).',
   },
+  // "Dela upp IB per projekt" (#3313): lib/import/opening-balance/split-per-project.ts.
+  // The split runs as an inline rättelse of the IB verifikat, which BFL 5 kap
+  // 5 § only allows in an open, unlocked year: these say what to open first.
+  OB_SPLIT_PERIOD_CLOSED: {
+    httpStatus: 409,
+    message_sv:
+      'Räkenskapsåret är stängt, så dess ingående balanser kan inte delas upp per projekt. Är året markerat som avslutat i ett tidigare program kan du öppna det igen (Inställningar › Bokföring › Räkenskapsår › Öppna igen) och försöka på nytt.',
+    message_en:
+      'The fiscal year is closed, so its opening balances cannot be split per project. If the year was marked as closed in a previous program, reopen it (Settings › Bookkeeping › Fiscal years › Reopen) and try again.',
+    remediation: {
+      description:
+        'A year closed in Accounted (year-end posted) cannot be reopened: split the following year\'s opening balances instead. A year only marked closed externally is reopened with POST /fiscal-periods/{id}/reopen-external.',
+    },
+  },
+  OB_SPLIT_PERIOD_LOCKED: {
+    httpStatus: 409,
+    message_sv:
+      'Räkenskapsåret är låst, så dess ingående balanser kan inte delas upp per projekt. Lås upp året först (Inställningar › Bokföring › Räkenskapsår › Lås upp) och försök sedan igen.',
+    message_en:
+      'The fiscal year is locked, so its opening balances cannot be split per project. Unlock the year first (Settings › Bookkeeping › Fiscal years › Unlock) and try again.',
+    remediation: {
+      description: 'Unlock the fiscal year (POST /fiscal-periods/{id}/unlock), then retry the split.',
+    },
+  },
+  OB_SPLIT_NO_PREVIOUS_YEAR: {
+    httpStatus: 409,
+    message_sv:
+      'Det finns inget tidigare räkenskapsår i Accounted att hämta projektsaldon från. Ingående balanser från en SIE-import delas upp per projekt när filen innehåller #OIB-rader.',
+    message_en:
+      'There is no earlier fiscal year in Accounted to take project balances from. Opening balances from an SIE import are split per project when the file carries #OIB records.',
+  },
+  OB_SPLIT_DIMENSION_UNRESOLVED: {
+    httpStatus: 409,
+    message_sv:
+      'Ett eller flera projekt med saldo finns inte i dimensionsregistret. Lägg upp dem under Dimensioner och försök igen.',
+    message_en:
+      'One or more projects carrying a balance are missing from the dimension registry. Add them under Dimensions and try again.',
+    thrown_message_sv: true,
+    remediation: {
+      description:
+        'details.unresolved lists each dimension number and code. Create the missing values (POST /dimensions/{id}/values), then retry.',
+    },
+  },
+  OB_SPLIT_NOTHING_TO_DO: {
+    httpStatus: 409,
+    message_sv:
+      'Det finns ingenting att dela upp: ingående balanserna är redan uppdelade per projekt, eller så hoppas de berörda kontona över.',
+    message_en:
+      'There is nothing to split: the opening balances are already split per project, or the accounts concerned are skipped.',
+    remediation: {
+      description:
+        'Nothing to stage or approve. GET /fiscal-periods/{id}/opening-balances/split-per-project shows each account\'s status (unchanged, or skipped with skip_reason).',
+    },
+  },
+  OB_SPLIT_PROPOSAL_CHANGED: {
+    httpStatus: 409,
+    message_sv:
+      'Ingående balanserna eller projektsaldona har ändrats sedan förhandsgranskningen. Förhandsgranska uppdelningen igen.',
+    message_en:
+      'The opening balances or the project balances changed since the preview. Preview the split again.',
+    remediation: {
+      description: 'Run the preview (GET or ?dry_run=true) again and pass its fingerprint as expected_fingerprint.',
+    },
+  },
+  OB_SPLIT_REFUSED: {
+    httpStatus: 409,
+    message_sv: 'Uppdelningen nekades av reglerna för rättelse av verifikat.',
+    message_en: 'The split was refused by the correction rules for posted entries.',
+    thrown_message_sv: true,
+  },
+  OB_SPLIT_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Uppdelningen av ingående balanser per projekt misslyckades.',
+    message_en: 'Splitting the opening balances per project failed.',
+  },
   SKATTEKONTO_FILE_ORG_NUMBER_MISMATCH: {
     httpStatus: 409,
     message_sv:
@@ -3601,6 +3731,42 @@ const REGISTER_IMPORT: Record<string, StructuredErrorEntry> = {
     httpStatus: 500,
     message_sv: 'Importen misslyckades.',
     message_en: 'Register import failed.',
+  },
+}
+
+// Undo of a customer/supplier/article import (lib/import/register-runs.ts).
+const REGISTER_IMPORT_UNDO: Record<string, StructuredErrorEntry> = {
+  REG_IMPORT_UNDO_INVALID_ID: {
+    httpStatus: 400,
+    message_sv: 'Ogiltigt import-id.',
+    message_en: 'Invalid import run id.',
+  },
+  REG_IMPORT_UNDO_NOT_FOUND: {
+    httpStatus: 404,
+    message_sv: 'Importen kunde inte hittas.',
+    message_en: 'Register import run not found.',
+  },
+  REG_IMPORT_UNDO_ALREADY_UNDONE: {
+    httpStatus: 409,
+    message_sv: 'Importen är redan ångrad.',
+    message_en: 'This register import has already been undone.',
+  },
+  REG_IMPORT_UNDO_FORBIDDEN: {
+    httpStatus: 403,
+    message_sv: 'Du har inte behörighet att ångra importer i det här företaget.',
+    message_en: 'You do not have write access to undo imports in this company.',
+  },
+  REG_IMPORT_UNDO_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Importen kunde inte ångras. Försök igen.',
+    message_en: 'Failed to undo the register import.',
+    retryable: true,
+  },
+  REG_IMPORT_LIST_FAILED: {
+    httpStatus: 500,
+    message_sv: 'Kunde inte hämta importhistoriken.',
+    message_en: 'Failed to list register imports.',
+    retryable: true,
   },
 }
 
@@ -4116,6 +4282,48 @@ const CUSTOMER: Record<string, StructuredErrorEntry> = {
     message_sv: 'Kunden har fakturor och kan inte tas bort.',
     message_en: 'Customer cannot be deleted while invoices reference it.',
   },
+  // A hard delete refused because rows still point at the customer and the
+  // database would silently null them (ON DELETE SET NULL), crm#263.
+  // lib/customers/delete-guard.ts picks the code; details.dependents has
+  // every count.
+  CUSTOMER_HAS_ISSUED_INVOICES: {
+    httpStatus: 409,
+    message_sv:
+      'Kunden kan inte tas bort eftersom den finns på fakturor som ska sparas i sju år, även makulerade. Fakturorna behöver kundens namn och adress.',
+    message_en:
+      "The customer cannot be deleted because it is on invoices that must be kept for seven years, cancelled ones included. The invoices need the customer's name and address.",
+    remediation: {
+      description:
+        'An invoice row stores no copy of the buyer, so a customer on an issued or numbered invoice (cancelled included) is kept for the retention period (ML 17 kap 24 §, BFL 7 kap 2 §). To take it out of the roster, archive it instead: DELETE /api/v1/companies/{companyId}/customers/{id} sets archived_at once no invoice is open.',
+    },
+  },
+  CUSTOMER_HAS_DRAFT_INVOICES: {
+    httpStatus: 409,
+    message_sv: 'Kunden har fakturautkast. Ta bort utkasten först, sedan kan kunden tas bort.',
+    message_en: 'The customer has draft invoices. Delete the drafts first, then delete the customer.',
+    remediation: {
+      description:
+        'Unnumbered drafts point at this customer and would lose it. Delete them first (gnubok_delete_draft_invoice, or DELETE /api/v1/companies/{companyId}/invoices/{id}), then retry. details.dependents.draft_invoices says how many.',
+      tool: 'gnubok_delete_draft_invoice',
+    },
+  },
+  CUSTOMER_HAS_SALES_ORDERS: {
+    httpStatus: 409,
+    message_sv: 'Kunden har kundorder. Ta bort dem först, sedan kan kunden tas bort.',
+    message_en: 'The customer has sales orders. Delete them first, then delete the customer.',
+    remediation: {
+      description:
+        'Sales orders point at this customer and would lose it. Delete them first (a confirmed order is cancelled before it can be deleted), then retry.',
+    },
+  },
+  CUSTOMER_HAS_RECURRING_INVOICES: {
+    httpStatus: 409,
+    message_sv: 'Kunden har en återkommande faktura. Ta bort den först, sedan kan kunden tas bort.',
+    message_en: 'The customer has a recurring invoice. Delete it first, then delete the customer.',
+    remediation: {
+      description: 'A recurring invoice schedule points at this customer. Delete the schedule first, then retry.',
+    },
+  },
   CUSTOMER_NO_PERSONAL_NUMBER: {
     httpStatus: 404,
     message_sv: 'Kunden har inget sparat personnummer.',
@@ -4268,6 +4476,18 @@ const SUPPLIER_INVOICE_WAVE4: Record<string, StructuredErrorEntry> = {
     httpStatus: 400,
     message_sv: 'Ogiltig kombination av fakturafält. Kontrollera formuläret och försök igen.',
     message_en: 'Invalid combination of supplier invoice fields.',
+  },
+  SI_CREATE_ITEM_ACCOUNT_MISSING: {
+    httpStatus: 400,
+    message_sv:
+      'En eller flera fakturarader saknar konto. Ange konto för varje rad, eller sätt ett standardkonto för kostnader på leverantören.',
+    message_en:
+      'One or more invoice lines have no account. Set an account for each line, or set a default expense account on the supplier.',
+    remediation: {
+      description:
+        'Choose a BAS account for each line from the underlag and stage again with line_overrides[].account_number. No account is ever guessed.',
+      tool: 'gnubok_create_supplier_invoice_from_inbox',
+    },
   },
   SI_CREATE_NO_FISCAL_PERIOD: {
     httpStatus: 400,
@@ -6645,6 +6865,7 @@ const REGISTRY: Record<string, StructuredErrorEntry> = {
   ...SKATTEKONTO_FILE,
   ...OPENING_BALANCE_IMPORT,
   ...REGISTER_IMPORT,
+  ...REGISTER_IMPORT_UNDO,
   ...PROVIDER_MIGRATION,
   ...DOCUMENT,
   ...INBOX_UPLOAD,

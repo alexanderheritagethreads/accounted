@@ -40,7 +40,6 @@ vi.mock('@react-pdf/renderer', () => ({
 vi.mock('@/lib/invoices/pdf-template', () => ({
   InvoicePDF: vi.fn().mockReturnValue({}),
   brandingFromCompanySettings: vi.fn().mockReturnValue({}),
-  SHOW_SWISH_ON_INVOICE: false,
 }))
 
 import { validateApiKey, createServiceClientNoCookies } from '@/lib/auth/api-keys'
@@ -239,6 +238,29 @@ describe('GET /api/v1/companies/:companyId/invoices/:id/pdf', () => {
     expect(res.status).toBe(500)
     const body = await res.json()
     expect(body.error.code).toBe('INVOICE_PDF_RENDER_FAILED')
+  })
+
+  it('returns 409 INVOICE_CUSTOMER_MISSING instead of rendering when the customer was deleted (crm#263)', async () => {
+    mockServiceClient.mockReturnValue(
+      makeFlexibleSupabase({
+        company_members: { data: { company_id: COMPANY_ID, role: 'owner' }, error: null },
+        invoices: {
+          data: { ...SENT_INVOICE, status: 'draft', invoice_number: null, customer_id: null, customer: null },
+          error: null,
+        },
+        company_settings: { data: COMPANY_SETTINGS, error: null },
+      }),
+    )
+
+    const res = await pdf(
+      makeRequest(`https://x.test/api/v1/companies/${COMPANY_ID}/invoices/${INVOICE_ID}/pdf`),
+      detailParams(COMPANY_ID, INVOICE_ID),
+    )
+
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body.error.code).toBe('INVOICE_CUSTOMER_MISSING')
+    expect(mockRender).not.toHaveBeenCalled()
   })
 
   it('returns 400 when a foreign payment account is missing', async () => {

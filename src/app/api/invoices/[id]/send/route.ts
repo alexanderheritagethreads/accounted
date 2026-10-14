@@ -2,9 +2,7 @@ import { NextResponse } from 'next/server'
 import { resolveCompanyEntityType } from '@/lib/company/entity-type'
 import { eventBus } from '@/lib/events'
 import { ensureInitialized } from '@/lib/init'
-import { renderToBuffer } from '@react-pdf/renderer'
-import { InvoicePDF } from '@/lib/invoices/pdf-template'
-import { prepareInvoicePdfRender, buildSwishQrDataUrl, buildPaymentLinkQrDataUrl } from '@/lib/invoices/pdf-render-helpers'
+import { renderInvoicePdfBuffer } from '@/lib/invoices/render-invoice-pdf'
 import { snapshotInvoicePayee } from '@/lib/invoices/invoice-payee'
 import { getEmailService } from '@/lib/email/service'
 import { resolveInvoiceSender } from '@/lib/email/invoice-sender'
@@ -49,6 +47,7 @@ import {
   invoiceRequiresPaymentAccount,
 } from '@/lib/invoices/payment-accounts'
 import { hasRequiredSellerVatNumber } from '@/lib/invoices/seller-vat-number'
+import { invoiceLacksCustomer } from '@/lib/invoices/invoice-customer'
 import { errorResponse, errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import { guardSandbox } from '@/lib/sandbox/guard'
 import { requireCapability } from '@/lib/entitlements/has-capability'
@@ -178,6 +177,11 @@ export const POST = withRouteContext(
       })
     }
 
+    // The customer was deleted while the draft pointed at it (crm#263):
+    // there is nobody to send it to, and reading its email would throw.
+    if (invoiceLacksCustomer(invoice)) {
+      return errorResponseFromCode('INVOICE_CUSTOMER_MISSING', opLog, { requestId })
+    }
     const customer = invoice.customer as Customer
     if (!customer.email?.trim() || !EMAIL_PATTERN.test(customer.email.trim())) {
       return errorResponseFromCode('INVOICE_SEND_NO_CUSTOMER_EMAIL', opLog, {
@@ -302,21 +306,14 @@ export const POST = withRouteContext(
     const isFreshAllocation = !invoice.invoice_number
     if (isFreshAllocation) {
       try {
-        const preflight = await prepareInvoicePdfRender(
-          company as CompanySettings,
-          (invoice as Invoice).currency,
-          { paymentAccountRequired, payee: (invoice as Invoice).payment_details ?? null },
-        )
-        await renderToBuffer(
-          InvoicePDF({
-            invoice: { ...(invoice as Invoice), invoice_number: 'F-PREVIEW' },
-            customer,
-            items,
-            company: preflight.company,
-            originalInvoiceNumber,
-            branding: preflight.branding,
-          }),
-        )
+        await renderInvoicePdfBuffer({
+          invoice: { ...(invoice as Invoice), invoice_number: 'F-PREVIEW' },
+          customer,
+          items,
+          company: company as CompanySettings,
+          originalInvoiceNumber,
+          paymentAccountRequired,
+        })
       } catch (err) {
         opLog.error('preflight PDF render failed before invoice number assignment', err as Error)
         return errorResponseFromCode('INVOICE_SEND_PDF_RENDER_FAILED', opLog, { requestId })
@@ -367,25 +364,14 @@ export const POST = withRouteContext(
     // right before the email, but if we render with the stale 'draft' status
     // the customer receives a PDF stamped "UTKAST".
     const renderableInvoice = { ...(invoice as Invoice), status: 'sent' as const }
-    const { branding, company: renderCompany } = await prepareInvoicePdfRender(
-      company as CompanySettings,
-      renderableInvoice.currency,
-      { paymentAccountRequired, payee: (invoice as Invoice).payment_details ?? null },
-    )
-    const swishQrDataUrl = await buildSwishQrDataUrl(renderCompany, renderableInvoice)
-    const paymentLinkQrDataUrl = await buildPaymentLinkQrDataUrl(renderableInvoice)
-    const pdfBuffer = await renderToBuffer(
-      InvoicePDF({
-        invoice: renderableInvoice,
-        customer,
-        items,
-        company: renderCompany,
-        originalInvoiceNumber,
-        branding,
-        swishQrDataUrl,
-        paymentLinkQrDataUrl,
-      }),
-    )
+    const { buffer: pdfBuffer } = await renderInvoicePdfBuffer({
+      invoice: renderableInvoice,
+      customer,
+      items,
+      company: company as CompanySettings,
+      originalInvoiceNumber,
+      paymentAccountRequired,
+    })
 
     const replyTo = resolveInvoiceReplyTo(company as CompanySettings, user.email)
     const emailData = {
@@ -393,6 +379,9 @@ export const POST = withRouteContext(
       customer,
       company: company as CompanySettings,
       replyTo,
+      // This send's own subject and message, if the user edited them; not
+      // stored on the invoice (the delivery history keeps the sent email).
+      overrides: { subject: bodyResult.data.email_subject, body: bodyResult.data.email_body },
     }
 
     const filename = invoicePdfFilename({

@@ -8,6 +8,13 @@ vi.mock('@/lib/supabase/server', () => ({
   createClient: vi.fn(),
 }))
 
+const cookieMocks = vi.hoisted(() => ({ set: vi.fn() }))
+
+vi.mock('next/headers', () => ({
+  cookies: vi.fn(async () => ({ set: cookieMocks.set })),
+  headers: vi.fn(async () => new Headers()),
+}))
+
 const deadlineMocks = vi.hoisted(() => ({
   regenerate: vi.fn().mockResolvedValue({ created: 1, deleted: 0 }),
 }))
@@ -22,6 +29,18 @@ vi.mock('@/lib/tax/deadline-generator', () => ({
 vi.mock('@/lib/company/context', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/company/context')>()),
   setActiveCompany: vi.fn().mockResolvedValue(undefined),
+}))
+
+// SCB is off by default (no credentials in tests); the säte tests switch it on.
+const scbMocks = vi.hoisted(() => ({ configured: false, lookupByOrgNumber: vi.fn() }))
+
+vi.mock('@/lib/parties/scb/config', () => ({
+  isScbConfigured: () => scbMocks.configured,
+  scbConfigFromEnv: () => ({ baseUrl: 'https://scb.test', pfx: Buffer.from(''), passphrase: 'x', timeoutMs: 20_000 }),
+}))
+
+vi.mock('@/lib/parties/scb/client', () => ({
+  createScbClient: () => ({ lookupByOrgNumber: scbMocks.lookupByOrgNumber }),
 }))
 
 import { createClient } from '@/lib/supabase/server'
@@ -93,6 +112,7 @@ function buildSupabase(opts: {
 beforeEach(() => {
   vi.clearAllMocks()
   deadlineMocks.regenerate.mockResolvedValue({ created: 1, deleted: 0 })
+  scbMocks.configured = false
 })
 
 describe('switchCompany', () => {
@@ -269,7 +289,7 @@ describe('createCompanyFromOnboarding: byrå team gating (WL-15)', () => {
     })
 
     // Response shape: the created company id, no error.
-    expect(result).toEqual({ companyId: 'client-company-id' })
+    expect(result).toEqual({ companyId: 'client-company-id', registeredOffice: null })
 
     // Team binding present: the RPC received the byrå team explicitly
     // (never ensure_user_team arbitrariness, WL-08/WL-15).
@@ -297,7 +317,7 @@ describe('createCompanyFromOnboarding: byrå team gating (WL-15)', () => {
       ...baseParams,
     })
 
-    expect(result).toEqual({ companyId: 'personal-company-id' })
+    expect(result).toEqual({ companyId: 'personal-company-id', registeredOffice: null })
   })
 })
 
@@ -463,3 +483,168 @@ describe('createCompanyFromOnboarding: TIC snapshot persistence', () => {
   })
 })
 
+
+describe('createCompanyFromOnboarding: säte from the register', () => {
+  const params = {
+    teamId: 'team-1',
+    settings: {
+      entity_type: 'aktiebolag',
+      company_name: 'Acme AB',
+      org_number: '5560125790',
+      // The postal town of the registered address, as the journey fills it.
+      city: 'Postorten',
+    },
+    fiscalPeriod: { startDate: '2026-01-01', endDate: '2026-12-31', name: 'Räkenskapsår 2026' },
+  }
+
+  function settingsUpsert(calls: CapturedCall[]): Record<string, unknown> {
+    const upsert = calls.find((c) => c.table === 'company_settings' && c.method === 'upsert')
+    expect(upsert).toBeDefined()
+    return upsert!.args[0] as Record<string, unknown>
+  }
+
+  it("saves SCB's Säteskommun as registered_office and returns it, keeping city the postal town", async () => {
+    scbMocks.configured = true
+    scbMocks.lookupByOrgNumber.mockResolvedValue({
+      found: true,
+      peOrgNr: '165560125790',
+      row: {},
+      facts: [
+        { field: 'postal_address', value: { street: 'Box 1', co: null, postal_code: '11122', city: 'POSTORTEN' } },
+        { field: 'seat', value: { municipality_code: '0180', county_code: '01', municipality: 'Sateskommunen', county: 'Länet' } },
+      ],
+      fetchedAt: '2026-10-03T00:00:00.000Z',
+    })
+    const { supabase, calls } = buildSupabase({
+      user: { id: 'user-1' },
+      rpcResults: { create_company_with_owner: { data: 'new-company-id' } },
+    })
+    mockCreateClient.mockResolvedValue(supabase as never)
+
+    const result = await createCompanyFromOnboarding(params)
+
+    expect(result).toEqual({ companyId: 'new-company-id', registeredOffice: 'Sateskommunen' })
+    expect(scbMocks.lookupByOrgNumber).toHaveBeenCalledWith('5560125790')
+    const saved = settingsUpsert(calls)
+    expect(saved.registered_office).toBe('Sateskommunen')
+    expect(saved.city).toBe('Postorten')
+  })
+
+  it('never fills säte from the postal town when the register has no answer', async () => {
+    scbMocks.configured = true
+    scbMocks.lookupByOrgNumber.mockRejectedValue(new Error('SCB svarade 503'))
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { supabase, calls } = buildSupabase({
+      user: { id: 'user-1' },
+      rpcResults: { create_company_with_owner: { data: 'new-company-id' } },
+    })
+    mockCreateClient.mockResolvedValue(supabase as never)
+
+    const result = await createCompanyFromOnboarding(params)
+
+    expect(result).toEqual({ companyId: 'new-company-id', registeredOffice: null })
+    expect(settingsUpsert(calls).registered_office).toBeUndefined()
+  })
+})
+
+describe('createCompanyFromOnboarding: first-session books gate', () => {
+  const params = {
+    teamId: 'personal-team',
+    settings: { entity_type: 'aktiebolag' as const, company_name: 'Ny AB' },
+    fiscalPeriod: { startDate: '2026-01-01', endDate: '2026-12-31', name: 'Räkenskapsår 2026' },
+  }
+
+  function gateCookieSets() {
+    return cookieMocks.set.mock.calls.filter(([name]) => name === 'gnubok-books-gate')
+  }
+
+  it("arms the gate for the user's first company", async () => {
+    const { supabase, calls } = buildSupabase({
+      user: { id: 'user-1' },
+      results: {
+        teams: { maybeSingle: { data: { kind: 'personal' } } },
+        company_members: { limit: { data: [] } },
+      },
+      rpcResults: { create_company_with_owner: { data: 'first-company-id' } },
+    })
+    mockCreateClient.mockResolvedValue(supabase as never)
+
+    const result = await createCompanyFromOnboarding(params)
+
+    expect(result).toEqual({ companyId: 'first-company-id', registeredOffice: null })
+    expect(gateCookieSets()).toHaveLength(1)
+    expect(gateCookieSets()[0][1]).toBe('first-company-id')
+    // Archived companies do not count as a company the user already has.
+    expect(calls).toContainEqual({ table: 'company_members', method: 'is', args: ['companies.archived_at', null] })
+    expect(calls).toContainEqual({ table: 'company_members', method: 'eq', args: ['user_id', 'user-1'] })
+  })
+
+  it('never arms the gate when the user already has a live company (added from inside the app)', async () => {
+    const { supabase } = buildSupabase({
+      user: { id: 'user-1' },
+      results: {
+        teams: { maybeSingle: { data: { kind: 'personal' } } },
+        company_members: { limit: { data: [{ company_id: 'existing-company' }] } },
+      },
+      rpcResults: { create_company_with_owner: { data: 'second-company-id' } },
+    })
+    mockCreateClient.mockResolvedValue(supabase as never)
+
+    const result = await createCompanyFromOnboarding(params)
+
+    expect(result).toEqual({ companyId: 'second-company-id', registeredOffice: null })
+    expect(gateCookieSets()).toHaveLength(0)
+  })
+
+  it('never arms the gate for a client company created under a byrå team', async () => {
+    const { supabase } = buildSupabase({
+      user: { id: 'user-1' },
+      results: {
+        teams: { maybeSingle: { data: { kind: 'byra' } } },
+        team_members: { maybeSingle: { data: { role: 'owner' } } },
+        company_members: { limit: { data: [] } },
+      },
+      rpcResults: { create_company_with_owner: { data: 'client-company-id' } },
+    })
+    mockCreateClient.mockResolvedValue(supabase as never)
+
+    const result = await createCompanyFromOnboarding({ ...params, teamId: 'byra-team' })
+
+    expect(result).toEqual({ companyId: 'client-company-id', registeredOffice: null })
+    expect(gateCookieSets()).toHaveLength(0)
+  })
+
+  it('does not arm the gate when the membership read fails', async () => {
+    const { supabase } = buildSupabase({
+      user: { id: 'user-1' },
+      results: {
+        teams: { maybeSingle: { data: { kind: 'personal' } } },
+        company_members: { limit: { error: { message: 'connection reset' } } },
+      },
+      rpcResults: { create_company_with_owner: { data: 'new-company-id' } },
+    })
+    mockCreateClient.mockResolvedValue(supabase as never)
+
+    const result = await createCompanyFromOnboarding(params)
+
+    expect(result).toEqual({ companyId: 'new-company-id', registeredOffice: null })
+    expect(gateCookieSets()).toHaveLength(0)
+  })
+
+  it('ignores a client that still asks for the gate on a second company', async () => {
+    const { supabase } = buildSupabase({
+      user: { id: 'user-1' },
+      results: {
+        teams: { maybeSingle: { data: { kind: 'personal' } } },
+        company_members: { limit: { data: [{ company_id: 'existing-company' }] } },
+      },
+      rpcResults: { create_company_with_owner: { data: 'second-company-id' } },
+    })
+    mockCreateClient.mockResolvedValue(supabase as never)
+
+    // An older client bundle still sends the removed flag during a deploy.
+    await createCompanyFromOnboarding({ ...params, booksGate: true } as Parameters<typeof createCompanyFromOnboarding>[0])
+
+    expect(gateCookieSets()).toHaveLength(0)
+  })
+})

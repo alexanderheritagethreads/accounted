@@ -5,6 +5,7 @@ import SIEJobProgress from '@/components/import/SIEJobProgress'
 import { uploadSIEFile } from '@/lib/import/sie-job-client'
 import { describeImportResponseFailure, formatImportFailure } from '@/lib/import/import-failure'
 import { legacyNotices, type ImportNotice } from '@/lib/import/notices'
+import { parseCsvDataEntity, type CsvDataEntity } from '@/lib/import/register-import-link'
 import { fetchAccounts } from '@/lib/reference-data/fetchers'
 import { invalidateReferenceData } from '@/lib/reference-data/invalidate'
 import { useSearchParams, useRouter } from 'next/navigation'
@@ -131,6 +132,7 @@ const ImportReviewStep = dynamic(() => import('@/components/import/ImportReviewS
 const ImportResultStep = dynamic(() => import('@/components/import/ImportResultStep'), { loading: ImportStepLoading })
 const SIEImportHistory = dynamic(() => import('@/components/import/SIEImportHistory'), { loading: ImportStepLoading })
 const BankFileImportHistory = dynamic(() => import('@/components/import/BankFileImportHistory'), { loading: ImportStepLoading })
+const RegisterImportHistory = dynamic(() => import('@/components/import/RegisterImportHistory'), { loading: ImportStepLoading })
 const UnderlagImportWizard = dynamic(() => import('@/components/import/UnderlagImportWizard'), { loading: ImportStepLoading })
 
 // ============================================================
@@ -1490,8 +1492,11 @@ const REGISTER_STEP_LABELS: Record<RegisterStep, string> = {
   result: 'Resultat',
 }
 
-const CUSTOMER_COLUMN_SPECS: RegisterColumnSpec<keyof DetectedCustomerColumns>[] = [
+const getCustomerColumnSpecs = (
+  customerNumberLabel: string,
+): RegisterColumnSpec<keyof DetectedCustomerColumns>[] => [
   { key: 'name_col', label: 'Namn', required: true },
+  { key: 'customer_number_col', label: customerNumberLabel, required: false },
   { key: 'org_number_col', label: 'Org-/personnummer', required: false },
   { key: 'customer_type_col', label: 'Kundtyp', required: false },
   { key: 'email_col', label: 'E-post', required: false },
@@ -1520,6 +1525,8 @@ function columnsToMapping<K extends string>(
 
 function CustomersFlow() {
   const { toast } = useToast()
+  const tCustomerForm = useTranslations('form_customer')
+  const customerColumnSpecs = getCustomerColumnSpecs(tCustomerForm('customer_number_label'))
 
   const [step, setStep] = useState<RegisterStep>('upload')
   const [isLoading, setIsLoading] = useState(false)
@@ -1586,6 +1593,7 @@ function CustomersFlow() {
     try {
       const overrides: DetectedCustomerColumns = {
         name_col: mapping.name_col ?? 0,
+        customer_number_col: mapping.customer_number_col,
         org_number_col: mapping.org_number_col,
         customer_type_col: mapping.customer_type_col,
         email_col: mapping.email_col,
@@ -1673,7 +1681,7 @@ function CustomersFlow() {
   }
 
   const initialMapping = parseResult
-    ? columnsToMapping<keyof DetectedCustomerColumns>(parseResult.detected_columns as unknown as { [key: string]: unknown }, CUSTOMER_COLUMN_SPECS)
+    ? columnsToMapping<keyof DetectedCustomerColumns>(parseResult.detected_columns as unknown as { [key: string]: unknown }, customerColumnSpecs)
     : null
 
   return (
@@ -1715,7 +1723,7 @@ function CustomersFlow() {
         <RegisterColumnMappingStep<keyof DetectedCustomerColumns>
           headers={parseResult.headers}
           previewRows={parseResult.preview_rows}
-          specs={CUSTOMER_COLUMN_SPECS}
+          specs={customerColumnSpecs}
           initial={initialMapping}
           onConfirm={handleColumnMappingConfirm}
           onBack={() => setStep('upload')}
@@ -1725,6 +1733,9 @@ function CustomersFlow() {
       {step === 'edit' && parseResult && (
         <CustomersEditStep
           rows={parseResult.rows}
+          headers={parseResult.headers}
+          previewRows={parseResult.preview_rows}
+          detectedColumns={parseResult.detected_columns}
           notices={parseResult.notices ?? legacyNotices(parseResult.warnings)}
           onExecute={handleExecute}
           onBack={() => setStep(needsMapping ? 'column_mapping' : 'upload')}
@@ -1983,6 +1994,9 @@ function SuppliersFlow() {
       {step === 'edit' && parseResult && (
         <SuppliersEditStep
           rows={parseResult.rows}
+          headers={parseResult.headers}
+          previewRows={parseResult.preview_rows}
+          detectedColumns={parseResult.detected_columns}
           notices={parseResult.notices ?? legacyNotices(parseResult.warnings)}
           onExecute={handleExecute}
           onBack={() => setStep(needsMapping ? 'column_mapping' : 'upload')}
@@ -2229,6 +2243,9 @@ function ArticlesFlow() {
       {step === 'edit' && parseResult && (
         <ArticlesEditStep
           rows={parseResult.rows}
+          headers={parseResult.headers}
+          previewRows={parseResult.preview_rows}
+          detectedColumns={parseResult.detected_columns}
           notices={parseResult.notices ?? legacyNotices(parseResult.warnings)}
           onExecute={handleExecute}
           onBack={() => setStep(needsMapping ? 'column_mapping' : 'upload')}
@@ -2252,17 +2269,17 @@ function ArticlesFlow() {
 // CSV/Excel Data Import Wizard, entity selector + sub-flow
 // ============================================================
 
-type CSVDataEntity = 'opening_balance' | 'customers' | 'suppliers' | 'articles'
-
-const ENTITY_OPTIONS: { value: CSVDataEntity; label: string }[] = [
+const ENTITY_OPTIONS: { value: CsvDataEntity; label: string }[] = [
   { value: 'opening_balance', label: 'Ingående balanser' },
   { value: 'customers', label: 'Kunder' },
   { value: 'suppliers', label: 'Leverantörer' },
   { value: 'articles', label: 'Artiklar' },
 ]
 
-function CSVDataImportWizard() {
-  const [entity, setEntity] = useState<CSVDataEntity | null>('opening_balance')
+function CSVDataImportWizard({ initialEntity }: { initialEntity: CsvDataEntity | null }) {
+  // Opens on "Ingående balanser" unless a register page deep-linked a tab
+  // (/import?mode=csv_data&entity=customers, see register-import-link.ts).
+  const [entity, setEntity] = useState<CsvDataEntity | null>(initialEntity ?? 'opening_balance')
 
   return (
     <div className="space-y-6">
@@ -2351,16 +2368,22 @@ const MedusaPanel = getSettingsPanel('medusa')
 
 type ImportMode = null | 'psd2' | 'stripe' | 'woocommerce' | 'shopify' | 'zettle' | 'medusa' | 'bank' | 'skattekonto' | 'sie' | 'underlag' | 'csv_data' | 'migration'
 
+// Query params the URL sync effect turns into an open mode (and its
+// preselects). "Tillbaka till val" removes them.
+const DEEP_LINK_MODE_PARAMS = ['mode', 'migration', 'provider', 'entity']
+
 export default function ImportPage() {
   const { isSandbox, role } = useCompany()
   const [mode, setMode] = useState<ImportMode>(null)
   const [initialProvider, setInitialProvider] = useState<string | null>(null)
+  const [initialCsvEntity, setInitialCsvEntity] = useState<CsvDataEntity | null>(null)
   const [view, setView] = useState<'import' | 'export'>('import')
   const [sieDialogOpen, setSieDialogOpen] = useState(false)
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false)
   const [cloudOpen, setCloudOpen] = useState(false)
   const [sieHistoryOpen, setSieHistoryOpen] = useState(false)
   const [bankFileHistoryOpen, setBankFileHistoryOpen] = useState(false)
+  const [registerHistoryOpen, setRegisterHistoryOpen] = useState(false)
   const [userId, setUserId] = useState('')
   const [exportPeriodId, setExportPeriodId] = useState<string | null>(null)
   const [exportExcludeClosing, setExportExcludeClosing] = useState(true)
@@ -2398,6 +2421,11 @@ export default function ImportPage() {
       // for every other mode so a stale preselect can't survive re-entry.
       setInitialProvider(
         modeParam === 'migration' && !isSandbox ? searchParams.get('provider') : null
+      )
+      // Same for the register list pages' "Importera" button: open the
+      // CSV/Excel wizard on that register instead of on opening balances.
+      setInitialCsvEntity(
+        modeParam === 'csv_data' ? parseCsvDataEntity(searchParams.get('entity')) : null
       )
     }
     const viewParam = searchParams.get('view')
@@ -2617,6 +2645,12 @@ export default function ImportPage() {
                   expanded={bankFileHistoryOpen}
                   onClick={() => setBankFileHistoryOpen((v) => !v)}
                 />
+                <ImportRow
+                  title={t('register_history_title')}
+                  sub={t('register_history_description')}
+                  expanded={registerHistoryOpen}
+                  onClick={() => setRegisterHistoryOpen((v) => !v)}
+                />
               </div>
               {sieHistoryOpen && (
                 <div className="mt-6" id="sie-import-history">
@@ -2626,6 +2660,11 @@ export default function ImportPage() {
               {bankFileHistoryOpen && (
                 <div className="mt-6">
                   <BankFileImportHistory />
+                </div>
+              )}
+              {registerHistoryOpen && (
+                <div className="mt-6">
+                  <RegisterImportHistory />
                 </div>
               )}
             </div>
@@ -2729,6 +2768,16 @@ export default function ImportPage() {
             // preselect must be cleared here too or a re-entered migration
             // mode would auto-jump again.
             setInitialProvider(null)
+            setInitialCsvEntity(null)
+            // A deep link also left the mode in the URL. Drop it, or the next
+            // URL change (the Exportera tab's router.replace keeps every
+            // param) re-runs the sync effect above and reopens the mode.
+            const params = new URLSearchParams(searchParams.toString())
+            if (DEEP_LINK_MODE_PARAMS.some((key) => params.has(key))) {
+              DEEP_LINK_MODE_PARAMS.forEach((key) => params.delete(key))
+              const qs = params.toString()
+              router.replace(qs ? `/import?${qs}` : '/import', { scroll: false })
+            }
           }}
         >
           <ArrowLeft className="mr-2 h-4 w-4" />
@@ -2812,7 +2861,7 @@ export default function ImportPage() {
           exactly the manual path the SIE preview offers on an IB imbalance. */}
       {mode === 'sie' && <SIEImportWizard key={searchParams.get('job') ?? 'new'} onOpenManualOpeningBalances={() => setMode('csv_data')} />}
       {mode === 'underlag' && <UnderlagImportWizard />}
-      {mode === 'csv_data' && <CSVDataImportWizard />}
+      {mode === 'csv_data' && <CSVDataImportWizard initialEntity={initialCsvEntity} />}
       {mode === 'migration' && (
         <MigrationWizard userId={userId} initialProvider={initialProvider ?? undefined} />
       )}

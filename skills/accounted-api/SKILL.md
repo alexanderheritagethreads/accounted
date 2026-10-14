@@ -8,7 +8,7 @@ description: >-
   transactions and reconciliation, payroll (lön), VAT/moms and financial
   reports, SIE import/export, documents, webhooks. Covers auth with
   gnubok_sk_ API keys, conventions (dry-run, idempotency, cursor
-  pagination, scopes), and all 291 endpoints.
+  pagination, scopes), and all 294 endpoints.
 ---
 
 <!-- GENERATED FILE, do not edit. Source: lib/api/v1 registry + scripts/api-skill/overlays. Regenerate with `npm run apiskill:generate`. -->
@@ -149,7 +149,7 @@ call can undo it, e.g. invoice credit).
 
 ## Endpoint index
 
-API version `2026-05-12`, 291 operations. Paths are shown without
+API version `2026-05-12`, 294 operations. Paths are shown without
 their `/api/v1` prefix (full base URL: `https://app.gnubok.se/api/v1`).
 
 ### Core (11)
@@ -195,7 +195,7 @@ POST /companies/{companyId}/journal-entries/no-document-required : Mark many pos
 POST /companies/{companyId}/voucher-gap-explanations : Document a gap in the verifikationsserie (BFL 5 kap 6-7 §§) [scope:bookkeeping:write risk:low idempotent dry-run]
 ```
 
-### Periods and registers (47)
+### Periods and registers (49)
 
 Full detail: [references/periods.md](references/periods.md)
 
@@ -240,6 +240,8 @@ POST /companies/{companyId}/fiscal-periods/{id}/lock : Lock a fiscal period (no 
 POST /companies/{companyId}/fiscal-periods/{id}/opening-balances : Generate opening-balance verifikation for the next fiscal period [scope:bookkeeping:write risk:high idempotent reversible]
 POST /companies/{companyId}/fiscal-periods/{id}/opening-balances/correct : Correct a year's ingående balanser by storno: the full corrected IB replaces the old one [scope:bookkeeping:write risk:high idempotent dry-run]
 POST /companies/{companyId}/fiscal-periods/{id}/opening-balances/manual : Book a fiscal year's ingående balanser (IB) from explicit lines, for a company new to Accounted [scope:bookkeeping:write risk:high idempotent dry-run]
+GET /companies/{companyId}/fiscal-periods/{id}/opening-balances/split-per-project : Preview splitting a year's ingående balanser per project from the previous year's tagged closing balances [scope:reports:read risk:low idempotent]
+POST /companies/{companyId}/fiscal-periods/{id}/opening-balances/split-per-project : Split a year's ingående balanser per project, inside the same IB verifikat (inline rättelse) [scope:bookkeeping:write risk:high idempotent dry-run]
 POST /companies/{companyId}/fiscal-periods/{id}/reopen-external : Undo klarmarkera: reopen a year marked closed in the previous system [scope:bookkeeping:write risk:high idempotent dry-run reversible]
 POST /companies/{companyId}/fiscal-periods/{id}/unlock : Unlock a locked (not closed) fiscal year [scope:bookkeeping:write risk:high idempotent dry-run reversible]
 POST /companies/{companyId}/fiscal-periods/{id}/year-end : Execute year-end closing (currency revaluation + closing entry) [scope:bookkeeping:write risk:high idempotent]
@@ -517,7 +519,7 @@ DELETE /companies/{companyId}/assets/{id} : Delete an asset that never reached t
 POST /companies/{companyId}/assets/{id}/dispose : Dispose a fixed asset and post the avyttring voucher [scope:bookkeeping:write risk:medium idempotent dry-run reversible]
 ```
 
-### Webhooks (9)
+### Webhooks (10)
 
 Full detail: [references/webhooks.md](references/webhooks.md)
 
@@ -530,6 +532,7 @@ DELETE /companies/{companyId}/webhooks/{id} : Delete a webhook subscription [sco
 GET /companies/{companyId}/webhooks/{id}/deliveries : List deliveries for a webhook subscription [scope:webhooks:manage risk:low idempotent]
 POST /companies/{companyId}/webhooks/{id}/rotate-secret : Rotate the HMAC signing secret on a webhook [scope:webhooks:manage risk:medium]
 POST /companies/{companyId}/webhooks/{id}/test : Send a synthetic test event to a webhook [scope:webhooks:manage risk:low]
+POST /companies/{companyId}/webhooks/{id}/verify : Verify a webhook endpoint's ownership now [scope:webhooks:manage risk:low]
 POST /webhook-deliveries/{id}/retry : Retry a webhook delivery [scope:webhooks:manage risk:medium]
 ```
 

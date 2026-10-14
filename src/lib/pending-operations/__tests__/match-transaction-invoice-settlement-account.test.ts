@@ -147,6 +147,8 @@ describe('commitPendingOperation: match_transaction_invoice settlement account r
     const { supabase, enqueue, findCalls } = createQueuedMockSupabase()
     const matchedHandler = vi.fn()
     eventBus.on('invoice.match_confirmed', matchedHandler)
+    const paidHandler = vi.fn()
+    eventBus.on('invoice.paid', paidHandler)
     enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
     enqueue({
       data: {
@@ -227,6 +229,16 @@ describe('commitPendingOperation: match_transaction_invoice settlement account r
         }),
       }),
     )
+    // The agent-approved match settled the invoice in full: invoice.paid
+    // fires once, exactly as on the dashboard and v1 match routes.
+    expect(paidHandler).toHaveBeenCalledTimes(1)
+    expect(paidHandler).toHaveBeenCalledWith({
+      invoice: expect.objectContaining({ id: 'inv-1', status: 'paid', remaining_amount: 0 }),
+      paymentAmount: 12500,
+      paymentDate: '2026-05-12',
+      userId: 'user-1',
+      companyId: 'company-1',
+    })
     // Issue #1259: the invoice is settled, so every OTHER transaction still
     // carrying a suggestion pointer at it is retired; this op's own row is
     // cleared by the link update.
@@ -238,6 +250,10 @@ describe('commitPendingOperation: match_transaction_invoice settlement account r
 
   it('leaves the suggestions alone on a partial payment: the invoice is still matchable', async () => {
     const { supabase, enqueue } = createQueuedMockSupabase()
+    const matchedHandler = vi.fn()
+    eventBus.on('invoice.match_confirmed', matchedHandler)
+    const paidHandler = vi.fn()
+    eventBus.on('invoice.paid', paidHandler)
     enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
     enqueue({
       data: {
@@ -280,6 +296,9 @@ describe('commitPendingOperation: match_transaction_invoice settlement account r
     expect(result.status).toBe('committed')
     expect(result.data).toMatchObject({ invoice_status: 'partially_paid' })
     expect(mockClearSuggestions).not.toHaveBeenCalled()
+    // Money is still owed: the match is confirmed, the invoice is not paid.
+    expect(matchedHandler).toHaveBeenCalledTimes(1)
+    expect(paidHandler).not.toHaveBeenCalled()
   })
 
   it('defaults to 1930 when the transaction has no linked cash account', async () => {
@@ -446,6 +465,76 @@ describe('commitPendingOperation: match_transaction_invoice settlement account r
     )
     const invoiceUpdate = findCalls('invoices', 'update').at(-1)?.[0]
     expect(invoiceUpdate).toMatchObject({
+      status: 'paid',
+      paid_amount: 12499.63,
+      remaining_amount: 0,
+    })
+  })
+
+  it('kontantmetod: the cash entry books 1930 at the bank row and the öre on 3740 (cash-bank-match-ore)', async () => {
+    // The real cash entry generator, fed the transaction the executor passes:
+    // 12 500 on a never-booked 12 499,63 invoice.
+    const actual = await vi.importActual<typeof import('@/lib/bookkeeping/invoice-entries')>(
+      '@/lib/bookkeeping/invoice-entries',
+    )
+    mockCreateCashEntry.mockImplementationOnce(actual.createInvoiceCashEntry)
+    const { supabase, enqueue, findCalls } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({
+      data: {
+        id: 'tx-1',
+        company_id: 'company-1',
+        amount: 12500,
+        currency: 'SEK',
+        date: '2026-05-12',
+        invoice_id: null,
+        journal_entry_id: null,
+        cash_account_id: null,
+      },
+      error: null,
+    }) // transaction fetch
+    enqueue({
+      data: {
+        id: 'inv-1',
+        invoice_number: 'F-2026001',
+        status: 'sent',
+        total: 12499.63,
+        subtotal: 9999.7,
+        vat_amount: 2499.93,
+        vat_treatment: 'standard_25',
+        remaining_amount: 12499.63,
+        paid_amount: 0,
+        currency: 'SEK',
+        exchange_rate: null,
+        journal_entry_id: null,
+        customer: { name: 'Test AB' },
+      },
+      error: null,
+    }) // invoice fetch
+    enqueue({ data: { accounting_method: 'cash', entity_type: 'aktiebolag' }, error: null }) // settings
+    enqueue({ data: [], error: null }) // resolveSettlementAccount: no enabled cash accounts -> 1930
+    enqueue({ data: [{ id: 'inv-1' }], error: null }) // invoice CAS update
+    enqueue({ data: { id: 'ip-1' }, error: null }) // invoice_payments insert
+    enqueue({ data: null, error: null }) // transactions update (link)
+    enqueue({ data: null, error: null }) // dispatcher pending_operations update
+
+    const op = makePendingOp({ params: { transaction_id: 'tx-1', invoice_id: 'inv-1' } })
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('committed')
+    expect(mockCreateCashEntry).toHaveBeenCalledTimes(1)
+    const input = mockCreateJournalEntry.mock.calls[0][3] as {
+      source_type: string
+      lines: Array<{ account_number: string; debit_amount: number; credit_amount: number }>
+    }
+    expect(input.source_type).toBe('invoice_cash_payment')
+    expect(input.lines.map((l) => [l.account_number, l.debit_amount, l.credit_amount])).toEqual([
+      ['1930', 12500, 0],
+      ['3001', 0, 9999.7],
+      ['2611', 0, 2499.93],
+      ['3740', 0, 0.37],
+    ])
+    expect(findCalls('invoices', 'update').at(-1)?.[0]).toMatchObject({
       status: 'paid',
       paid_amount: 12499.63,
       remaining_amount: 0,
@@ -626,5 +715,63 @@ describe('commitPendingOperation: match_transaction_invoice settlement account r
     expect(result.status).toBe('failed')
     expect(result.http_status).toBe(400)
     expect(mockCreateJournalEntry).not.toHaveBeenCalled()
+  })
+
+  it('stays the authority on an overshoot of 1 kr or more: refused before anything is posted (crm#253)', async () => {
+    // Staging refuses this now too (planTransactionInvoiceMatch, shared), but
+    // an op staged before that, or one whose invoice changed since, still hits
+    // the same guard here with the same threshold.
+    const { supabase, enqueue, findCalls } = createQueuedMockSupabase()
+    enqueue({ data: { id: 'op-1' }, error: null }) // CAS claim
+    enqueue({
+      data: {
+        id: 'tx-1',
+        company_id: 'company-1',
+        amount: 814,
+        currency: 'SEK',
+        date: '2026-09-30',
+        invoice_id: null,
+        journal_entry_id: 'je-categorized',
+        cash_account_id: null,
+      },
+      error: null,
+    }) // transaction fetch (categorized: a storno would follow a pass)
+    enqueue({
+      data: {
+        id: 'inv-1',
+        invoice_number: 'F-2026001',
+        status: 'sent',
+        total: 812.40,
+        remaining_amount: 812.40,
+        paid_amount: 0,
+        currency: 'SEK',
+        exchange_rate: null,
+        journal_entry_id: null,
+        customer: { name: 'Test AB' },
+      },
+      error: null,
+    }) // invoice fetch
+    enqueue({ data: null, error: null }) // dispatcher pending_operations update
+
+    const op = makePendingOp({ params: { transaction_id: 'tx-1', invoice_id: 'inv-1' } })
+    const result = await commitPendingOperation(supabase as never, 'user-1', 'company-1', op)
+
+    expect(result.status).toBe('failed')
+    expect(result.http_status).toBe(400)
+    expect(result.error).toContain('Transaktionsbeloppet är större än fakturans återstående belopp')
+    expect(result.code).toBe('MATCH_AMOUNT_EXCEEDS_REMAINING')
+    expect(mockCreateJournalEntry).not.toHaveBeenCalled()
+    expect(mockCreateCashEntry).not.toHaveBeenCalled()
+    expect(mockFetchExchangeRate).not.toHaveBeenCalled()
+    // The op row keeps the code and the amounts for the approver and agent.
+    const rejected = findCalls('pending_operations', 'update').at(-1)?.[0] as {
+      status: string
+      result_data: Record<string, unknown>
+    }
+    expect(rejected.status).toBe('rejected')
+    expect(rejected.result_data).toMatchObject({
+      error_code: 'MATCH_AMOUNT_EXCEEDS_REMAINING',
+      details: { currency: 'SEK', transaction_amount: 814, remaining_amount: 812.40, excess: 1.60 },
+    })
   })
 })

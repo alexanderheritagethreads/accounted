@@ -138,6 +138,7 @@ Request body:
   notes?: string,
   payment_link_url?: string | "",
   payment_link_auto?: boolean,
+  qr_mode?: "auto" | "bank_app" | "swish" | "payment_link" | "none" | null,
   deduction_personnummer?: string,
   deduction_housing_designation?: string,
   deduction_apartment_number?: string,
@@ -347,6 +348,7 @@ Request body:
   notes?: string | unknown,
   default_dimensions?: Record<string, string>,
   payment_cash_account_id?: string | unknown,
+  qr_mode?: "auto" | "bank_app" | "swish" | "payment_link" | "none" | null,
   vat_treatment?: "standard" | "export" | "reverse_charge" | null,
   delivery_country?: string | null,
   items?: { line_type?: "product" | "text", description: string, quantity: number, unit: string, unit_price: number, discount_percent?: number | null, vat_rate?: number, article_id?: string | null, revenue_account?: string | null, sales_order_item_id?: string | null, deduction_type?: "rot" | "rut" | "gron_teknik" | null, labor_hours?: number | null, work_type?: string | null, housing_designation?: string | null, apartment_number?: string | null, brf_org_number?: string | "" | null, accrual_period_start?: string | null, accrual_period_end?: string | null, accrual_balance_account?: string | null, dimensions?: Record<string, string> }[]
@@ -706,7 +708,7 @@ Example response `200`:
 **Transition a draft invoice to sent (without emailing).**
 `scope:invoices:write · risk:medium · idempotent · dry-run`
 
-Marks a draft invoice as sent: for invoices delivered outside Accounted (an external e-invoice provider, postal, manual email). Not needed after a successful Peppol send (POST /invoices/{id}/send-peppol, gnubok_send_invoice_peppol or the dashboard): that flow issues the invoice itself. If a Peppol send reports that the invoice was sent but could not be marked as sent (issuance.ok=false with warning PEPPOL_SENT_NOT_ISSUED, invoice still in draft), :mark-sent is the documented recovery and completes the issuance; a number already allocated is reused, never consumed twice. Peppol sending needs a per-company access grant (POST /peppol/access-request, or Inställningar > Fakturering (Settings > Invoicing) in the dashboard; check an invoice with GET /invoices/{id}/peppol): senders whose org number is not a personnummer (every legal form except enskild firma), standard invoices only, Swedish org-number buyers whose org number is not a personnummer, SEK with taxable Swedish VAT at 6/12/25 % only, no ROT/RUT deductions. Allocates the F-series invoice_number atomically (ML 17 kap 24§ p.2). When the company books at issue (faktureringsmetoden without defer_invoice_booking), also posts the invoice journal entry (Debit AR 1510 / Credit revenue + output VAT); under defer_invoice_booking the invoice is marked sent without a verifikat and is booked afterwards with POST /invoices/{id}/book. Emits invoice.sent. Idempotent and dry-runnable. The companion :send action (PR-B-2b-3) adds PDF rendering and email delivery on top of this same flow.
+Marks a draft invoice as sent: for invoices delivered outside Accounted (an external e-invoice provider, postal, manual email). Not needed after a successful Peppol send (POST /invoices/{id}/send-peppol, gnubok_send_invoice_peppol or the dashboard): that flow issues the invoice itself. If a Peppol send reports that the invoice was sent but could not be marked as sent (issuance.ok=false with warning PEPPOL_SENT_NOT_ISSUED, invoice still in draft), :mark-sent is the documented recovery and completes the issuance; a number already allocated is reused, never consumed twice. Peppol sending needs a per-company access grant (POST /peppol/access-request, or Inställningar > Kopplingar > E-faktura via Peppol (Settings > Connections > E-invoicing via Peppol) in the dashboard; check an invoice with GET /invoices/{id}/peppol): senders whose org number is not a personnummer (every legal form except enskild firma), standard invoices only, Swedish org-number buyers whose org number is not a personnummer, SEK with taxable Swedish VAT at 6/12/25 % only, no ROT/RUT deductions. Allocates the F-series invoice_number atomically (ML 17 kap 24§ p.2). When the company books at issue (faktureringsmetoden without defer_invoice_booking), also posts the invoice journal entry (Debit AR 1510 / Credit revenue + output VAT); under defer_invoice_booking the invoice is marked sent without a verifikat and is booked afterwards with POST /invoices/{id}/book. Emits invoice.sent. Idempotent and dry-runnable. The companion :send action (PR-B-2b-3) adds PDF rendering and email delivery on top of this same flow.
 
 **Use when:** You delivered the invoice through a channel other than Accounted's email or Peppol send (an external e-invoice provider, postal, your own SMTP) and need to record it as sent so the F-series number is allocated and the journal entry is posted; or a Peppol send was accepted by the network but reported that the invoice could not be marked as sent.
 **Do not use for:** Sending the invoice via Accounted email: use :send (PR-B-2b-3) for that. Marking an already-sent invoice as paid: use :mark-paid (PR-B-2b-2).
@@ -779,6 +781,7 @@ Returns the invoice as application/pdf. The descriptive filename contains compan
 - Drafts (no invoice_number yet) render with an "utkast" filename. The PDF carries no F-series number: do not treat it as a finalized invoice.
 - PDF rendering can take several hundred milliseconds for invoices with many line items. Cache on the client if requesting repeatedly.
 - Credit notes embed the original invoice's löpnummer per ML 17 kap 22-23§: if the original was hard-deleted (not possible via Accounted but theoretically via a manual DB edit), the reference is omitted.
+- An invoice without a customer (customer_id null, e.g. its customer was deleted) has no buyer to print: 409 INVOICE_CUSTOMER_MISSING. Set customer_id on the draft or delete it.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -1057,13 +1060,14 @@ Example response `200`:
 
 The full send pipeline: preflight PDF render → allocate F-series number atomically → final PDF render → issue: flip status to sent and post the journal entry (real invoice, unless kontantmetoden or defer_invoice_booking; a deferred invoice is booked afterwards with POST /invoices/{id}/book) BEFORE the email, fail closed → email via the email extension (Resend or SMTP; PDF attachment, copy to company) → archive PDF as underlag → emit invoice.sent. A refused journal entry returns the engine's error and nothing is sent; post-email failures surface as warnings.
 
-**Use when:** You want Accounted to deliver the invoice to the customer via email. Peppol e-invoices go through POST /invoices/{id}/send-peppol (check readiness first with GET /invoices/{id}/peppol; per-company access grant requested with POST /peppol/access-request or under Inställningar > Fakturering (Settings > Invoicing); senders whose org number is not a personnummer (every legal form except enskild firma), standard invoices only, Swedish org-number buyers whose org number is not a personnummer, SEK with taxable Swedish VAT at 6/12/25 % only, no ROT/RUT deductions). A successful Peppol send issues the invoice itself, so do not call :mark-sent after it; only if it reports that the invoice was sent via Peppol but could not be marked as sent (issuance.ok=false) does :mark-sent complete the issuance. For invoices delivered through another channel (an external e-invoice provider, postal, own SMTP) use :mark-sent instead.
+**Use when:** You want Accounted to deliver the invoice to the customer via email. Peppol e-invoices go through POST /invoices/{id}/send-peppol (check readiness first with GET /invoices/{id}/peppol; per-company access grant requested with POST /peppol/access-request or under Inställningar > Kopplingar > E-faktura via Peppol (Settings > Connections > E-invoicing via Peppol); senders whose org number is not a personnummer (every legal form except enskild firma), standard invoices only, Swedish org-number buyers whose org number is not a personnummer, SEK with taxable Swedish VAT at 6/12/25 % only, no ROT/RUT deductions). A successful Peppol send issues the invoice itself, so do not call :mark-sent after it; only if it reports that the invoice was sent via Peppol but could not be marked as sent (issuance.ok=false) does :mark-sent complete the issuance. For invoices delivered through another channel (an external e-invoice provider, postal, own SMTP) use :mark-sent instead.
 **Do not use for:** Re-sending an already-sent invoice (returns 409 INVOICE_UPDATE_NOT_DRAFT). Sending a delivery note (no F-series lifecycle). Sending a credit note (use the :credit endpoint to issue the kreditfaktura; subsequent re-send of the credit note via :mark-sent is the supported path).
 
 **Pitfalls:**
 - Idempotency-Key is mandatory.
 - Email service must be configured: without RESEND_API_KEY + RESEND_FROM_EMAIL (or an SMTP relay via EMAIL_PROVIDER=smtp) the endpoint returns 503 INVOICE_SEND_EMAIL_NOT_CONFIGURED.
 - Customer must have an email address. 400 INVOICE_SEND_NO_CUSTOMER_EMAIL otherwise.
+- An invoice without a customer (customer_id null, e.g. its customer was deleted) is refused with 409 INVOICE_CUSTOMER_MISSING before anything changes. Set customer_id on the draft or delete it.
 - A cancelled invoice is rejected (400 INVOICE_SEND_CANCELLED): its F-series number is preserved for compliance but the document is not a valid faktura.
 - The journal entry is posted before the email leaves: a refusal (400 MANDATORY_DIMENSION_MISSING or DIMENSION_VALIDATION_FAILED, a locked period, ...) returns the engine's error, the invoice stays in `draft` and no email is sent. Fix the tag or the period and send again.
 - Email failure with nothing booked (kontantmetoden, deferred booking, proforma) returns 502 INVOICE_SEND_PROVIDER_FAILED with the invoice back in `draft`; the F-series number stays consumed (same orphan window as :mark-sent). Email failure after the journal entry posted returns 502 INVOICE_SEND_ISSUED_NOT_DELIVERED: the invoice stays issued (`sent`, booked, PDF archived) and must be delivered another way; do not call :send again.
@@ -1071,6 +1075,7 @@ The full send pipeline: preflight PDF render → allocate F-series number atomic
 - additional_cc and additional_bcc require the API key user to be an owner or admin of the company.
 - The deprecated cc response field contains only the first address. Use cc_addresses for the complete CC list.
 - BCC recipients are retained only in the restricted delivery archive and are omitted from normal and dry-run responses.
+- email_subject and email_body replace the subject and the message of this one email (the greeting and sign-off stay) and take the same placeholders as the company email texts; they are not stored on the invoice. Empty or whitespace-only means the company or stock text.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -1080,7 +1085,12 @@ The full send pipeline: preflight PDF render → allocate F-series number atomic
 
 Request body:
 ```ts
-{ additional_cc?: string[], additional_bcc?: string[] }
+{
+  additional_cc?: string[],
+  additional_bcc?: string[],
+  email_subject?: string | null,
+  email_body?: string | null
+}
 ```
 
 Example request:
@@ -1356,7 +1366,7 @@ Bulk-creation endpoint. Each invoice in the request array is validated and inser
 Request body:
 ```ts
 {
-  invoices: { customer_id: string, invoice_date: string, due_date: string, delivery_date?: string | "", currency: "SEK" | "EUR" | "USD" | "GBP" | "NOK" | "DKK" | "CHF", document_type?: "invoice" | "proforma" | "delivery_note" | "quote", valid_until?: string | "", your_reference?: string, our_reference?: string, invoice_marking?: string, notes?: string, payment_link_url?: string | "", payment_link_auto?: boolean, deduction_personnummer?: string, deduction_housing_designation?: string, deduction_apartment_number?: string, deduction_brf_org_number?: string | "", save_as_draft?: boolean, ore_rounding?: boolean, default_dimensions?: Record<string, string>, is_self_billed?: boolean, external_invoice_number?: string | "", self_billing_agreement_ref?: string, received_date?: string | "", payment_cash_account_id?: string | "" | null, vat_treatment?: "standard" | "export" | "reverse_charge" | null, delivery_country?: string | null, items: { line_type?: "product" | "text", description: string, quantity: number, unit: string, unit_price: number, discount_percent?: number | null, vat_rate?: number, article_id?: string | null, revenue_account?: string | null, sales_order_item_id?: string | null, deduction_type?: "rot" | "rut" | "gron_teknik" | null, labor_hours?: number | null, work_type?: string | null, housing_designation?: string | null, apartment_number?: string | null, brf_org_number?: string | "" | null, accrual_period_start?: string | null, accrual_period_end?: string | null, accrual_balance_account?: string | null, dimensions?: Record<string, string> }[] }[],
+  invoices: { customer_id: string, invoice_date: string, due_date: string, delivery_date?: string | "", currency: "SEK" | "EUR" | "USD" | "GBP" | "NOK" | "DKK" | "CHF", document_type?: "invoice" | "proforma" | "delivery_note" | "quote", valid_until?: string | "", your_reference?: string, our_reference?: string, invoice_marking?: string, notes?: string, payment_link_url?: string | "", payment_link_auto?: boolean, qr_mode?: "auto" | "bank_app" | "swish" | "payment_link" | "none" | null, deduction_personnummer?: string, deduction_housing_designation?: string, deduction_apartment_number?: string, deduction_brf_org_number?: string | "", save_as_draft?: boolean, ore_rounding?: boolean, default_dimensions?: Record<string, string>, is_self_billed?: boolean, external_invoice_number?: string | "", self_billing_agreement_ref?: string, received_date?: string | "", payment_cash_account_id?: string | "" | null, vat_treatment?: "standard" | "export" | "reverse_charge" | null, delivery_country?: string | null, items: { line_type?: "product" | "text", description: string, quantity: number, unit: string, unit_price: number, discount_percent?: number | null, vat_rate?: number, article_id?: string | null, revenue_account?: string | null, sales_order_item_id?: string | null, deduction_type?: "rot" | "rut" | "gron_teknik" | null, labor_hours?: number | null, work_type?: string | null, housing_designation?: string | null, apartment_number?: string | null, brf_org_number?: string | "" | null, accrual_period_start?: string | null, accrual_period_end?: string | null, accrual_balance_account?: string | null, dimensions?: Record<string, string> }[] }[],
   all_or_nothing?: boolean
 }
 ```

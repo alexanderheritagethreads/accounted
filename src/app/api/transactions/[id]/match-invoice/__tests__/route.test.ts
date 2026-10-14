@@ -536,6 +536,22 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
         }),
       }),
     )
+    // A bank match that settles the invoice in full is the invoice.paid
+    // transition: webhook subscribers hear it exactly once.
+    const paidEmits = vi
+      .mocked(eventBus.emit)
+      .mock.calls.filter(([event]) => event.type === 'invoice.paid')
+    expect(paidEmits).toHaveLength(1)
+    expect(paidEmits[0][0]).toMatchObject({
+      type: 'invoice.paid',
+      payload: {
+        invoice: expect.objectContaining({ id: VALID_UUID, status: 'paid', remaining_amount: 0 }),
+        paymentAmount: 12500,
+        paymentDate: '2024-06-15',
+        userId: 'user-1',
+        companyId: 'company-1',
+      },
+    })
 
     // Clearing path now builds lines via buildInvoicePaymentClearingLines and
     // posts via createJournalEntry directly (FX fix PR #614 round 6). For a
@@ -762,6 +778,10 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     // Issue #1259: a partially paid invoice is still matchable, so the sibling
     // suggestions must survive.
     expect(mockClearSuggestions).not.toHaveBeenCalled()
+    // Still owed money: the match is confirmed, the invoice is not paid.
+    const types = vi.mocked(eventBus.emit).mock.calls.map(([event]) => event.type)
+    expect(types).toContain('invoice.match_confirmed')
+    expect(types).not.toContain('invoice.paid')
   })
 
   // Issue #1259: full settlement retires the pointer at this invoice from every
@@ -871,6 +891,56 @@ describe('POST /api/transactions/[id]/match-invoice', () => {
     expect(status).toBe(400)
     expect(body.error.code).toBe('INVOICE_PAID_CASH_PARTIAL_UNSUPPORTED')
     expect(mockCreateInvoiceCashEntry).not.toHaveBeenCalled()
+  })
+
+  it('kontantmetod whole-krona match: the verifikat books the bank row and 3740, the invoice settles (cash-bank-match-ore)', async () => {
+    // 1 235 on a 1 234,56 never-booked invoice: the plan absorbs the 0,44, so
+    // the rows the route checks against the chart must carry it on 3740, and
+    // createInvoiceCashEntry gets the same bank row to book from.
+    const tx = makeTransaction({ id: 'tx-1', amount: 1235, currency: 'SEK', invoice_id: null, date: '2024-06-15' })
+    const invoice = makeInvoice({
+      id: VALID_UUID,
+      status: 'sent',
+      currency: 'SEK',
+      total: 1234.56,
+      subtotal: 987.65,
+      vat_amount: 246.91,
+      remaining_amount: 1234.56,
+      paid_amount: 0,
+    })
+
+    enqueue({ data: tx, error: null })
+    enqueue({ data: invoice, error: null })
+    enqueue({ data: [], error: null }) // hard-duplicate check
+    enqueue({ data: { accounting_method: 'cash', entity_type: 'enskild_firma' }, error: null })
+    enqueue({ data: [], error: null }) // resolveSettlementAccount: no enabled cash accounts -> 1930
+
+    mockCreateInvoiceCashEntry.mockResolvedValue({ id: 'je-cash' })
+
+    enqueue({ data: [{ id: VALID_UUID }], error: null }) // update invoice
+    enqueue({ data: { id: 'ip-1' }, error: null }) // insert invoice_payments
+    enqueue({ data: null, error: null }) // update transaction
+
+    const request = createMockRequest('/api/transactions/tx-1/match-invoice', {
+      method: 'POST',
+      body: { invoice_id: VALID_UUID },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'tx-1' }))
+    const { status, body } = await parseJsonResponse<{ invoice_status: string; journal_entry_id: string }>(response)
+
+    expect(status).toBe(200)
+    expect(body.invoice_status).toBe('paid')
+    expect(body.journal_entry_id).toBe('je-cash')
+    expect(mockFindUnresolvableAccounts.mock.calls[0][2]).toContain('3740')
+    expect(mockCreateInvoiceCashEntry).toHaveBeenCalledWith(
+      expect.anything(), 'company-1', 'user-1', expect.anything(), '2024-06-15',
+      'enskild_firma', undefined, '1930', tx,
+    )
+    expect(findCalls('invoices', 'update').at(-1)?.[0]).toMatchObject({
+      status: 'paid',
+      paid_amount: 1234.56,
+      remaining_amount: 0,
+    })
   })
 
   it('cash method ignores cash entry when invoice was already booked (accrual→cash migration)', async () => {

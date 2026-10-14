@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { createLogger } from '@/lib/logger'
-import { getSkatteverketEnvironment, skvRequestWithAuth, SkatteverketAuthError } from './api-client'
+import { getSkatteverketEnvironment, skvRequestWithAuth, SkatteverketAuthError, type SkvAudit } from './api-client'
+import type { SkvAuditActor } from './audit'
 import type { SkvBehorighet } from './connection-store'
 
 const log = createLogger('skatteverket-ombud-client')
@@ -187,9 +188,25 @@ export class OmbudApiError extends Error {
   }
 }
 
-async function ombudRequest(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response> {
+/**
+ * Whose register call this is. A company's own (the grant lookup for its org
+ * number, its deep link) is audited against that company; 'ombud_register'
+ * marks Accounted's own calls as ombud that belong to no company (the
+ * whole-register listing, /roller): the transport logs those instead, since
+ * the audit table is per company.
+ */
+export type OmbudCaller = SkvAuditActor | 'ombud_register'
+
+function ombudAudit(caller: OmbudCaller, endpoint: string, huvudman?: string): SkvAudit {
+  if (caller === 'ombud_register') return { unaudited: 'ombud_register', operation: endpoint }
+  // Every company-scoped register call reads its answer with readJsonOrThrow,
+  // so a 2xx without JSON is the caller's error and must not be recorded 'ok'.
+  return { endpoint, ...caller, agRegistreradId: huvudman ?? null, expectJson: true }
+}
+
+async function ombudRequest(method: 'GET' | 'POST', path: string, audit: SkvAudit, body?: unknown): Promise<Response> {
   try {
-    return await skvRequestWithAuth({ mode: 'system' }, method, path, body, {
+    return await skvRequestWithAuth({ mode: 'system' }, method, path, audit, body, {
       baseUrl: getOmbudApiBaseUrl(),
       accept: 'application/json',
     })
@@ -256,10 +273,15 @@ export type ListOmbudGrantsFilter = {
  * pairs that with its empty-register guard (a zero result downgrades nothing).
  */
 export async function listOmbudGrants(
-  filter: ListOmbudGrantsFilter = {},
+  filter: ListOmbudGrantsFilter,
+  caller: OmbudCaller,
   options: { emptyOn404?: boolean } = {}
 ): Promise<Behorighetspost[]> {
-  const response = await ombudRequest('GET', `/ombud/autentisieratOmbud${buildQuery(filter)}`)
+  const response = await ombudRequest(
+    'GET',
+    `/ombud/autentisieratOmbud${buildQuery(filter)}`,
+    ombudAudit(caller, 'ombud/autentisieratOmbud', filter.huvudman)
+  )
   if (response.status === 404 && options.emptyOn404) return []
   const json = await readJsonOrThrow(response, 'ombud/autentisieratOmbud')
   const rows = unwrapList(json, ['behorighetsposter', 'Behorighetsposter', 'behorigheter'], 'ombud/autentisieratOmbud')
@@ -270,9 +292,13 @@ export async function listOmbudGrants(
   return parsed.data
 }
 
-/** GET /roller: all rollbeteckningar with descriptions (or one, when filtered). */
+/**
+ * GET /roller: all rollbeteckningar with descriptions (or one, when filtered).
+ * A lookup about the register itself, never about a company: not audited in
+ * the company table (see OmbudCaller).
+ */
 export async function getOmbudRoleDescriptions(roll?: string): Promise<Rollbeskrivningspost[]> {
-  const response = await ombudRequest('GET', `/roller${buildQuery({ roll })}`)
+  const response = await ombudRequest('GET', `/roller${buildQuery({ roll })}`, ombudAudit('ombud_register', 'roller'))
   const json = await readJsonOrThrow(response, 'roller')
   const rows = unwrapList(json, ['rollbeskrivningsposter', 'Rollbeskrivningsposter', 'roller'], 'roller')
   const parsed = z.array(RollbeskrivningspostSchema).safeParse(rows)
@@ -333,6 +359,7 @@ export interface UtseOmbudDeepLink {
  */
 export async function createUtseOmbudDeepLink(
   huvudman: string,
+  actor: SkvAuditActor,
   keys: readonly SkvBehorighet[] = OMBUD_ROLE_KEYS,
   giltigTom?: string,
   now: Date = new Date()
@@ -345,6 +372,7 @@ export async function createUtseOmbudDeepLink(
   const response = await ombudRequest(
     'POST',
     `/ombud/autentisieratOmbud/huvudman/${encodeURIComponent(huvudman)}/djuplank/utseombud`,
+    ombudAudit(actor, 'system-connection/deeplink', huvudman),
     body
   )
   const json = await readJsonOrThrow(response, 'djuplank/utseombud')
@@ -397,6 +425,12 @@ export interface HuvudmanGrantSummary {
    * company decision.
    */
   recognized: boolean
+  /**
+   * Per behörighet, the latest giltigFrom (yyyy-mm-dd) among its ACTIVE
+   * posts: when the newest standing grant was signed. Null when none is
+   * active. Read through grantCountsFor, never on its own.
+   */
+  signedFrom: Record<SkvBehorighet, string | null>
 }
 
 /**
@@ -414,14 +448,55 @@ export function summarizeGrants(posts: Behorighetspost[], today: string): Map<st
     }
     let row = out.get(huvudman)
     if (!row) {
-      row = { huvudman, lasombud: false, moms_ombud: false, roles: [], recognized: false }
+      row = {
+        huvudman,
+        lasombud: false,
+        moms_ombud: false,
+        roles: [],
+        recognized: false,
+        signedFrom: { lasombud: null, moms_ombud: null },
+      }
       out.set(huvudman, row)
     }
     if (!row.roles.includes(post.roll)) row.roles.push(post.roll)
     const key = classifyOmbudRole(post)
     if (!key) continue
     row.recognized = true
-    if (isGrantActive(post, today)) row[key] = true
+    if (isGrantActive(post, today)) {
+      row[key] = true
+      const from = post.giltigFrom.slice(0, 10)
+      const latest = row.signedFrom[key]
+      if (!latest || from > latest) row.signedFrom[key] = from
+    }
   }
   return out
+}
+
+/**
+ * Whether a register grant counts for a company that opted in on `optInDay`
+ * (yyyy-mm-dd, the day its connection row was created for this org number).
+ *
+ * Org-number proof (founder decision 2026-10-02): a grant counts only when it
+ * was signed on or after the company's own opt-in. Org numbers are public and
+ * any tenant can type one; a grant signed BEFORE the tenant opted in was given
+ * to Accounted for someone else's use of the number (a former customer who
+ * left without withdrawing it), and must not be inherited. A grant signed
+ * after the opt-in was signed by a firmatecknare for this very connection.
+ */
+export function grantCountsFor(
+  summary: HuvudmanGrantSummary | undefined,
+  key: SkvBehorighet,
+  optInDay: string
+): boolean {
+  const from = summary?.signedFrom[key]
+  return Boolean(summary?.[key] && from && from >= optInDay)
+}
+
+/** True when the behörighet is active at Skatteverket but was signed before the opt-in. */
+export function grantPredatesOptIn(
+  summary: HuvudmanGrantSummary | undefined,
+  key: SkvBehorighet,
+  optInDay: string
+): boolean {
+  return Boolean(summary?.[key]) && !grantCountsFor(summary, key, optInDay)
 }

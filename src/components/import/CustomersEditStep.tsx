@@ -1,7 +1,9 @@
 'use client'
 
 import { useMemo, useState, useCallback } from 'react'
+import { useTranslations } from 'next-intl'
 import { ImportNotices } from '@/components/import/ImportNotices'
+import { PossibleDuplicateChoice } from '@/components/import/PossibleDuplicateChoice'
 import { makeNotice, type ImportNotice } from '@/lib/import/notices'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -12,7 +14,14 @@ import { Label } from '@/components/ui/label'
 import { Trash2, AlertTriangle, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { CustomerType } from '@/types'
-import type { AnnotatedCustomerRow } from '@/lib/import/customers/types'
+import type { AnnotatedCustomerRow, DetectedCustomerColumns } from '@/lib/import/customers/types'
+import { useCustomerReviewFields } from '@/components/import/register-review-fields'
+import {
+  RegisterColumnSummary,
+  RegisterRowDetails,
+  RowExpandButton,
+  useExpandedRows,
+} from '@/components/import/RegisterReviewDetails'
 
 let idCounter = 0
 const newId = () => `cust_row_${++idCounter}_${Date.now()}`
@@ -29,6 +38,10 @@ interface CustomersEditStepProps {
   error: string | null
   /** What the parser noticed about the file (lib/import/notices.ts). */
   notices?: ImportNotice[]
+  /** The file's header row, first rows and detected columns: the column summary. */
+  headers: string[]
+  previewRows: string[][]
+  detectedColumns: DetectedCustomerColumns
 }
 
 const TYPE_LABELS: Record<CustomerType, string> = {
@@ -45,14 +58,25 @@ export default function CustomersEditStep({
   isLoading,
   error,
   notices = [],
+  headers,
+  previewRows,
+  detectedColumns,
 }: CustomersEditStepProps) {
+  const tCustomers = useTranslations('customers')
+  const tMatch = useTranslations('import.register_match')
   const [rows, setRows] = useState<EditableCustomerRow[]>(() =>
     initialRows.map((r) => ({ ...r, id: newId() })),
   )
   const [updateDuplicates, setUpdateDuplicates] = useState(false)
+  const reviewFields = useCustomerReviewFields()
+  const [expanded, toggleExpanded] = useExpandedRows()
 
   const liveDuplicateCount = useMemo(
-    () => rows.filter((r) => r.duplicate_match !== null).length,
+    () => rows.filter((r) => r.duplicate_match !== null || !!r.confirmed_duplicate_of).length,
+    [rows],
+  )
+  const possibleDuplicateCount = useMemo(
+    () => rows.filter((r) => r.possible_duplicate).length,
     [rows],
   )
 
@@ -98,8 +122,10 @@ export default function CustomersEditStep({
             <RefreshCw className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />
             <div className="flex-1 space-y-2">
               <p className="text-sm">
-                <span className="font-medium">{liveDuplicateCount} rader</span> matchar befintliga
-                kunder (på orgnummer eller e-post).
+                {tMatch.rich('customers_matched', {
+                  count: liveDuplicateCount,
+                  strong: (c) => <span className="font-medium">{c}</span>,
+                })}
               </p>
               <div className="flex items-center gap-3">
                 <Switch
@@ -123,21 +149,29 @@ export default function CustomersEditStep({
           </div>
         )}
 
+        <RegisterColumnSummary
+          headers={headers}
+          previewRows={previewRows}
+          columns={detectedColumns}
+          fields={reviewFields}
+        />
+
         {/* Table */}
         <div className="overflow-x-auto rounded-lg border">
           <table className="w-full text-sm">
             <thead className="[&_th]:font-medium [&_th]:text-[11px] [&_th]:uppercase [&_th]:tracking-wider [&_th]:text-muted-foreground">
               <tr className="border-b">
+                <th className="px-3 py-2 text-left w-24">{tCustomers('col_customer_number')}</th>
                 <th className="px-3 py-2 text-left">Namn</th>
                 <th className="px-3 py-2 text-left w-44">Kundtyp</th>
                 <th className="px-3 py-2 text-left w-36">Orgnr</th>
                 <th className="px-3 py-2 text-left">E-post</th>
                 <th className="px-3 py-2 text-left w-32">Status</th>
-                <th className="px-3 py-2 w-10" />
+                <th className="px-3 py-2 w-24" />
               </tr>
             </thead>
             <tbody>
-              {rows.map((row) => (
+              {rows.map((row) => [
                 <tr
                   key={row.id}
                   className={cn(
@@ -145,6 +179,9 @@ export default function CustomersEditStep({
                     !row.is_valid && 'bg-destructive/5',
                   )}
                 >
+                  <td className="px-3 py-1.5 text-muted-foreground tabular-nums">
+                    {row.customer_number || '-'}
+                  </td>
                   <td className="px-3 py-1.5">
                     <Input
                       value={row.name}
@@ -185,7 +222,18 @@ export default function CustomersEditStep({
                           <AlertTriangle className="h-3.5 w-3.5" />
                         </span>
                       )}
-                      {row.duplicate_match ? (
+                      {row.possible_duplicate ? (
+                        <PossibleDuplicateChoice
+                          party="customer"
+                          existingName={row.possible_duplicate.existing_name}
+                          confirmed={row.confirmed_duplicate_of === row.possible_duplicate.customer_id}
+                          onChange={(same) =>
+                            updateRow(row.id, {
+                              confirmed_duplicate_of: same ? row.possible_duplicate!.customer_id : null,
+                            })
+                          }
+                        />
+                      ) : row.duplicate_match ? (
                         <span
                           className={cn(
                             'text-[11px] font-medium px-1.5 py-0.5 rounded-full',
@@ -205,16 +253,28 @@ export default function CustomersEditStep({
                     </div>
                   </td>
                   <td className="px-3 py-1.5">
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={() => deleteRow(row.id)}
-                    >
-                      <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-                    </Button>
+                    <div className="flex items-center justify-end gap-1">
+                      <RowExpandButton
+                        expanded={expanded.has(row.id)}
+                        onToggle={(trigger) => toggleExpanded(row.id, trigger)}
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => deleteRow(row.id)}
+                      >
+                        <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+                      </Button>
+                    </div>
                   </td>
-                </tr>
-              ))}
+                </tr>,
+                <RegisterRowDetails
+                  key={`${row.id}:details`}
+                  row={row}
+                  fields={reviewFields}
+                  colSpan={expanded.get(row.id)}
+                />,
+              ])}
             </tbody>
           </table>
         </div>
@@ -222,6 +282,9 @@ export default function CustomersEditStep({
         <ImportNotices
           notices={[
             ...(hasErrors ? [makeNotice('rows_invalid', 'action')] : []),
+            ...(possibleDuplicateCount > 0
+              ? [makeNotice('possible_duplicate_customers', 'action', { count: possibleDuplicateCount })]
+              : []),
             ...notices,
           ]}
         />

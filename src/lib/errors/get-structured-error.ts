@@ -15,6 +15,7 @@
  * REST envelope so a single registry covers every entry point.
  */
 import { NextResponse } from 'next/server'
+import { userFacingCode } from './user-facing'
 import { ZodError } from 'zod'
 import { getErrorMessage } from './get-error-message'
 import { foreignKeyRefusal } from './foreign-key-refusal'
@@ -296,10 +297,16 @@ export function getStructuredError(
   let remediation = extractRemediation(error) ?? entry?.remediation
 
   // Specialize INSUFFICIENT_SCOPE with the actual scope name when known.
+  // Approve gets its own hint: it is never pre-ticked on the MCP consent page
+  // (founder decision 2026-10-03, issue #3408), so a default connection lacks
+  // it, and the way forward is the review list in the app, or reconnecting
+  // with it ticked (scopes cannot be added to an existing key).
   if (code === 'INSUFFICIENT_SCOPE' && options.attemptedScope && remediation) {
     remediation = {
       ...remediation,
-      description: `The current API key does not have the "${options.attemptedScope}" scope. Mint a new key with that scope or add it to the existing key in API settings.`,
+      description: options.attemptedScope === 'pending_operations:approve'
+        ? 'This connection cannot approve or reject agent proposals: it was made without the "pending_operations:approve" scope (Godkänn). The user approves or rejects them in Accounted under Att göra > Agentförslag (/pending). To let the agent approve in chat, the user disconnects under Inställningar > API och MCP and connects again with Godkänn ticked.'
+        : `The current API key does not have the "${options.attemptedScope}" scope. Mint a new key with that scope or add it to the existing key in API settings.`,
     }
   }
 
@@ -512,6 +519,26 @@ export function errorResponse(
     })
   }
 
+  // 3b. Errors written for the reader. Before the registry lookup, because the
+  //     point is to keep the sentence the author wrote instead of the canned
+  //     one the code maps to: a paused import and a klarmarkerat räkenskapsår
+  //     both name the setting to change, and both arrived as generic text.
+  //     Swedish in both locales, like the engine's other domain errors.
+  const spoken = userFacingCode(err)
+  if (spoken && getErrorEntry(spoken)) {
+    const entry = entryFor(spoken)
+    const status = ctx.status ?? entry.httpStatus
+    const message = (err as Error).message
+    logAtLevel(log, status, spoken, err as Error, { requestId: ctx.requestId })
+    return buildResponse(
+      spoken,
+      { ...entry, httpStatus: status, message_sv: message, message_en: message },
+      ctx.requestId,
+      ctx.details,
+      true,
+    )
+  }
+
   // 4. Errors with a known structured code on them
   const code = extractCode(err)
   if (code && getErrorEntry(code)) {
@@ -641,6 +668,13 @@ function buildResponse(
   entry: StructuredErrorEntry,
   requestId: string | undefined,
   details: unknown,
+  /**
+   * The messages on `entry` were written for THIS failure rather than looked up
+   * from the registry, so nothing may replace them. Explicit rather than
+   * inferred: comparing against the registry entry would also silently swallow
+   * an authored sentence that happens to read like the canned one.
+   */
+  authoredMessage = false,
 ): NextResponse {
   const body: ErrorEnvelope = {
     error: {
@@ -654,7 +688,15 @@ function buildResponse(
   }
   // Consumers that read only error.message need the same actionable summary
   // as the app. Keep the full issues array and stable code for API clients.
-  if (code === 'VALIDATION_ERROR' && Array.isArray((details as { issues?: unknown } | undefined)?.issues)) {
+  //
+  // Never over an authored message. This branch rewrites both locales from the
+  // issue list, and an error marked user-facing arrives here with the sentence
+  // its author wrote in exactly those fields: a VALIDATION_ERROR carrying
+  // `details.issues` would have had that sentence replaced by a field summary,
+  // which is the single thing this whole path exists to prevent. Not reachable
+  // today (no marked error populates `issues`), and guarded rather than left to
+  // the next caller that pairs the two.
+  if (!authoredMessage && code === 'VALIDATION_ERROR' && Array.isArray((details as { issues?: unknown } | undefined)?.issues)) {
     body.error.message = getErrorMessage(body, { locale: 'sv' })
     body.error.message_en = getErrorMessage(body, { locale: 'en' })
   }
@@ -686,5 +728,6 @@ export function errorResponseFromCode(
     },
     ctx.requestId,
     ctx.details,
+    Boolean(ctx.messageSv || ctx.messageEn),
   )
 }

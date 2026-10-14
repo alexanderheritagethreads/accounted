@@ -28,7 +28,6 @@ vi.mock('@react-pdf/renderer', () => ({
 vi.mock('@/lib/invoices/pdf-template', () => ({
   InvoicePDF: vi.fn().mockReturnValue('mock-pdf-element'),
   brandingFromCompanySettings: vi.fn().mockReturnValue({}),
-  SHOW_SWISH_ON_INVOICE: false,
 }))
 
 const mockCreateInvoiceJournalEntry = vi.fn()
@@ -52,7 +51,8 @@ vi.mock('@/lib/invoices/invoice-deliveries', () => ({
   recordManualInvoiceDelivery: (...args: unknown[]) => mockRecordManualInvoiceDelivery(...args),
 }))
 
-import { issueAndBookInvoice } from '../issue-and-book-invoice'
+import { archiveIssuedInvoicePdf, issueAndBookInvoice, markInvoiceSentAndBook } from '../issue-and-book-invoice'
+import { InvoicePDF } from '@/lib/invoices/pdf-template'
 import type { CompanySettings } from '@/types'
 
 const log: Logger = {
@@ -148,6 +148,15 @@ describe('issueAndBookInvoice', () => {
     const result = await issue(makeDraft(), unregistered)
 
     expect(result).toEqual({ ok: true, journalEntryId: null, partialFailures: [] })
+  })
+
+  it('refuses a draft whose customer was deleted, before a number is taken (crm#263)', async () => {
+    const result = await issue(makeDraft({ invoice_number: null, customer_id: null, customer: null }))
+
+    expect(result).toEqual({ ok: false, errorCode: 'INVOICE_CUSTOMER_MISSING' })
+    expect(mockEnsureInvoiceNumber).not.toHaveBeenCalled()
+    expect(findCalls('invoices', 'update')).toEqual([])
+    expect(mockCreateInvoiceJournalEntry).not.toHaveBeenCalled()
   })
 
   it('fails with INVOICE_CREATE_NUMBER_ASSIGN_FAILED when numbering fails', async () => {
@@ -247,5 +256,76 @@ describe('issueAndBookInvoice', () => {
         expect.objectContaining({ step: 'pdf_archive' }),
       ])
     }
+  })
+})
+
+describe('markInvoiceSentAndBook', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    reset()
+    eventBus.clear()
+  })
+
+  it('never issues an invoice without a customer, whichever path calls it (crm#263)', async () => {
+    const result = await markInvoiceSentAndBook({
+      supabase: mockSupabase as never,
+      companyId: 'company-1',
+      userId: 'user-1',
+      invoice: makeDraft({ customer_id: null, customer: null }) as never,
+      settings,
+      log,
+    })
+
+    expect(result).toEqual({ ok: false, errorCode: 'INVOICE_CUSTOMER_MISSING' })
+    // Refused before the status flip: the draft is untouched.
+    expect(findCalls('invoices', 'update')).toEqual([])
+    expect(mockCreateInvoiceJournalEntry).not.toHaveBeenCalled()
+  })
+})
+
+describe('archiveIssuedInvoicePdf', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    reset()
+    mockRenderToBuffer.mockResolvedValue(Buffer.from('fake-pdf'))
+    mockUploadDocument.mockResolvedValue({ id: 'doc-1' })
+  })
+
+  function archive(invoice: ReturnType<typeof makeDraft>) {
+    return archiveIssuedInvoicePdf({
+      supabase: mockSupabase as never,
+      companyId: 'company-1',
+      userId: 'user-1',
+      invoice: invoice as never,
+      settings,
+      journalEntryId: 'je-1',
+      log,
+    })
+  }
+
+  it('archives the payment-link QR with the "Markera som skickad" PDF, like the send route', async () => {
+    // The fixture's bankgiro has a wrong check digit and there is no Swish,
+    // so auto reaches the payment link.
+    const result = await archive(makeDraft({ payment_link_url: 'https://pay.example.test/inv-1' }))
+
+    expect(result).toBeNull()
+    expect(InvoicePDF).toHaveBeenCalledTimes(1)
+    expect(InvoicePDF).toHaveBeenCalledWith(
+      expect.objectContaining({
+        // Rendered as sent (the stale draft row would stamp UTKAST).
+        invoice: expect.objectContaining({ status: 'sent' }),
+        paymentQr: expect.objectContaining({
+          kind: 'payment_link',
+          imageDataUrl: expect.stringMatching(/^data:image\/png;base64,/),
+        }),
+      }),
+    )
+    expect(mockUploadDocument).toHaveBeenCalledTimes(1)
+  })
+
+  it('passes no QR when nothing on the invoice can carry one', async () => {
+    await archive(makeDraft())
+
+    expect(InvoicePDF).toHaveBeenCalledWith(expect.objectContaining({ paymentQr: null }))
   })
 })

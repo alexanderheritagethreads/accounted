@@ -1,4 +1,3 @@
-import { renderToBuffer } from '@react-pdf/renderer'
 import { resolveCompanyEntityType } from '@/lib/company/entity-type'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createInvoiceJournalEntry } from '@/lib/bookkeeping/invoice-entries'
@@ -8,8 +7,7 @@ import { eventBus } from '@/lib/events'
 import { ensureInvoiceNumber } from '@/lib/invoices/ensure-invoice-number'
 import type { CustomIssuanceLine } from '@/lib/invoices/issuance-custom-lines'
 import { recordManualInvoiceDelivery } from '@/lib/invoices/invoice-deliveries'
-import { InvoicePDF } from '@/lib/invoices/pdf-template'
-import { prepareInvoicePdfRender, buildSwishQrDataUrl } from '@/lib/invoices/pdf-render-helpers'
+import { renderInvoicePdfBuffer } from '@/lib/invoices/render-invoice-pdf'
 import { snapshotInvoicePayee } from '@/lib/invoices/invoice-payee'
 import { invoicePdfFilename } from '@/lib/invoices/pdf-filename'
 import {
@@ -17,6 +15,7 @@ import {
   invoiceRequiresPaymentAccount,
 } from '@/lib/invoices/payment-accounts'
 import { hasRequiredSellerVatNumber } from '@/lib/invoices/seller-vat-number'
+import { invoiceLacksCustomer } from '@/lib/invoices/invoice-customer'
 import { uploadDocument } from '@/lib/core/documents/document-service'
 import { getErrorMessage } from '@/lib/errors/get-error-message'
 import type { Logger } from '@/lib/logger'
@@ -92,24 +91,17 @@ export async function archiveIssuedInvoicePdf(args: {
     // stale and still reads 'draft': override here so the archived underlag
     // isn't stamped "UTKAST".
     const renderableInvoice = { ...(invoice as Invoice), status: 'sent' as const }
-    const paymentAccountRequired = invoiceRequiresPaymentAccount(invoice as Invoice)
-    const { branding, company: renderCompany } = await prepareInvoicePdfRender(
-      settings,
-      renderableInvoice.currency,
-      { paymentAccountRequired, payee: renderableInvoice.payment_details ?? null },
-    )
-    const swishQrDataUrl = await buildSwishQrDataUrl(renderCompany, renderableInvoice)
-    const pdfBuffer = await renderToBuffer(
-      InvoicePDF({
-        invoice: renderableInvoice,
-        customer: invoice.customer as Customer,
-        items,
-        company: renderCompany,
-        originalInvoiceNumber: args.originalInvoiceNumber,
-        branding,
-        swishQrDataUrl,
-      }),
-    )
+    // The same render entry point as the send route, so the archived
+    // underlag carries the same QR code as the document the customer holds
+    // (and the preview): it used to archive no payment-link code at all.
+    const { buffer: pdfBuffer } = await renderInvoicePdfBuffer({
+      invoice: renderableInvoice,
+      customer: invoice.customer as Customer,
+      items,
+      company: settings,
+      originalInvoiceNumber: args.originalInvoiceNumber,
+      paymentAccountRequired: invoiceRequiresPaymentAccount(invoice as Invoice),
+    })
 
     const filename = invoicePdfFilename({
       companyName: settings.company_name,
@@ -154,7 +146,11 @@ export type MarkSentAndBookResult =
     }
   | {
       ok: false
-      errorCode: 'INVOICE_MARK_SENT_STATUS_FAILED' | 'INVOICE_MARK_SENT_RACE' | 'INVOICE_MARK_SENT_BOOK_FAILED'
+      errorCode:
+        | 'INVOICE_MARK_SENT_STATUS_FAILED'
+        | 'INVOICE_MARK_SENT_RACE'
+        | 'INVOICE_MARK_SENT_BOOK_FAILED'
+        | 'INVOICE_CUSTOMER_MISSING'
       /**
        * INVOICE_MARK_SENT_BOOK_FAILED only: why no verifikat was posted, in
        * Swedish (the engine's refusal, such as a required dimension or an
@@ -186,6 +182,13 @@ export async function markInvoiceSentAndBook(
   const { supabase, companyId, userId, invoice, settings, log } = opts
   const customLines = opts.customLines ?? null
   const id = invoice.id
+
+  // No buyer, no invoice (crm#263): a draft whose customer was deleted is
+  // never issued, whichever path tries. Checked before the status flip, so
+  // nothing has changed when it refuses.
+  if (invoiceLacksCustomer(invoice)) {
+    return { ok: false, errorCode: 'INVOICE_CUSTOMER_MISSING' }
+  }
 
   const entityType = await resolveCompanyEntityType(supabase, companyId, settings.entity_type)
 
@@ -373,6 +376,12 @@ export async function issueAndBookInvoice(
   opts: IssueAndBookOptions,
 ): Promise<IssueAndBookResult> {
   const { supabase, companyId, invoice, settings, log } = opts
+
+  // Before the number below is taken: a draft without a customer (crm#263)
+  // is refused while it is still unnumbered and deletable.
+  if (invoiceLacksCustomer(invoice)) {
+    return { ok: false, errorCode: 'INVOICE_CUSTOMER_MISSING' }
+  }
 
   // An invoice that chose a bank account freezes that account's payee now,
   // from the account as it is at issue; a chosen account that can no longer

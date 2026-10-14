@@ -2,12 +2,17 @@
 // per form under lib/company/forms/ (docs/LEGAL-FORMS.md); call sites read a
 // capability through lib/company/entity-type.ts and never compare the form to
 // a string. Adding a member here fails compilation until the profile exists.
-export type EntityType = 'enskild_firma' | 'aktiebolag' | 'ideell_forening'
+export type EntityType =
+  | 'enskild_firma'
+  | 'aktiebolag'
+  | 'ideell_forening'
+  | 'ekonomisk_forening'
 
 // Swedish accounting framework. K2 (BFNAR 2016:10) is the default simplified
 // ruleset for smaller AB; K3 (BFNAR 2012:1) is the principles-based ruleset
 // required for medium-to-large AB and permitted voluntarily for smaller ones.
-// Only meaningful for entity_type='aktiebolag'.
+// Only meaningful for legal forms that prepare an annual report. Eligibility
+// for a specific framework is resolved through lib/company/entity-type.ts.
 export type AccountingFramework = 'k2' | 'k3'
 
 // Company role for multi-tenant access
@@ -318,6 +323,17 @@ export type Currency = (typeof CURRENCIES)[number]
 /** Currencies that need an exchange rate to reach SEK. */
 export const FOREIGN_CURRENCIES: readonly Currency[] = CURRENCIES.filter((c) => c !== 'SEK')
 
+/**
+ * The one payment QR code an invoice PDF prints (migration 20261004004343).
+ * company_settings.invoice_qr_mode is the company default; invoices.qr_mode
+ * overrides it per invoice (null inherits). auto = Swish to a private
+ * customer when usable, else the bank-app QR, else Swish, else the payment
+ * link; an explicit mode that cannot be printed prints none
+ * (lib/invoices/payment-qr.ts says why). Must match the CHECK constraints.
+ */
+export const INVOICE_QR_MODES = ['auto', 'bank_app', 'swish', 'payment_link', 'none'] as const
+export type InvoiceQrMode = (typeof INVOICE_QR_MODES)[number]
+
 export interface InvoicePaymentAccount {
   bank_name: string | null
   clearing_number: string | null
@@ -396,6 +412,10 @@ export interface CompanySettings {
   postal_code: string | null
   city: string | null
   country: string
+  /** Säte: the municipality the company is registered in (SCB Säteskommun
+   *  at creation). Printed as säte in the annual report; not the postal
+   *  town, which is `city`. Null until known. */
+  registered_office?: string | null
 
   // Contact
   phone: string | null
@@ -525,6 +545,12 @@ export interface CompanySettings {
   invoice_show_bankgiro: boolean
   invoice_show_plusgiro: boolean
   invoice_show_swish: boolean
+  // Superseded by invoice_qr_mode: still accepted by the settings APIs, no
+  // longer read when rendering an invoice.
+  invoice_show_payment_qr: boolean
+  // The one payment QR code invoices print (default 'auto'); invoices.qr_mode
+  // overrides it per invoice.
+  invoice_qr_mode: InvoiceQrMode
   invoice_show_logo: boolean
   invoice_show_company_name: boolean
   invoice_company_name_position: 'header' | 'footer'
@@ -1452,6 +1478,9 @@ export interface Invoice {
   // company default when it is null.
   payment_cash_account_id?: string | null
   payment_details?: InvoicePaymentAccount | null
+  // Per-invoice QR code choice (migration 20261004004343); null inherits
+  // company_settings.invoice_qr_mode. Optional in TS for pre-migration fixtures.
+  qr_mode?: InvoiceQrMode | null
 
   // Notes
   notes: string | null
@@ -2453,11 +2482,33 @@ export interface BalansrapportRow {
   period_change: number
 }
 
+/**
+ * A balance-sheet heading in the Balansrapport (Anläggningstillgångar,
+ * Kortfristiga skulder, ...). A heading holds either account rows or
+ * subsections, never both; its subtotals are the sum of what it holds.
+ */
+export interface BalansrapportSection {
+  /** K2 section key (lib/bokslut/ixbrl/k2-mapper.ts K2_BR_LAYOUT), or 'unclassified'. */
+  key: string
+  label: string
+  /** "Summa <label>", the line under the section. */
+  total_label: string
+  /** What to do about the section's accounts; set only on 'unclassified'. */
+  note?: string
+  rows: BalansrapportRow[]
+  sections: BalansrapportSection[]
+  subtotal_ib: number
+  subtotal_change: number
+  subtotal_ub: number
+}
+
 export interface BalansrapportGroup {
   class: number
   class_label: string
-  rows: BalansrapportRow[]
+  /** Every account of the class, under its ÅRL heading. */
+  sections: BalansrapportSection[]
   subtotal_ib: number
+  subtotal_change: number
   subtotal_ub: number
 }
 
@@ -2676,6 +2727,7 @@ export type PendingOperationType =
   | 'add_arsredovisning_signature'
   | 'set_opening_balances_manual'
   | 'correct_opening_balances'
+  | 'split_opening_balances_per_project'
   | 'delete_supplier_invoice'
   | 'uncredit_supplier_invoice'
   | 'update_supplier_invoice_item_account'
@@ -2890,8 +2942,11 @@ export type TaxDeadlineType =
   | 'skatteinbetalning'
   | 'inkomstdeklaration_ef'
   | 'inkomstdeklaration_ab'
+  | 'inkomstdeklaration_ekonomisk_forening'
   | 'arsredovisning'
+  | 'arsredovisning_ekonomisk_forening'
   | 'arsstamma'
+  | 'foreningsstamma'
   | 'periodisk_sammanstallning'
   | 'kontrolluppgifter'
   | 'rot_rut_begaran'
@@ -3121,8 +3176,9 @@ export interface InvoiceInboxItem {
   email_body_text: string | null
   resend_email_id: string | null
   resend_attachment_id: string | null
-  // Sender-declared kind from the +lev / +ver plus-address tag (migration
-  // 20260901210000). Wins over extracted_data.documentKind in the inbox UI.
+  // Declared kind: the +lev / +ver plus-address tag (migration 20260901210000),
+  // the type Arkiv queued it as, or a person's type in Dokument. Wins over
+  // extracted_data.documentKind in the inbox UI.
   kind_hint?: 'supplier_invoice' | 'receipt' | null
   document_id: string | null
   extracted_data: Record<string, unknown> | null
@@ -3470,6 +3526,17 @@ export interface VatDeclarationRutor {
   ruta62: number  // Utgående moms 6% import
 }
 
+/**
+ * A revenue (class 3) account whose period balance reaches no ruta on the
+ * momsdeklaration. `amount` is the net credit balance (credit minus debit),
+ * rounded to öre: negative for a net debit such as a lämnad rabatt.
+ */
+export interface VatRevenueAccountWithoutRuta {
+  account_number: string
+  account_name: string
+  amount: number
+}
+
 // VAT declaration response
 export interface VatDeclaration {
   period: {
@@ -3515,6 +3582,18 @@ export interface VatDeclaration {
    * hand.
    */
   rcBasisByRate?: { r25: number; r12: number; r6: number }
+  /**
+   * Class 3 accounts with a balance in the period that the declaration puts in
+   * no ruta: no momskod, no momssats and no fixed BAS ruta (#3387). Carried so
+   * a caller that reads the declaration over HTTP can hand
+   * `runVatDeclarationChecks` the input for REVENUE_ACCOUNT_WITHOUT_RUTA.
+   * Produced by `revenueAccountsWithoutRuta()` (lib/reports/vat-declaration.ts),
+   * never by hand.
+   *
+   * Optional because it crosses a JSON boundary: absent on a response from an
+   * older deploy, and then the check stays silent rather than guessing.
+   */
+  revenueAccountsWithoutRuta?: VatRevenueAccountWithoutRuta[]
   // Supporting data
   invoiceCount: number
   transactionCount: number

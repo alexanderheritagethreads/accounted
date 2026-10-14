@@ -1,4 +1,12 @@
 import type { Skill } from '../types'
+import { isKontantmetodCutoffSuspended } from '@/lib/core/bookkeeping/kontantmetod-cutoff-suspension'
+
+// #3440: while the kontantmetoden cut-off is suspended it cannot have been
+// done, so the skill says so instead of asking. The fix PR deletes the
+// suspension module and keeps the second branch.
+const YEAR_END_CUTOFF_NOTE = isKontantmetodCutoffSuspended()
+  ? 'If this period contains the fiscal year-end, the year-end cut-off from `year-end-close` is temporarily suspended (#3440), so the moms on invoices unpaid at year end is not in this declaration yet. Say so to the user before they file, and never book that moms or the receivables and payables by hand as a workaround.'
+  : 'If this period contains the fiscal year-end, ask whether the year-end cut-off from `year-end-close` has been done before filing.'
 
 const body = `# Quarterly VAT Review (Momsdeklaration): Accounted
 
@@ -50,13 +58,13 @@ Before starting, tell the user in two lines what you found (company, cadence, pe
 | \`fiscal_year_not_found\` | Yearly period fell back to the calendar year | Re-run with \`year\` = the year the fiscal year ends; check \`gnubok_list_fiscal_periods\`. |
 | \`momsredovisning_entries_excluded\` | Information only: verifikat treated as momsredovisning and kept out of the rutor | Not a blocker. When a ruta disagrees with the ledger, these explain it; inspect with \`gnubok_query_journal\`. |
 
-\`declaration_checks\` codes you can meet: \`RC_BASIS_MISSING\`, \`RC_OUTPUT_MISSING\`, \`RC_INPUT_VAT_MISMATCH\`, \`TAXABLE_SALES_WITHOUT_OUTPUT\`, \`OUTPUT_VAT_WITHOUT_SALES_BASE\`, \`SALES_OUTPUT_VAT_SHORTFALL\`, \`IMPORT_BASE_WITHOUT_OUTPUT\`, \`IMPORT_OUTPUT_WITHOUT_BASE\`, \`SUMMA_MOMS_DRIFT\`. Each has a \`status\` (\`ERROR\` blocks filing, \`WARNING\` needs a human look) and the \`rutor\` involved.
+\`declaration_checks\` codes you can meet: \`RC_BASIS_MISSING\`, \`RC_OUTPUT_MISSING\`, \`RC_INPUT_VAT_MISMATCH\`, \`TAXABLE_SALES_WITHOUT_OUTPUT\`, \`OUTPUT_VAT_WITHOUT_SALES_BASE\`, \`SALES_OUTPUT_VAT_SHORTFALL\`, \`REVENUE_ACCOUNT_WITHOUT_RUTA\` (a class 3 account with a balance but no momskod or momssats, so its sales reach no ruta: ask the user what the account is and set its momskod), \`IMPORT_BASE_WITHOUT_OUTPUT\`, \`IMPORT_OUTPUT_WITHOUT_BASE\`, \`SUMMA_MOMS_DRIFT\`. Each has a \`status\` (\`ERROR\` blocks filing, \`WARNING\` needs a human look) and the \`rutor\` involved.
 
 \`sanity.anomalies\` compares with the previous period: \`output_vat_ratio_drift\` (wrong rate somewhere), \`revenue_drop\` (unbooked invoices?), \`revenue_spike\` (something booked twice?). Raise each as a question to the user; they are not errors by themselves.
 
 **When the period is not fully booked or reconciled:** do not treat the rutor as final and do not validate or submit. Tell the user exactly which blockers remain, offer the sibling skill for each, and either stop there or continue the review clearly labelled as preliminary ("preliminär, perioden är inte klar"). After the fixes are approved, run \`gnubok_vat_close_check\` again; never assume a fix landed.
 
-**Kontantmetoden:** under \`accounting_method: cash\`, moms is recognised when paid, so unpaid customer and supplier invoices are correctly absent from the period. Exception: at fiscal year-end open invoices must be brought in. If this period contains the fiscal year-end, ask whether the year-end cut-off from \`year-end-close\` has been done before filing. Faktureringsmetoden is required above 3M SEK omsättning; if a cash-method company looks larger than that, raise it as a question, do not change anything.
+**Kontantmetoden:** under \`accounting_method: cash\`, moms is recognised when paid, so unpaid customer and supplier invoices are correctly absent from the period. Exception: at fiscal year-end open invoices must be brought in. ${YEAR_END_CUTOFF_NOTE} Faktureringsmetoden is required above 3M SEK omsättning; if a cash-method company looks larger than that, raise it as a question, do not change anything.
 
 ## Step 2: Read the declaration ruta by ruta
 

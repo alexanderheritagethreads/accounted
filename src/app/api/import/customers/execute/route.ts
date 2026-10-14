@@ -3,9 +3,11 @@ import { ensureInitialized } from '@/lib/init'
 import { eventBus } from '@/lib/events'
 import { validateBody } from '@/lib/api/validate'
 import { CustomerImportExecuteSchema } from '@/lib/api/schemas'
-import { normalizeOrgNumber, normalizeEmail } from '@/lib/import/shared/column-utils'
+import { normalizeOrgNumber } from '@/lib/import/shared/column-utils'
+import { createRegisterMatcher } from '@/lib/import/shared/register-match'
 import { fetchAllRows } from '@/lib/supabase/fetch-all'
 import { withRouteContext } from '@/lib/api/with-route-context'
+import { recordRegisterImportRun, snapshotRowsForUndo } from '@/lib/import/register-runs'
 import { errorResponseFromCode } from '@/lib/errors/get-structured-error'
 import type { Customer } from '@/types'
 import type { CustomerImportExecuteResult } from '@/lib/import/customers/types'
@@ -16,6 +18,7 @@ ensureInitialized()
 interface ExistingCustomer {
   id: string
   name: string
+  customer_number: string | null
   org_number: string | null
   email: string | null
   phone: string | null
@@ -33,9 +36,10 @@ interface ExistingCustomer {
 /**
  * POST /api/import/customers/execute
  *
- * Imports validated customer rows. Duplicates (matched by org_number or email)
- * are either updated (merge: only non-empty file fields overwrite) or skipped
- * based on `update_duplicates`.
+ * Imports validated customer rows. Duplicates (matched by customer number,
+ * org number or e-mail, or a same-name customer the user confirmed: see
+ * lib/import/shared/register-match.ts) are either updated (merge: only
+ * non-empty file fields overwrite) or skipped based on `update_duplicates`.
  */
 export const POST = withRouteContext(
   'register_import.customers.execute',
@@ -56,11 +60,12 @@ export const POST = withRouteContext(
     }
 
     try {
+      const beforeImport = await snapshotRowsForUndo(supabase, companyId, 'customers', update_duplicates)
       const existingRaw = await fetchAllRows(({ from, to }) =>
         supabase
           .from('customers')
           .select(
-            'id, name, org_number, email, phone, address_line1, address_line2, ' +
+            'id, name, customer_number, org_number, email, phone, address_line1, address_line2, ' +
               'postal_code, city, country, vat_number, default_payment_terms, notes, ' +
               'customer_type',
           )
@@ -69,14 +74,7 @@ export const POST = withRouteContext(
       )
       const existing = existingRaw as unknown as ExistingCustomer[]
 
-      const byOrg = new Map<string, ExistingCustomer>()
-      const byEmail = new Map<string, ExistingCustomer>()
-      for (const c of existing) {
-        const org = normalizeOrgNumber(c.org_number)
-        if (org) byOrg.set(org, c)
-        const email = normalizeEmail(c.email)
-        if (email) byEmail.set(email, c)
-      }
+      const matcher = createRegisterMatcher(existing, { orgKey: normalizeOrgNumber })
 
       const created: Customer[] = []
       const updated: Customer[] = []
@@ -84,12 +82,7 @@ export const POST = withRouteContext(
       const errors: { row_index: number; name: string; reason: string }[] = []
 
       for (const row of rows) {
-        const orgKey = normalizeOrgNumber(row.org_number)
-        const emailKey = normalizeEmail(row.email)
-        const match =
-          (orgKey && byOrg.get(orgKey)) ||
-          (emailKey && byEmail.get(emailKey)) ||
-          null
+        const match = matcher.resolve(row, row.confirmed_duplicate_of)
 
         if (match) {
           if (!update_duplicates) {
@@ -101,6 +94,7 @@ export const POST = withRouteContext(
           const merged: Record<string, unknown> = {}
           if (row.name) merged.name = row.name
           if (row.customer_type) merged.customer_type = row.customer_type
+          if (row.customer_number) merged.customer_number = row.customer_number
           if (row.org_number) merged.org_number = row.org_number
           if (row.email) merged.email = row.email
           if (row.phone) merged.phone = row.phone
@@ -130,7 +124,10 @@ export const POST = withRouteContext(
             errors.push({ row_index: row.row_index, name: row.name, reason: getUserErrorMessage(error) })
             continue
           }
-          if (data) updated.push(data as Customer)
+          if (data) {
+            updated.push(data as Customer)
+            matcher.add(data as ExistingCustomer)
+          }
           continue
         }
 
@@ -142,6 +139,7 @@ export const POST = withRouteContext(
             company_id: companyId,
             name: row.name,
             customer_type: row.customer_type,
+            customer_number: row.customer_number || null,
             email: row.email,
             phone: row.phone,
             address_line1: row.address_line1,
@@ -168,12 +166,8 @@ export const POST = withRouteContext(
         }
         if (data) {
           created.push(data as Customer)
-          // Track newly inserted org/email so subsequent rows in the same batch
-          // dedup against them too.
-          const newOrg = normalizeOrgNumber(data.org_number)
-          if (newOrg) byOrg.set(newOrg, data as ExistingCustomer)
-          const newEmail = normalizeEmail(data.email)
-          if (newEmail) byEmail.set(newEmail, data as ExistingCustomer)
+          // Later rows in the same batch dedup against it too.
+          matcher.add(data as ExistingCustomer)
         }
       }
 
@@ -184,6 +178,8 @@ export const POST = withRouteContext(
           payload: { customer: c, companyId: companyId!, userId: user.id },
         })
       }
+
+      await recordRegisterImportRun(supabase, { companyId, userId: user.id, kind: 'customers', created, updated, before: beforeImport }, opLog)
 
       const response: CustomerImportExecuteResult = {
         success: errors.length === 0,

@@ -6,6 +6,7 @@ import {
   generatePaymentConfirmationEmailHtml,
   generatePaymentConfirmationEmailSubject,
   generatePaymentConfirmationEmailText,
+  invoiceEmailEditableTexts,
 } from '../invoice-templates'
 import { makeCustomer, makeInvoice, makeCompanySettings } from '@/tests/helpers'
 
@@ -375,6 +376,111 @@ describe('invoice email templates', () => {
     })
   })
 
+  // The editor's "Redigera text för den här fakturan": one send's own
+  // subject and message (SendInvoiceSchema email_subject / email_body).
+  describe('this send\'s own subject and message (overrides)', () => {
+    const svCustomer = makeCustomer({ name: 'Erik Andersson', customer_type: 'individual', email: 'erik@example.se', language: 'sv' })
+    const companyTexts = makeCompanySettings({
+      company_name: 'Acme AB',
+      invoice_email_texts: {
+        sv: { subject: 'Er faktura {fakturanummer}', greeting: 'Hejsan {förnamn}!', body: 'Månadens faktura.', signoff: 'Allt gott,' },
+      },
+    })
+    const overrides = { subject: 'Faktura {fakturanummer} för maj', body: 'Hej igen!\nHär är majfakturan, {belopp}.' }
+
+    it('wins over the company texts in the subject, HTML and text variants', () => {
+      const data = { invoice, customer: svCustomer, company: companyTexts, overrides }
+      expect(generateInvoiceEmailSubject(data)).toBe('Faktura 1042 för maj')
+      const html = generateInvoiceEmailHtml(data)
+      expect(html).toMatch(/Hej igen!<br>Här är majfakturan, 12[\s\u00a0]500,00 SEK\./)
+      expect(html).not.toContain('Månadens faktura.')
+      // Only the subject and the message are replaced.
+      expect(html).toContain('Hejsan Erik!')
+      expect(html).toContain('Allt gott,')
+      const text = generateInvoiceEmailText(data)
+      expect(text).toMatch(/Hej igen!\nHär är majfakturan, 12[\s\u00a0]500,00 SEK\./)
+    })
+
+    it('replaces the stock texts when the company has none', () => {
+      const data = { invoice, customer: svCustomer, company, overrides }
+      expect(generateInvoiceEmailSubject(data)).toBe('Faktura 1042 för maj')
+      expect(generateInvoiceEmailHtml(data)).not.toContain('Tack för ditt förtroende')
+    })
+
+    it('applies to every document type: the user wrote it for this one', () => {
+      const creditInvoice = makeInvoice({ invoice_number: '1043', total: -5000, credited_invoice_id: 'inv-orig' })
+      const data = { invoice: creditInvoice, customer: svCustomer, company: companyTexts, overrides }
+      expect(generateInvoiceEmailSubject(data)).toBe('Faktura 1043 för maj')
+      expect(generateInvoiceEmailHtml(data)).toContain('Hej igen!')
+    })
+
+    it('treats empty, whitespace-only and null overrides as none', () => {
+      for (const blank of ['', '   ', null]) {
+        const data = { invoice, customer: svCustomer, company: companyTexts, overrides: { subject: blank, body: blank } }
+        expect(generateInvoiceEmailSubject(data)).toBe('Er faktura 1042')
+        expect(generateInvoiceEmailHtml(data)).toContain('Månadens faktura.')
+      }
+    })
+
+    it('escapes the message in HTML and keeps the subject on one line', () => {
+      const data = {
+        invoice,
+        customer: svCustomer,
+        company,
+        overrides: { subject: 'Faktura\r\nBcc: x@example.test', body: '<b>Hej</b>' },
+      }
+      expect(generateInvoiceEmailSubject(data)).toBe('Faktura Bcc: x@example.test')
+      const html = generateInvoiceEmailHtml(data)
+      expect(html).toContain('&lt;b&gt;Hej&lt;/b&gt;')
+      expect(html).not.toContain('<b>Hej</b>')
+    })
+  })
+
+  // What "Redigera text för den här fakturan" starts from: the texts with
+  // their placeholders, so the edited subject gets the number the send
+  // allocates rather than the preview's predicted one.
+  describe('invoiceEmailEditableTexts', () => {
+    const svCustomer = makeCustomer({ name: 'Erik Andersson', customer_type: 'individual', email: 'erik@example.se', language: 'sv' })
+    const enCustomer = makeCustomer({ name: 'Jane Doe', customer_type: 'individual', email: 'jane@example.com', language: 'en' })
+
+    it('is the stock subject and message with the placeholders left in', () => {
+      expect(invoiceEmailEditableTexts({ invoice, customer: svCustomer, company })).toEqual({
+        subject: 'Faktura {fakturanummer} från {företag}',
+        body: 'Tack för ditt förtroende! Bifogat hittar du din faktura.',
+      })
+      expect(invoiceEmailEditableTexts({ invoice, customer: enCustomer, company })).toEqual({
+        subject: 'Invoice {fakturanummer} from {företag}',
+        body: 'Thank you for your business. Attached you will find your invoice.',
+      })
+    })
+
+    it('is the company text, unsubstituted, when one is set', () => {
+      const companyTexts = makeCompanySettings({
+        company_name: 'Acme AB',
+        invoice_email_texts: { sv: { subject: 'Er faktura {fakturanummer}', body: 'Månadens faktura, {belopp}.' } },
+      })
+      expect(invoiceEmailEditableTexts({ invoice, customer: svCustomer, company: companyTexts })).toEqual({
+        subject: 'Er faktura {fakturanummer}',
+        body: 'Månadens faktura, {belopp}.',
+      })
+    })
+
+    it('is this send\'s own text when given', () => {
+      const data = { invoice, customer: svCustomer, company, overrides: { subject: ' Hej {förnamn} ', body: null } }
+      expect(invoiceEmailEditableTexts(data)).toEqual({
+        subject: 'Hej {förnamn}',
+        body: 'Tack för ditt förtroende! Bifogat hittar du din faktura.',
+      })
+    })
+
+    it('names the document type: a quote keeps its own stock message', () => {
+      const quote = makeInvoice({ invoice_number: 'OF-001', due_date: '2026-10-02', valid_until: '2026-10-02', document_type: 'quote' })
+      const texts = invoiceEmailEditableTexts({ invoice: quote, customer: svCustomer, company })
+      expect(texts.subject).toBe('Offert {fakturanummer} från {företag}')
+      expect(texts.body).toContain('Offerten är giltig till 2026-10-02')
+    })
+  })
+
   // A quote (offert) is not a payment request: the mail states the expiry
   // instead of a due date and carries no payment details or pay-online CTA.
   describe('quote (offert)', () => {
@@ -573,13 +679,14 @@ describe('invoice email templates', () => {
       const html = generateInvoiceEmailHtml(data)
       const text = generateInvoiceEmailText(data)
 
+      // An IBAN payee prints IBAN and BIC; the bank name only rides along
+      // with a domestic account number (the merged Bankkonto row).
       for (const rendered of [html, text]) {
-        expect(rendered).toContain('Mock ASPSP')
-        expect(rendered).toContain('SE4550000000058398257466')
+        expect(rendered).toContain('SE45 5000 0000 0583 9825 7466')
         expect(rendered).toContain('ESSESESS')
         expect(rendered).not.toContain('Legacy SEK Bank')
         expect(rendered).not.toContain('5037-1231231')
-        expect(rendered).not.toContain('SE0011111111111111111111')
+        expect(rendered).not.toContain('SE00 1111 1111 1111 1111 1111')
         expect(rendered).not.toContain('NDEASESS')
       }
     })
@@ -745,12 +852,29 @@ describe('payment reference matches the PDF payment box', () => {
     expect(generateInvoiceEmailText({ invoice, customer, company: offCompany })).toContain('Meddelande: 1042')
   })
 
-  it('hides a bankgiro the company chose not to print on the invoice', () => {
+  it('hides a bankgiro the company chose not to print, and with it the OCR (nothing to pay it to)', () => {
     const hidden = makeCompanySettings({ ...company, bankgiro: '123-4567', invoice_show_bankgiro: false })
     const html = generateInvoiceEmailHtml({ invoice, customer, company: hidden })
     expect(html).not.toContain('Bankgiro:')
-    // The PDF still prints the OCR row in this case, so the email does too.
+    // The PDF prints no OCR row without a printed giro, so the email falls
+    // back to the invoice number as a plain message, like the PDF.
+    expect(html).not.toContain('OCR/Referens:')
+    expect(html).toContain('Meddelande:')
+    expect(generateInvoiceEmailText({ invoice, customer, company: hidden })).toContain('Meddelande: 1042')
+  })
+
+  it('keeps the OCR when the bankgiro is hidden but a plusgiro prints', () => {
+    const plusgiro = makeCompanySettings({
+      ...company,
+      bankgiro: '123-4567',
+      invoice_show_bankgiro: false,
+      plusgiro: '12 34 56-7',
+    })
+    const html = generateInvoiceEmailHtml({ invoice, customer, company: plusgiro })
+    expect(html).not.toContain('Bankgiro:')
+    expect(html).toContain('Plusgiro:')
     expect(html).toContain('OCR/Referens:')
+    expect(html).not.toContain('Meddelande:')
   })
 
   it('never shows an OCR reference to an English-language customer', () => {
@@ -816,5 +940,31 @@ describe('greeting names are HTML-escaped', () => {
   it('escapes the greeting in the payment confirmation', () => {
     const html = generatePaymentConfirmationEmailHtml({ invoice, customer: hostileCustomer, company })
     expect(html).not.toContain('<b>Evil</b>')
+  })
+})
+
+describe('payment rows are the PDF payment box rows (lib/invoices/payment-rows)', () => {
+  const customer = makeCustomer({ name: 'Erik Andersson', customer_type: 'individual', email: 'erik@example.se', language: 'sv' })
+
+  it('prints the bank and the account as one Bankkonto row', () => {
+    const text = generateInvoiceEmailText({ invoice, customer, company })
+    expect(text).toContain('Bankkonto: SEB, 5000-1234567')
+    expect(text).not.toContain('Kontonummer:')
+    expect(text).not.toContain('Bank: SEB')
+  })
+
+  it('prints no half account: clearing without account number is no row, like on the PDF', () => {
+    const half = makeCompanySettings({ ...company, account_number: null, bankgiro: '123-4567' })
+    const text = generateInvoiceEmailText({ invoice, customer, company: half })
+    expect(text).not.toContain('Bankkonto:')
+    expect(text).not.toContain('5000-')
+  })
+
+  it('keeps the payment link out of the rows: the email has its own button and line', () => {
+    const linked = makeInvoice({ ...invoice, payment_link_url: 'https://pay.example.test/x' })
+    const html = generateInvoiceEmailHtml({ invoice: linked, customer, company })
+    expect(html.match(/Betala online/g)).toHaveLength(1)
+    const text = generateInvoiceEmailText({ invoice: linked, customer, company })
+    expect(text.match(/Betala online/g)).toHaveLength(1)
   })
 })

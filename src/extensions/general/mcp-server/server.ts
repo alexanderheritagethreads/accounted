@@ -73,7 +73,7 @@ import {
 } from './public-tools'
 import { isEagerAuthRequested } from './auth-mode'
 import { createLogger } from '@/lib/logger'
-import { roundOre, sumOre } from '@/lib/money'
+import { ORE_ROUNDING_SETTLEMENT_MAX, roundOre, sumOre } from '@/lib/money'
 import { addDaysIso } from '@/lib/dates/iso'
 import { currentAppVersion } from '@/lib/reports/app-version'
 import {
@@ -126,6 +126,7 @@ import {
 } from '@/lib/invoices/vat-rules'
 import { DEDUCTION_TYPES, isDeductionType, validateDeductionLines, type DeductionType } from '@/lib/invoices/rot-rut-rules'
 import { computeLineNet } from '@/lib/invoices/line-amounts'
+import { invoiceLacksCustomer } from '@/lib/invoices/invoice-customer'
 import { resolveSupplierInvoiceExchangeRate } from '@/lib/currency/supplier-invoice-rate'
 import { getBranding } from '@/lib/branding/service'
 import { generateIncomeStatement } from '@/lib/reports/income-statement'
@@ -146,6 +147,7 @@ import {
   detectMomsredovisning,
   rutorFromTotals,
   rcInputTotalsFromDeclaration,
+  revenueAccountsWithoutRuta,
   calculateVatDeclaration,
   resolvePeriodDates,
   type MomsredovisningDetection,
@@ -204,6 +206,7 @@ import { prompts, findPrompt } from './prompts'
 import { findSkill, loadAllSkills, toSummary, SKILL_MIME_TYPE, SKILL_URI_PREFIX, skillUri, skillSlugFromUri } from './skills'
 import { loadSkillProvenance, skillBodyHash, oauthActorLabel } from '@/lib/agent-skills/provenance'
 import { loadCompanySkillRows, ownSkill } from '@/lib/agent-skills/company-skills'
+import { skillAppliesToCompany } from '@/lib/agent-skills/applicability'
 import { buildOwnSkill, buildOwnText, OWN_SKILL_COPY } from '@/lib/agent-skills/own-skill-body'
 import { loadDocumentClaims, sharedDocumentWarning } from '@/lib/receipt-hunt/document-claims'
 import { SkillBodySchema } from '@/lib/agent-skills/validation'
@@ -399,6 +402,12 @@ import {
   reverseLines,
   undatedSettlementsNote,
 } from '@/lib/core/bookkeeping/kontantmetod-cutoff'
+import {
+  isKontantmetodCutoffSuspended,
+  KONTANTMETOD_CUTOFF_SUSPENDED_CODE,
+} from '@/lib/core/bookkeeping/kontantmetod-cutoff-suspension'
+import { countUnbookedBankTransactions } from '@/lib/transactions/unbooked'
+import { buildReportDataStatus } from '@/lib/reports/data-status'
 import { generateSIEExport } from '@/lib/reports/sie-export'
 import { generateFullArchive, estimateArchiveSize } from '@/lib/reports/full-archive-export'
 import { CorrectionChainTooDeepError } from '@/lib/bookkeeping/errors'
@@ -419,6 +428,12 @@ import {
   type DuplicateCandidateOutcome,
 } from '@/lib/invoices/already-explained-guard'
 import { findCashMethodUnbookedAllocations } from '@/lib/invoices/batch-cash-method-guard'
+import {
+  planTransactionInvoiceMatch,
+  type MatchInvoiceAmounts,
+  type MatchPaymentPlanResult,
+  type MatchTransactionAmounts,
+} from '@/lib/invoices/match-payment-plan'
 import {
   buildBatchAllocationPreview,
   type BatchAllocationPreviewInvoice,
@@ -451,7 +466,6 @@ import { skvRequest, SkatteverketAuthError, isApigwClientRefusal } from '@/exten
 import { agiGetKvittenser } from '@/extensions/general/skatteverket/lib/agi-client'
 import { readAgiSubmissionStatus } from '@/extensions/general/skatteverket/lib/agi-submission-status'
 import { buildMomsuppgift, resolveRedovisare, resolveRedovisningsperiod } from '@/extensions/general/skatteverket/lib/declaration-prep'
-import { writeSkatteverketAudit } from '@/extensions/general/skatteverket/lib/audit'
 import { skvAuthCodeToStructured } from '@/extensions/general/skatteverket/lib/error-map'
 import { getSkvConnectionHealth, SKV_NEEDS_RECONSENT_MESSAGE } from './skv-connection-health'
 import { suggestToolNames } from './tool-suggest'
@@ -467,14 +481,14 @@ import {
 import type { SkattekontoLedgerTwin } from '@/types/skatteverket'
 import { SKATTEKONTO_ACCOUNT } from '@/lib/skatteverket/manual-verifikat-prefill'
 import { formatRedovisningsperiod } from '@/lib/skatteverket/format'
-import { createExtensionContext } from '@/lib/extensions/context-factory'
 import { commitPendingOperation } from '@/lib/pending-operations/commit'
+import { buildStagedInvoice, describeInvoiceBuildRefusal } from '@/lib/pending-operations/build-staged-invoice'
 import { appendProcessingHistory } from '@/lib/processing-history/append'
 import { getUserCompanies } from '@/lib/company/context'
 // ensureInitialized() is called by the extension router (ext/[...path]/route.ts)
 // which dispatches to this handler: no duplicate call needed here.
-import { CURRENCIES } from '@/types'
-import type { Transaction, TransactionCategory, EntityType, VatTreatment, Invoice, Currency, CompanySettings, Customer, InvoiceItem, PendingOperation, VatPeriodType, VatDeclarationRutor, YearEndBlockerCode, SalesOrder, SalesOrderItem, SalesOrderStatus } from '@/types'
+import { CURRENCIES, INVOICE_QR_MODES } from '@/types'
+import type { Transaction, TransactionCategory, EntityType, VatTreatment, Invoice, InvoiceQrMode, Currency, CompanySettings, Customer, InvoiceItem, PendingOperation, VatPeriodType, VatDeclarationRutor, VatRevenueAccountWithoutRuta, YearEndBlockerCode, SalesOrder, SalesOrderItem, SalesOrderStatus } from '@/types'
 
 // ── Actor context ────────────────────────────────────────────
 
@@ -505,6 +519,55 @@ type StagedInvoiceLineInput = {
   accrual_balance_account?: string | null
   dimensions?: unknown
 }
+
+/**
+ * gnubok_create_invoice's line schema. The staging refusal of unknown line
+ * keys reads its property list plus the deduction and periodisering fields:
+ * the top-level arg guard never sees inside items, so a misnamed or
+ * unsupported line field used to be staged and then dropped at approval
+ * without a word. Those fields are accepted but not repeated here, where
+ * every property costs tools/list budget; gnubok_update_invoice declares
+ * them and the refusal names them all.
+ */
+const CREATE_INVOICE_ITEM_SCHEMA = {
+  type: 'object',
+  properties: {
+    description: { type: 'string' },
+    quantity: { type: 'number' },
+    unit: { type: 'string', description: 'st, tim, dag, mån' },
+    unit_price: { type: 'number', description: 'Price per unit excl. VAT' },
+    discount_percent: { type: 'number', description: 'Line discount 0-100 (rabatt); line total and VAT computed net of it' },
+    vat_rate: { type: 'number', description: 'VAT rate 0-100 (optional override)' },
+    article_id: {
+      type: 'string',
+      description: 'Optional article UUID from gnubok_list_articles. Prefills description, unit, unit_price, revenue account and, only when compatible with the customer VAT rules, vat_rate. Values set on the line win.',
+    },
+    line_type: { type: 'string', enum: ['product', 'text'], description: 'text = free-text row: no amounts, never books.' },
+    revenue_account: { type: ['string', 'null'], description: 'BAS class 1-3 posting account; class 1-2 only at 0 % VAT.' },
+    dimensions: {
+      type: 'object',
+      additionalProperties: { type: 'string' },
+      description: 'Dims bag {sie_dim_no: kod eller namn}, e.g. {"6":"P001"}. Wins per key over default_dimensions.',
+    },
+  },
+  required: ['quantity'],
+}
+
+const CREATE_INVOICE_ITEM_KEYS: ReadonlySet<string> = new Set([
+  ...Object.keys(CREATE_INVOICE_ITEM_SCHEMA.properties),
+  // ROT/RUT/grön teknik claim fields; the personnummer comes from the
+  // customer card and never crosses MCP.
+  'deduction_type',
+  'labor_hours',
+  'work_type',
+  'housing_designation',
+  'apartment_number',
+  'brf_org_number',
+  // Periodisering (förutbetald intäkt).
+  'accrual_period_start',
+  'accrual_period_end',
+  'accrual_balance_account',
+])
 
 type ResolvedInvoiceLine = StagedInvoiceLineInput & {
   description: string
@@ -883,6 +946,85 @@ function duplicateCandidateRefusal(
   )
 }
 
+/** Plain two-decimal amounts for agent-facing English prose ("1234.50"). */
+const AGENT_AMOUNT_FORMAT = new Intl.NumberFormat('en-US', {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+  useGrouping: false,
+})
+
+/**
+ * The stage-time overpayment refusal for a transaction-to-invoice match,
+ * coded MATCH_AMOUNT_EXCEEDS_REMAINING like the approval that would otherwise
+ * reject the staged op (crm#253). The registry's Swedish sentence is generic,
+ * so message_en carries what the agent needs: the three amounts and the
+ * routes that book an overpayment today. Where the excess belongs (another
+ * invoice, a liability to the customer, a write-off) is the user's call, so
+ * the agent is told to ask rather than pick an account. Keep the English free
+ * of Swedish letters: a message that reads as Swedish (isSwedishUserMessage)
+ * would replace the registry's message_sv instead of riding message_en.
+ *
+ * The settle-and-book-the-excess route depends on the invoice: a sent or
+ * overdue invoice can be marked paid for exactly its remaining amount (any
+ * accounting method), with the excess as its own two-line verifikat and the
+ * bank row split across both; a partially paid one cannot, so it takes one
+ * verifikat linked through its 1510 credit, which only faktureringsmetoden
+ * reads (kontantmetoden matches the bank debit, which here exceeds the
+ * remaining amount).
+ */
+function overpaymentRefusal(
+  outcome: Extract<MatchPaymentPlanResult, { code: 'MATCH_AMOUNT_EXCEEDS_REMAINING' }>,
+  ctx: { invoiceStatus: string; transactionDate: string },
+): Error {
+  const amount = (n: number) => `${AGENT_AMOUNT_FORMAT.format(n)} ${outcome.currency}`
+  const { transaction_amount: paid, remaining_amount: remaining, excess } = outcome.details
+  const band = outcome.absorbsOre
+    ? `only a difference under ${amount(ORE_ROUNDING_SETTLEMENT_MAX)} is settled automatically as a rounding difference on 3740`
+    : 'a cross-currency match cannot settle more than the remaining amount'
+  const separately =
+    ctx.invoiceStatus === 'partially_paid'
+      ? `book one verifikat with gnubok_create_voucher (debit the bank account ${amount(paid)}, credit 1510 ${amount(remaining)}, ` +
+        `credit the account the user chose ${amount(excess)}), settle the invoice from it with gnubok_link_invoice_to_voucher ` +
+        `(faktureringsmetoden only), and link the bank row to it with gnubok_reconcile_match`
+      : `settle this invoice with gnubok_mark_invoice_as_paid (payment_date ${ctx.transactionDate}; it books exactly ${amount(remaining)}), ` +
+        `book the ${amount(excess)} excess with gnubok_create_voucher (debit the bank account, credit the account the user chose), ` +
+        `then link the bank row to both verifikat with one gnubok_reconcile_match pair (allocations ${amount(remaining)} and ${amount(excess)})`
+  return codedRefusal(
+    'MATCH_AMOUNT_EXCEEDS_REMAINING',
+    `Not staged: the transaction (${amount(paid)}) exceeds the invoice's remaining amount (${amount(remaining)}) by ${amount(excess)}. ` +
+      `A match settles at most the remaining amount and ${band}, so approval would reject this match. ` +
+      'Ask the user where the excess belongs (another open invoice, or a liability to the customer to refund or offset), then: ' +
+      `if it pays other open invoices from the same customer, allocate the transaction across them with gnubok_match_batch_allocate ` +
+      `(allocations summing to ${amount(paid)}); otherwise ${separately}.`,
+    {
+      description:
+        'Do not retry this match unchanged: it fails until the amounts change. Ask the user where the excess belongs, then use a route the message names: gnubok_match_batch_allocate when it pays other invoices, otherwise settle the invoice and book the excess as its own verifikat.',
+    },
+  )
+}
+
+/**
+ * Stage-time twin of the commit executor's payment plan for a
+ * transaction-to-invoice match: the same planTransactionInvoiceMatch call
+ * (FX resolution, pure-SEK öre absorption, the remaining amount after earlier
+ * partial payments), throwing the refusal the approval would answer with, so
+ * no doomed op is staged (crm#253). The executor re-runs the plan as the hard
+ * gate. A rate that is not available yet fails open: it can be published
+ * before approval.
+ */
+async function refuseUnpayableMatch(
+  supabase: SupabaseClient,
+  transaction: MatchTransactionAmounts,
+  invoice: MatchInvoiceAmounts & { status: string },
+): Promise<void> {
+  const matchPlan = await planTransactionInvoiceMatch(supabase, transaction, invoice)
+  if (matchPlan.ok || matchPlan.code === 'MATCH_INVOICE_FX_RATE_UNAVAILABLE') return
+  if (matchPlan.code === 'MATCH_AMOUNT_EXCEEDS_REMAINING') {
+    throw overpaymentRefusal(matchPlan, { invoiceStatus: invoice.status, transactionDate: transaction.date })
+  }
+  throw registryError(matchPlan.code)
+}
+
 export interface McpTool {
   name: string
   // Top-level Tool.title per MCP spec 2025-06-18 (human-facing label for
@@ -1196,6 +1338,19 @@ const AUTO_PERIOD_DATE_KEYS = [
 ] as const
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * A tool's qr_mode argument: one of INVOICE_QR_MODES, or null/omitted for
+ * the company default (invoice_qr_mode). Anything else is refused the way
+ * InvoiceQrModeSchema refuses it on the web API.
+ */
+function parseQrModeArg(value: unknown): InvoiceQrMode | null {
+  if (value === undefined || value === null) return null
+  if (typeof value === 'string' && (INVOICE_QR_MODES as readonly string[]).includes(value)) {
+    return value as InvoiceQrMode
+  }
+  throw codedError('VALIDATION_ERROR', `qr_mode must be one of ${INVOICE_QR_MODES.join(', ')}, or null.`)
+}
 
 /**
  * `reason` is capped at 500 characters (inputSchema maxLength). Hosts do not
@@ -2271,6 +2426,7 @@ const TOOL_PREFLIGHT_MAP: Record<string, string> = {
   gnubok_reconcile_match: 'gnubok_get_reconciliation_status',
   gnubok_reconcile_signoff: 'gnubok_get_reconciliation_status',
   gnubok_reconcile_residual: 'gnubok_get_reconciliation_status',
+  gnubok_split_opening_balances_per_project: 'gnubok_preview_opening_balance_split',
 }
 
 /**
@@ -3026,6 +3182,11 @@ async function computeVatReportWithRutor(
  * aggregate to the reverse-charge input accounts (2645/2647). Both call sites
  * have it in hand, so both pass it; the parameter stays optional only because
  * the check itself degrades gracefully without it.
+ *
+ * `revenueWithoutRuta` feeds REVENUE_ACCOUNT_WITHOUT_RUTA (#3387). The validate
+ * tool passes the list its declaration carries; the close check passes nothing
+ * and it is derived here from the same account totals and dynamic account
+ * resolution its rutor came from, through core's revenueAccountsWithoutRuta.
  */
 async function runVatCompletenessChecks(
   supabase: SupabaseClient,
@@ -3037,6 +3198,7 @@ async function runVatCompletenessChecks(
   accountTotals?: VatCheckAccountTotals,
   dynamicVatAccounts?: Awaited<ReturnType<typeof fetchDynamicVatAccounts>>,
   rcBasisByRate?: { r25: number; r12: number; r6: number },
+  revenueWithoutRuta?: VatRevenueAccountWithoutRuta[],
 ): Promise<VatDeclarationCheck[]> {
   let scan: RcBasisGapScan
   try {
@@ -3054,7 +3216,15 @@ async function runVatCompletenessChecks(
         rcBasisByRate: rcBasisByRate ?? rcBasisTotalsByRate(accountTotals, dynamicVatAccounts),
       }
     : undefined
-  return withRcBasisGapFindings(runVatDeclarationChecks(rutor, accountTotals), scan, evidence)
+  const revenueAccounts = revenueWithoutRuta ??
+    (accountTotals && dynamicVatAccounts
+      ? revenueAccountsWithoutRuta(accountTotals, dynamicVatAccounts)
+      : undefined)
+  return withRcBasisGapFindings(
+    runVatDeclarationChecks(rutor, accountTotals, { revenueAccountsWithoutRuta: revenueAccounts }),
+    scan,
+    evidence,
+  )
 }
 
 /** Wire shape for a completeness finding on the MCP surface. */
@@ -3156,6 +3326,16 @@ export const BANK_ROWS_MISSING_HINT =
   'gnubok_create_transactions. Koppla dem sedan till de befintliga verifikaten i Stäm av eller med ' +
   'gnubok_reconcile_match: ingenting bokförs på nytt, så kategorisera dem inte. En PDF i Underlag ' +
   'eller en signerad avstämning ersätter inte bankraderna.'
+
+/**
+ * Hint for the REVENUE_ACCOUNT_WITHOUT_RUTA finding (#3387): the fix is on the
+ * account, not in the ledger, and it is the user's call which ruta the sales
+ * belong in. Exported so the test can pin the contract.
+ */
+export const REVENUE_ACCOUNT_WITHOUT_RUTA_HINT =
+  'Fråga användaren vad kontot avser och sätt sedan default_vat_treatment på kontot med ' +
+  'gnubok_update_account (standard_25/reduced_12/reduced_6 för ruta 05, exempt för ruta 42). ' +
+  'Avser kontot inte försäljning, sätt default_vat_rate 0. Inga verifikat ändras.'
 
 /**
  * Completeness codes that describe the omvänd-skattskyldighet pair. They keep
@@ -3655,18 +3835,12 @@ export async function computeVatCloseCheck(
   }
 
   // 4) Blocker scans: run in parallel
-  const [uncategorizedRes, unapprovedRes, recon, missingUnderlag] = await Promise.all([
-    // is_ignored = false: a transaction the user ignored on purpose (private,
-    // duplicate feed row) is not waiting to be booked, and the same predicate
-    // drives the Att göra worklist (lib/worklist/categories.ts). The column is
-    // NOT NULL DEFAULT false, so eq is exact.
-    supabase
-      .from('transactions')
-      .select('id', { count: 'exact', head: true })
-      .eq('company_id', companyId)
-      .gte('date', start).lte('date', end)
-      .is('journal_entry_id', null)
-      .eq('is_ignored', false),
+  const [unbooked, unapprovedRes, recon, missingUnderlag] = await Promise.all([
+    // The shared "no verifikat" predicate (lib/transactions/unbooked.ts), the
+    // same one the period-lock guard, attention and report data_status use.
+    // The local journal_entry_id IS NULL count it replaced also counted
+    // private rows and bulk-booked rows anchored via transaction_voucher_links.
+    countUnbookedBankTransactions(supabase, companyId, { fromDate: start, toDate: end }),
     supabase
       .from('supplier_invoices')
       .select('id', { count: 'exact', head: true })
@@ -3714,13 +3888,13 @@ export async function computeVatCloseCheck(
       hint: `Företagets räkenskapsår börjar månad ${configuredStartMonth}. Kontrollera räkenskapsåren med gnubok_list_fiscal_periods och ange year = det år räkenskapsåret slutar.`,
     })
   }
-  const uncategorizedCount = uncategorizedRes.count ?? 0
+  const uncategorizedCount = unbooked.total
   if (uncategorizedCount > 0) {
     blockers.push({
       kind: 'uncategorized_transactions',
       severity: 'high',
       count: uncategorizedCount,
-      message: `${uncategorizedCount} okategoriserade banktransaktioner i perioden`,
+      message: `${uncategorizedCount} banktransaktioner i perioden saknar verifikat`,
       hint: UNCATEGORIZED_TRANSACTIONS_HINT,
     })
   }
@@ -3861,7 +4035,9 @@ export async function computeVatCloseCheck(
       // add basis pairs, that would double-count rutor 20-24.
       hint: check.code === 'RC_BASIS_MISSING' && check.status === 'ERROR'
         ? RC_BASIS_MISSING_HINT
-        : check.rutor?.length
+        : check.code === 'REVENUE_ACCOUNT_WITHOUT_RUTA'
+          ? REVENUE_ACCOUNT_WITHOUT_RUTA_HINT
+          : check.rutor?.length
           ? `Granska ${check.rutor.join(', ')} i huvudboken innan inlämning (gnubok_get_general_ledger).`
           : 'Granska underlaget i huvudboken innan inlämning (gnubok_get_general_ledger).',
       check_code: check.code,
@@ -4027,7 +4203,7 @@ async function resolveReportDimensionFilter(
 const REPORT_DIMENSIONS_FILTER_SCHEMA = {
   type: 'object',
   additionalProperties: { type: 'string' },
-  description: 'Filter: SIE dim no → value (code OR name, resolved server-side), e.g. {"6":"P001"}. P&L view only: opening balances are excluded when set.',
+  description: 'Filter: SIE dim no → value (code OR name), e.g. {"6":"P001"}. IB is scoped to it too: its tagged IB lines or prior tagged history (a project carries its balance; 26xx and annually reset dimensions open at 0).',
 } as const
 
 // Optional custom date range on the report tools. Historically from_date /
@@ -6295,14 +6471,7 @@ export const tools: McpTool[] = [
       // applicability declaration are always shown (universal).
       const applicable = includeAll
         ? tagFiltered
-        : tagFiltered.filter((s) => {
-            if (!s.applicability) return true
-            const a = s.applicability
-            if (a.entity_type && a.entity_type !== 'both' && entityType && entityType !== a.entity_type) return false
-            if (a.requires?.includes('employees') && !hasEmployees) return false
-            if (a.requires?.includes('vat_registered') && !vatRegistered) return false
-            return true
-          })
+        : tagFiltered.filter((s) => skillAppliesToCompany(s.applicability, { entityType, hasEmployees, vatRegistered }))
 
       return {
         skills: applicable.map((s) => ({
@@ -8886,7 +9055,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_create_invoice',
     keywords: ['faktura', 'kundfaktura', 'fakturera', 'ny faktura'],
     title: 'Create Customer Invoice',
-    description: 'Stage a new invoice or quote (offert). Validates inputs, calculates VAT preview. Items accept dims bags. Approval creates a draft (F-number assigned on send) or an open quote numbered OF-nnn at once; quotes require valid_until and never book.',
+    description: 'Stage a new invoice or quote (offert) with a VAT preview. Approval creates a draft (F-number assigned on send) or an open quote numbered OF-nnn at once; quotes never book.',
     outputSchema: STAGED_OPERATION_SCHEMA,
     inputSchema: {
       type: 'object',
@@ -8901,30 +9070,8 @@ export const tools: McpTool[] = [
         valid_until: { type: 'string', description: 'YYYY-MM-DD, quotes only' },
         items: {
           type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              description: { type: 'string' },
-              quantity: { type: 'number' },
-              unit: { type: 'string', description: 'st, tim, dag, mån' },
-              unit_price: { type: 'number', description: 'Price per unit excl. VAT' },
-              discount_percent: { type: 'number', description: 'Line discount 0-100 (rabatt); line total and VAT computed net of it' },
-              vat_rate: { type: 'number', description: 'VAT rate 0-100 (optional override)' },
-              article_id: {
-                type: 'string',
-                description: 'Optional article UUID from gnubok_list_articles. Prefills description, unit, unit_price, revenue account and, only when compatible with the customer VAT rules, vat_rate. Values set on the line win.',
-              },
-              line_type: { type: 'string', enum: ['product', 'text'], description: 'text = free-text row: no amounts, never books.' },
-              revenue_account: { type: ['string', 'null'], description: 'BAS class 1-3 posting-account override.' },
-              dimensions: {
-                type: 'object',
-                additionalProperties: { type: 'string' },
-                description: 'Dims bag {sie_dim_no: kod eller namn}, e.g. {"6":"P001"}. Wins per key over default_dimensions.',
-              },
-            },
-            required: ['quantity'],
-          },
-          description: 'Invoice line items',
+          items: CREATE_INVOICE_ITEM_SCHEMA,
+          description: 'ROT/RUT and periodisering line fields as on gnubok_update_invoice.',
         },
         default_dimensions: {
           type: 'object',
@@ -8942,6 +9089,7 @@ export const tools: McpTool[] = [
           type: 'string',
           description: 'Optional https pay link for THIS invoice (e.g. Stripe); rendered in the invoice email and PDF.',
         },
+        qr_mode: { type: 'string', enum: [...INVOICE_QR_MODES], description: 'PDF payment QR' },
       },
       required: ['customer_id', 'items'],
     },
@@ -8952,6 +9100,26 @@ export const tools: McpTool[] = [
 
       if (!customerId) throw new Error('customer_id is required. Use gnubok_list_customers to find IDs.')
       if (!rawItems?.length) throw new Error('At least one item is required.')
+
+      // Line keys the tool does not know are refused, never staged: they were
+      // silently dropped at approval, so a field the agent believed it set
+      // (a deduction, a periodisering) was simply missing from the invoice.
+      const unknownLineKeys = rawItems.flatMap((item, i) =>
+        item && typeof item === 'object'
+          ? Object.keys(item).filter((key) => !CREATE_INVOICE_ITEM_KEYS.has(key)).map((key) => ({ i, key }))
+          : [],
+      )
+      if (unknownLineKeys.length > 0) {
+        const validKeys = Array.from(CREATE_INVOICE_ITEM_KEYS).join(', ')
+        throw fieldValidationError(
+          'Unknown invoice line field',
+          unknownLineKeys.map(({ i, key }) => ({
+            field: `items.${i}.${key}`,
+            en: `not a line field of gnubok_create_invoice. Valid line fields: ${validKeys}`,
+            sv: `okänt fält på fakturaraden. Giltiga fält: ${validKeys}`,
+          })),
+        )
+      }
 
       const today = new Date().toISOString().split('T')[0]
       const currency = ((args.currency as string) || 'SEK') as Currency
@@ -8977,6 +9145,9 @@ export const tools: McpTool[] = [
       } else if (validUntil !== undefined) {
         throw codedError('VALIDATION_ERROR', 'valid_until applies to quotes only: set document_type "quote".')
       }
+      // Same closed set as the web API (InvoiceQrModeSchema); null and an
+      // omitted value both inherit the company's invoice_qr_mode.
+      const qrMode = parseQrModeArg(args.qr_mode)
 
       // Fetch customer (full row for VAT rules) BEFORE the article prefill:
       // an article's stored rate may only be adopted against this customer's
@@ -8992,13 +9163,11 @@ export const tools: McpTool[] = [
         throw new Error('Customer not found. Use gnubok_list_customers to find valid IDs.')
       }
 
-      // VAT rules from customer type (same logic as web UI)
-      const vatRules = getVatRules(customer.customer_type, customer.vat_number_validated, customer.country)
       // The DEFAULT set governs article-rate adoption (web parity: the picker
       // only adopts a rate the customer could have picked themselves); a
       // customer locked to a single rate (foreign business 0%) adopts nothing.
-      // Gating below stays on the PERMITTED set: adoption and validation are
-      // deliberately different sets.
+      // The builder below gates on the PERMITTED set: adoption and validation
+      // are deliberately different sets.
       const adoptableVatRates = getArticleVatRateAdoptionSet(customer.customer_type, customer.vat_number_validated, customer.country)
 
       // Article prefill (web line picker parity): the line's own values win,
@@ -9059,52 +9228,6 @@ export const tools: McpTool[] = [
         }
       }
 
-      // Gate on the PERMITTED set, not the picker default, exactly like
-      // buildInvoiceWriteData and commitCreateInvoice: huvudregeln (ML 6 kap.
-      // 34 §) taxes a B2B service where the buyer is established, so 0% is the
-      // default for a foreign business; but the ML 6 kap. supplies taxed where
-      // they are performed (hotel/restaurang 12%, persontransport and event
-      // admission 6%, fastighetstjänst and korttidsuthyrning 25%) carry Swedish
-      // VAT even to a German or a US company. Gating on the default made a
-      // Stockholm hotel night impossible to invoice through this tool at all.
-      // The default is still 0% (vatRules.rate is the fallback below), so a
-      // Swedish rate only reaches the staged operation when the agent set it on
-      // that line explicitly.
-      const permittedRates = getPermittedVatRates(customer.customer_type, customer.vat_number_validated, customer.country)
-      const allowedRates = new Set(permittedRates.map((r) => r.rate))
-
-      // Calculate per-item VAT (line totals net of any per-line discount)
-      const subtotal = items.reduce(
-        (s, item) => s + computeLineNet(item.quantity, item.unit_price, item.discount_percent),
-        0,
-      )
-      let vatAmount = 0
-      for (const item of items) {
-        const itemRate = item.vat_rate !== undefined ? item.vat_rate : vatRules.rate
-        if (!allowedRates.has(itemRate)) {
-          throw new Error(
-            `VAT rate ${itemRate}% is not allowed for customer type "${customer.customer_type}". ` +
-            `Allowed rates: ${permittedRates.map((r) => r.rate + '%').join(', ')}`
-          )
-        }
-        const lineTotal = computeLineNet(item.quantity, item.unit_price, item.discount_percent)
-        vatAmount += Math.round(lineTotal * itemRate / 100 * 100) / 100
-      }
-      const total = subtotal + vatAmount
-
-      // Why the treatment is what it is (#2749, #2558): the gate above is
-      // silent about WHICH reverse-charge condition failed, so an eu_business
-      // customer whose number was never VIES-validated got 25 % with no
-      // explanation. Same helper every surface renders. Staged structured
-      // (preview.vat_warnings, for the approval card and the agent) and
-      // folded into the tool message as a WARNING through complianceNote.
-      const vatWarnings = explainVatTreatment(
-        customer,
-        items
-          .filter((item) => item.line_type !== 'text')
-          .map((item) => (item.vat_rate !== undefined ? item.vat_rate : vatRules.rate)),
-      )
-
       // Due date from payment terms if not provided. A quote has no payment
       // due date: due_date mirrors valid_until (build-invoice-write parity).
       let dueDate = args.due_date as string | undefined
@@ -9116,39 +9239,65 @@ export const tools: McpTool[] = [
         dueDate = d.toISOString().split('T')[0]
       }
 
+      const stagedParams = {
+        customer_id: customerId,
+        document_type: documentType,
+        ...(isQuote ? { valid_until: validUntil } : {}),
+        items: stagedItems,
+        ...(resolvedDefaultDimensions && Object.keys(resolvedDefaultDimensions).length > 0
+          ? { default_dimensions: resolvedDefaultDimensions }
+          : {}),
+        invoice_date: invoiceDate,
+        due_date: dueDate,
+        currency,
+        our_reference: (args.our_reference as string) || null,
+        your_reference: (args.your_reference as string) || null,
+        invoice_marking: (args.invoice_marking as string) || null,
+        notes: (args.notes as string) || null,
+        payment_link_url: paymentLinkUrl,
+        ...(qrMode ? { qr_mode: qrMode } : {}),
+      }
+
+      // A dry run of the approval: commitCreateInvoice runs this same build
+      // on these same params, so the preview cannot show other totals, VAT or
+      // treatment than the invoice gets. Every rule of the shared builder
+      // refuses HERE, where the agent can fix it: the permitted VAT rates,
+      // a class 1-2 account on a VAT line, ROT/RUT, periodisering, articles.
+      const staged = await buildStagedInvoice({ supabase, companyId, customer, params: stagedParams })
+      if (!staged.ok) {
+        if ('validation' in staged) {
+          throw fieldValidationError('Invalid invoice', zodFieldIssues(staged.validation, stagedParams))
+        }
+        if ('dbError' in staged) throw dbError(staged.dbError)
+        throw codedRefusal(staged.code, describeInvoiceBuildRefusal(staged.code, staged.details))
+      }
+      const { invoiceFields, items: builtItems } = staged.build
+      // Why the treatment is what it is (#2749, #2558): the builder's
+      // explanation, staged structured (preview.vat_warnings, for the approval
+      // card and the agent) and folded into the tool message as a WARNING
+      // through complianceNote.
+      const vatWarnings = staged.build.warnings
+
       // Stage for user approval instead of creating directly
       return stagePendingOperation(supabase, companyId, userId, 'create_invoice',
-        `${isQuote ? 'Ny offert' : 'Ny faktura'}: ${customer.name} ${roundOre(total)} ${currency}`,
-        {
-          customer_id: customerId,
-          document_type: documentType,
-          ...(isQuote ? { valid_until: validUntil } : {}),
-          items: stagedItems,
-          ...(resolvedDefaultDimensions && Object.keys(resolvedDefaultDimensions).length > 0
-            ? { default_dimensions: resolvedDefaultDimensions }
-            : {}),
-          invoice_date: invoiceDate,
-          due_date: dueDate,
-          currency,
-          our_reference: (args.our_reference as string) || null,
-          your_reference: (args.your_reference as string) || null,
-          invoice_marking: (args.invoice_marking as string) || null,
-          notes: (args.notes as string) || null,
-          payment_link_url: paymentLinkUrl,
-        },
+        `${isQuote ? 'Ny offert' : 'Ny faktura'}: ${customer.name} ${roundOre(invoiceFields.total)} ${currency}`,
+        stagedParams,
         {
           customer_name: customer.name,
           customer_type: customer.customer_type,
-          items: stagedItems.map(item => ({
+          items: stagedItems.map((item, i) => ({
             ...item,
-            line_total: computeLineNet(item.quantity, item.unit_price, item.discount_percent),
-            vat_rate: item.vat_rate ?? vatRules.rate,
+            line_total: builtItems[i].line_total,
+            vat_rate: builtItems[i].vat_rate,
+            vat_amount: builtItems[i].vat_amount,
+            ...(builtItems[i].deduction_amount > 0 ? { deduction_amount: builtItems[i].deduction_amount } : {}),
           })),
-          subtotal: Math.round(subtotal * 100) / 100,
-          vat_amount: Math.round(vatAmount * 100) / 100,
-          total: Math.round(total * 100) / 100,
+          subtotal: roundOre(invoiceFields.subtotal),
+          vat_amount: roundOre(invoiceFields.vat_amount),
+          total: roundOre(invoiceFields.total),
+          ...(invoiceFields.deduction_total > 0 ? { deduction_total: roundOre(invoiceFields.deduction_total) } : {}),
           currency,
-          vat_treatment: vatRules.treatment,
+          vat_treatment: invoiceFields.vat_treatment,
           invoice_date: invoiceDate,
           due_date: dueDate,
           document_type: documentType,
@@ -9851,7 +10000,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_get_trial_balance',
     keywords: ['råbalans', 'saldobalans'],
     title: 'Trial Balance (Råbalans)',
-    description: 'Saldobalans for a period (default: latest): balances and debit/credit totals. A dimensions filter gives partial_view: tagged lines only, no IB, is_balanced meaningless.',
+    description: 'Saldobalans for a period (default: latest): balances and debit/credit totals. A dimensions filter gives partial_view: tagged lines only, IB scoped to the value (tagged IB lines or history), is_balanced meaningless.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -9890,15 +10039,18 @@ export const tools: McpTool[] = [
       // default silently truncated any period with >1000 entry lines (wrong
       // sums, false "not balanced"), and it ignored opening balances.
       // generateTrialBalance paginates and rolls IB forward.
-      const trialBalance = await generateTrialBalance(
-        supabase,
-        companyId,
-        period.id,
-        // Saldobalans is the ledger as posted, resultatavslut included.
-        dimFilter.filter
-          ? { closingEntry: 'include' as const, dimensions: dimFilter.filter }
-          : { closingEntry: 'include' as const },
-      )
+      const [trialBalance, dataStatus] = await Promise.all([
+        generateTrialBalance(
+          supabase,
+          companyId,
+          period.id,
+          // Saldobalans is the ledger as posted, resultatavslut included.
+          dimFilter.filter
+            ? { closingEntry: 'include' as const, dimensions: dimFilter.filter }
+            : { closingEntry: 'include' as const },
+        ),
+        buildReportDataStatus(supabase, companyId, { periodId: period.id }),
+      ])
 
       const rows = trialBalance.rows
         .map((r) => {
@@ -9927,14 +10079,16 @@ export const tools: McpTool[] = [
         period_end: period.period_end,
         account_count: rows.length,
         // Saldobalans is not a filterable report on the dashboard. The
-        // filter stays because agents read it as P&L per project, but the
-        // answer must say what it is: tagged lines only, no IB (company-
-        // wide), and a balance check that tagged lines need not pass.
+        // filter stays because agents read it per project, but the answer
+        // must say what it is: tagged lines only, IB scoped to the object
+        // (its tagged IB lines, or its prior tagged history when the year
+        // has no IB entry), and a balance check tagged lines need not pass.
         ...(dimFilter.filter
-          ? { partial_view: dimensionFilterPartialView(dimFilter.filter, { dropsOpeningBalances: true, balanceCheck: true }) }
+          ? { partial_view: dimensionFilterPartialView(dimFilter.filter, { scopedOpeningBalances: true, balanceCheck: true }) }
           : {}),
         ...(dimFilter.filter ? { dimension_filter: dimFilter.filter } : {}),
         ...(dimFilter.resolutions.length > 0 ? { dimension_resolutions: dimFilter.resolutions } : {}),
+        data_status: dataStatus,
       }
     },
   },
@@ -10089,8 +10243,9 @@ export const tools: McpTool[] = [
 
       // Same inputs as the KPI page (src/app/api/reports/kpi/route.ts): the
       // company's account overrides, receivables as of the range end and
-      // payment days over payments inside the range.
-      const [accountOverrides, incomeStatement, trialBalance, arLedger, monthlyBreakdown, paidInvoices] =
+      // payment days over payments inside the range. data_status covers the
+      // same range as the figures.
+      const [accountOverrides, incomeStatement, trialBalance, arLedger, monthlyBreakdown, paidInvoices, dataStatus] =
         await Promise.all([
           fetchKpiAccountOverrides(supabase, companyId),
           generateIncomeStatement(supabase, companyId, period.id, range),
@@ -10098,6 +10253,7 @@ export const tools: McpTool[] = [
           generateARLedger(supabase, companyId, receivablesAsOf),
           generateMonthlyBreakdown(supabase, companyId, period.id),
           fetchPaidInvoicesInRange(supabase, companyId, rangeStart, rangeEnd),
+          buildReportDataStatus(supabase, companyId, { periodId: period.id, ...range }),
         ])
 
       const report = {
@@ -10124,6 +10280,7 @@ export const tools: McpTool[] = [
         total_revenue: incomeStatement.total_revenue,
         total_expenses: incomeStatement.total_expenses,
         months: monthlyBreakdown.months,
+        data_status: dataStatus,
       }
       return pickKpiMetrics(report, metrics)
     },
@@ -10165,15 +10322,18 @@ export const tools: McpTool[] = [
       const range = parseReportRangeArgs(args, period, { from: 'from_date', to: 'to_date' })
       const dimFilter = await resolveReportDimensionFilter(supabase, companyId, args.dimensions)
 
-      const result = await generateIncomeStatement(
-        supabase,
-        companyId,
-        period.id,
-        {
-          ...range,
-          ...(dimFilter.filter ? { dimensions: dimFilter.filter } : {}),
-        },
-      )
+      const [result, dataStatus] = await Promise.all([
+        generateIncomeStatement(
+          supabase,
+          companyId,
+          period.id,
+          {
+            ...range,
+            ...(dimFilter.filter ? { dimensions: dimFilter.filter } : {}),
+          },
+        ),
+        buildReportDataStatus(supabase, companyId, { periodId: period.id, ...range }),
+      ])
       // Echo the effective range, not the fiscal-period bounds.
       result.period = {
         start: range.fromDate ?? period.period_start,
@@ -10185,6 +10345,7 @@ export const tools: McpTool[] = [
         ...result,
         ...(dimFilter.filter ? { dimension_filter: dimFilter.filter } : {}),
         ...(dimFilter.resolutions.length > 0 ? { dimension_resolutions: dimFilter.resolutions } : {}),
+        data_status: dataStatus,
       }
     },
   },
@@ -10311,6 +10472,8 @@ export const tools: McpTool[] = [
 
       const invoice = await fetchInvoiceWithCustomer(supabase, companyId, invoiceId)
 
+      // The customer was deleted while the draft pointed at it (crm#263).
+      if (invoiceLacksCustomer(invoice)) throw registryError('INVOICE_CUSTOMER_MISSING')
       const customer = invoice.customer as Customer
       if (!customer.email) throw new Error('Customer has no email address. Update customer details first.')
 
@@ -12005,15 +12168,19 @@ export const tools: McpTool[] = [
       rejectUnknownArgs(args, ['period_id', 'as_of_date'])
       const range = parseReportRangeArgs(args, period, { to: 'as_of_date' })
 
-      const result = await generateBalanceSheet(supabase, companyId, period.id, {
-        toDate: range.toDate,
-      })
+      const [result, dataStatus] = await Promise.all([
+        generateBalanceSheet(supabase, companyId, period.id, {
+          toDate: range.toDate,
+        }),
+        buildReportDataStatus(supabase, companyId, { periodId: period.id, toDate: range.toDate }),
+      ])
 
       return {
         period_name: period.name,
         ...result,
         // Echo the effective window: cumulative from period start to as_of_date.
         period: { start: period.period_start, end: range.toDate ?? period.period_end },
+        data_status: dataStatus,
       }
     },
   },
@@ -12059,18 +12226,22 @@ export const tools: McpTool[] = [
 
       const dimFilter = await resolveReportDimensionFilter(supabase, companyId, args.dimensions)
 
-      const report = await generateGeneralLedger(
-        supabase,
-        companyId,
-        periodId!,
-        accountFrom,
-        accountTo,
-        dimFilter.filter ? { dimensions: dimFilter.filter } : undefined,
-      )
+      const [report, dataStatus] = await Promise.all([
+        generateGeneralLedger(
+          supabase,
+          companyId,
+          periodId!,
+          accountFrom,
+          accountTo,
+          dimFilter.filter ? { dimensions: dimFilter.filter } : undefined,
+        ),
+        buildReportDataStatus(supabase, companyId, { periodId: periodId! }),
+      ])
       return {
         ...report,
         ...(dimFilter.filter ? { dimension_filter: dimFilter.filter } : {}),
         ...(dimFilter.resolutions.length > 0 ? { dimension_resolutions: dimFilter.resolutions } : {}),
+        data_status: dataStatus,
       }
     },
   },
@@ -12746,6 +12917,11 @@ export const tools: McpTool[] = [
       if (duplicate.status === 'blocked' || duplicate.status === 'mismatch') {
         throw duplicateCandidateRefusal(duplicate)
       }
+
+      // Overpayment guard at stage time (crm#253): a match the approval would
+      // reject is refused here, with the amounts and the routes that do book
+      // it, instead of being staged and failing at approval.
+      await refuseUnpayableMatch(supabase, transaction, invoice)
 
       const txDesc = transaction.merchant_name || transaction.description || transactionId
 
@@ -14101,7 +14277,7 @@ export const tools: McpTool[] = [
       // out of scope for this tool.
       const { data: transactions, error: txError } = await supabase
         .from('transactions')
-        .select('id, description, merchant_name, amount, currency, date, reference, journal_entry_id, invoice_id')
+        .select('id, description, merchant_name, amount, currency, amount_sek, exchange_rate, date, reference, journal_entry_id, invoice_id')
         .eq('company_id', companyId)
         .gte('date', dateFrom)
         .lte('date', dateTo)
@@ -14132,6 +14308,11 @@ export const tools: McpTool[] = [
       }
 
       const proposals: Proposal[] = []
+      // The rows behind each proposal, for the stage-time payment plan below.
+      const proposalSources = new Map<
+        string,
+        { tx: (typeof txList)[number]; invoice: Awaited<ReturnType<typeof findMatchingInvoices>>[number]['invoice'] }
+      >()
       let belowThreshold = 0
       let noMatchFound = 0
 
@@ -14164,6 +14345,7 @@ export const tools: McpTool[] = [
           belowThreshold++
         } else {
           proposals.push({ ...baseProposal, decision: 'propose' as const })
+          proposalSources.set(baseProposal.transaction_id, { tx, invoice: best.invoice })
         }
       }
 
@@ -14191,6 +14373,11 @@ export const tools: McpTool[] = [
       let stagedCount = 0
       for (const p of proposed) {
         try {
+          // The single-match tool's stage-time overpayment guard (crm#253): a
+          // proposal the approval would reject lands in stage_failures with
+          // the amounts and the routes that book it, instead of being staged.
+          const source = proposalSources.get(p.transaction_id)
+          if (source) await refuseUnpayableMatch(supabase, source.tx, source.invoice)
           await stagePendingOperation(
             supabase,
             companyId,
@@ -15510,7 +15697,7 @@ export const tools: McpTool[] = [
     name: 'gnubok_create_supplier_invoice_from_inbox',
     keywords: ['leverantörsfaktura', 'inkorg', 'underlag'],
     title: 'Create Supplier Invoice from Inbox',
-    description: "Atomic: turn an OCR'd inbox item into a staged supplier invoice. Resolves supplier, builds lines from extracted_data, applies VAT + FX + dimension tags, attaches the document. Honors dry_run. Unresolved supplier or a credit note → staged:false + next.",
+    description: "Atomic: turn an OCR'd inbox item into a staged supplier invoice. Resolves supplier, builds lines from extracted_data, applies VAT + FX + dimension tags, attaches the document. Honors dry_run. Unresolved supplier, a line with no account, or a credit note → staged:false + next.",
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -15892,6 +16079,55 @@ export const tools: McpTool[] = [
         rawLineOverrides.map((o, i) => [o.line_number, parseDimensionsArg(o.dimensions, `line_overrides[${i}].dimensions`)]),
       )
 
+      // Every line's account comes from line_overrides, an agent-supplied
+      // accountSuggestion or the supplier's default_expense_account, and is
+      // held to the rule CreateSupplierInvoiceItemSchema holds the routes to.
+      // Nothing is guessed: the AI extraction and Peppol never suggest an
+      // account, so the old '4000' fallback booked every line of a supplier
+      // without a default to Inköp av varor. A line left without an account
+      // stops the staging the way an unresolved supplier does.
+      const lineAccounts = lineItemsExt.map((li, idx) =>
+        lineOverrideMap.get(idx + 1) ?? (li.accountSuggestion as string | null | undefined) ?? supplierDefaultExpenseAccount,
+      )
+      const unaccountedLines = lineItemsExt.flatMap((li, idx) => {
+        const account = lineAccounts[idx]
+        if (typeof account === 'string' && ACCOUNT_NUMBER_RE.test(account)) return []
+        return [{
+          line_number: idx + 1,
+          description: (li.description as string | undefined) ?? null,
+          line_total: Number(li.line_total ?? li.lineTotal ?? li.amount) || 0,
+          ...(account ? { invalid_account: account } : {}),
+        }]
+      })
+      if (unaccountedLines.length > 0) {
+        const entry = getErrorEntry('SI_CREATE_ITEM_ACCOUNT_MISSING')
+        return {
+          staged: false,
+          risk_level: getRiskLevel('create_supplier_invoice_from_inbox'),
+          actor: actor ?? { type: 'user' },
+          message:
+            `${entry?.message_sv ?? 'En eller flera fakturarader saknar konto.'} `
+            + `Nothing was staged: line(s) ${unaccountedLines.map((l) => l.line_number).join(', ')} have no valid account.`
+            + (supplierDefaultExpenseAccount ? '' : ' The supplier has no default_expense_account.'),
+          preview: {
+            supplier_id: supplierId,
+            supplier_resolution: supplierResolution,
+            supplier_default_expense_account: supplierDefaultExpenseAccount,
+            unaccounted_lines: unaccountedLines,
+          },
+          next: {
+            description:
+              'Choose a BAS account for each line in preview.unaccounted_lines from the underlag, then retry with the same arguments plus line_overrides[].account_number. A default expense account on the supplier fills its lines from then on.',
+            tool: 'gnubok_create_supplier_invoice_from_inbox',
+            args: {
+              inbox_item_id: inboxItemId,
+              ...(supplierIdOverride ? { supplier_id_override: supplierIdOverride } : {}),
+              line_overrides: unaccountedLines.map((l) => ({ line_number: l.line_number })),
+            },
+          },
+        }
+      }
+
       // Resolve-don't-select: parse the invoice-level default bag + each line's
       // own bag, then resolve codes AND natural-language names against the
       // registry in ONE pass (zero queries when nothing is tagged; free-text
@@ -15907,7 +16143,8 @@ export const tools: McpTool[] = [
       const resolvedDefaultDimensions = resolvedDimBags[0]
 
       // Translate extracted line items into the supplier_invoice_items shape.
-      // Priority: line_overrides → per-line accountSuggestion → supplier.default_expense_account → 4000.
+      // Accounts were resolved above: line_overrides, then accountSuggestion,
+      // then supplier.default_expense_account.
       const extractedLineItems = lineItemsExt.map((li, idx) => {
         const lineNumber = idx + 1
         const dimensions = resolvedDimBags[idx + 1]
@@ -15926,7 +16163,7 @@ export const tools: McpTool[] = [
         const vatAmount = rawVatAmount == null
           ? roundOre(lineTotal * vatRate)
           : Number(rawVatAmount) || 0
-        const accountNumber = lineOverrideMap.get(lineNumber) ?? (li.accountSuggestion as string | null) ?? supplierDefaultExpenseAccount ?? '4000'
+        const accountNumber = lineAccounts[idx] as string
         // Särskild löneskatt: same guard the create routes and the executor
         // enforce (SI_CREATE_SLP_INVALID_ACCOUNT). Reject at staging time on
         // the RESOLVED account so the agent learns immediately, instead of a
@@ -17607,7 +17844,6 @@ export const tools: McpTool[] = [
     async execute(args, companyId, userId, supabase) {
       assertSkatteverketEnabled()
       const { periodType, year, period } = parseVatPeriodArgs(args)
-      const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
 
       // LOCAL pre-flight first, and deliberately outside the SKV try/catch so a
       // ledger read failure surfaces as itself rather than as a Skatteverket
@@ -17628,6 +17864,7 @@ export const tools: McpTool[] = [
         rcInputTotalsFromDeclaration(declaration),
         undefined,
         declaration.rcBasisByRate,
+        declaration.revenueAccountsWithoutRuta,
       )
       const completenessOk = !isFilingBlocked(completenessChecks)
 
@@ -17635,12 +17872,10 @@ export const tools: McpTool[] = [
         const { redovisare, redovisningsperiod, momsuppgift } =
           await buildMomsuppgift(supabase, companyId, { periodType, year, period })
         const res = await skvRequest(
-          supabase, userId, companyId, 'POST', `/kontrollera/${redovisare}/${redovisningsperiod}`, momsuppgift,
+          supabase, userId, companyId, 'POST', `/kontrollera/${redovisare}/${redovisningsperiod}`,
+          { endpoint: 'kontrollera', agRegistreradId: redovisare, redovisningsperiod },
+          momsuppgift,
         )
-        await writeSkatteverketAudit(ctx, {
-          endpoint: 'kontrollera', agRegistreradId: redovisare, redovisningsperiod,
-          outcome: res.ok ? 'ok' : 'skv_error', responseStatus: res.status,
-        })
         if (!res.ok) {
           const text = await res.text().catch(() => '')
           throw new Error(`Skatteverket svarade med ${res.status}: ${text}`)
@@ -17695,7 +17930,6 @@ export const tools: McpTool[] = [
     async execute(args, companyId, userId, supabase, actor) {
       assertSkatteverketEnabled()
       const { periodType, year, period } = parseVatPeriodArgs(args)
-      const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
       // Mandatory stage-time validation: the preview carries the real
       // kontrollresultat and we never stage a declaration SKV would reject.
       // /kontrollera is read-only on SKV's side. Shares buildMomsuppgift with
@@ -17704,12 +17938,10 @@ export const tools: McpTool[] = [
         try {
           const prep = await buildMomsuppgift(supabase, companyId, { periodType, year, period })
           const res = await skvRequest(
-            supabase, userId, companyId, 'POST', `/kontrollera/${prep.redovisare}/${prep.redovisningsperiod}`, prep.momsuppgift,
+            supabase, userId, companyId, 'POST', `/kontrollera/${prep.redovisare}/${prep.redovisningsperiod}`,
+            { endpoint: 'kontrollera', agRegistreradId: prep.redovisare, redovisningsperiod: prep.redovisningsperiod },
+            prep.momsuppgift,
           )
-          await writeSkatteverketAudit(ctx, {
-            endpoint: 'kontrollera', agRegistreradId: prep.redovisare, redovisningsperiod: prep.redovisningsperiod,
-            outcome: res.ok ? 'ok' : 'skv_error', responseStatus: res.status,
-          })
           if (!res.ok) {
             const text = await res.text().catch(() => '')
             throw new Error(`Skatteverket svarade med ${res.status}: ${text}`)
@@ -17763,7 +17995,6 @@ export const tools: McpTool[] = [
       assertSkatteverketEnabled()
       const { periodType, year, period } = parseVatPeriodArgs(args)
       const state = (args.state as string) ?? 'both'
-      const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
       try {
         const redovisare = await resolveRedovisare(supabase, companyId)
         // Shared with validate/submit and the HTTP status service: helårsmoms
@@ -17774,11 +18005,10 @@ export const tools: McpTool[] = [
         let submitted: unknown = null
         let decided: unknown = null
         if (state === 'submitted' || state === 'both') {
-          const res = await skvRequest(supabase, userId, companyId, 'GET', `/inlamnat/${redovisare}/${redovisningsperiod}`)
-          await writeSkatteverketAudit(ctx, {
-            endpoint: 'inlamnat', agRegistreradId: redovisare, redovisningsperiod,
-            outcome: res.ok || res.status === 404 ? 'ok' : 'skv_error', responseStatus: res.status,
-          })
+          const res = await skvRequest(
+            supabase, userId, companyId, 'GET', `/inlamnat/${redovisare}/${redovisningsperiod}`,
+            { endpoint: 'inlamnat', agRegistreradId: redovisare, redovisningsperiod, okStatuses: [404] },
+          )
           if (res.status !== 404) {
             if (!res.ok) {
               const text = await res.text().catch(() => '')
@@ -17788,11 +18018,10 @@ export const tools: McpTool[] = [
           }
         }
         if (state === 'decided' || state === 'both') {
-          const res = await skvRequest(supabase, userId, companyId, 'GET', `/beslutat/${redovisare}/${redovisningsperiod}`)
-          await writeSkatteverketAudit(ctx, {
-            endpoint: 'beslutat', agRegistreradId: redovisare, redovisningsperiod,
-            outcome: res.ok || res.status === 404 ? 'ok' : 'skv_error', responseStatus: res.status,
-          })
+          const res = await skvRequest(
+            supabase, userId, companyId, 'GET', `/beslutat/${redovisare}/${redovisningsperiod}`,
+            { endpoint: 'beslutat', agRegistreradId: redovisare, redovisningsperiod, okStatuses: [404] },
+          )
           if (res.status !== 404) {
             if (!res.ok) {
               const text = await res.text().catch(() => '')
@@ -17899,7 +18128,6 @@ export const tools: McpTool[] = [
       assertSkatteverketEnabled()
       const salaryRunId = args.salary_run_id as string
       if (!salaryRunId) throw salaryRunIdRequired()
-      const ctx = createExtensionContext(supabase, userId, companyId, 'skatteverket')
       try {
         const lookup = await supabase
           .from('salary_runs')
@@ -17953,19 +18181,14 @@ export const tools: McpTool[] = [
         // and hid the local filing state it had already resolved.
         let kvittensRead: 'ok' | 'unavailable' = 'ok'
         try {
-          const res = await agiGetKvittenser({ mode: 'user', supabase, userId, companyId }, arbetsgivare, period)
-          await writeSkatteverketAudit(ctx, {
-            endpoint: 'kvittenser', agRegistreradId: arbetsgivare, redovisningsperiod: period,
-            outcome: res.ok ? 'ok' : 'skv_error', responseStatus: res.status,
-          })
+          // The transport audits the call, the gateway refusal included.
+          const res = await agiGetKvittenser(
+            { mode: 'user', supabase, userId, companyId }, arbetsgivare, period, { companyId, userId },
+          )
           if (res.ok) kvittenser = res.data.kvittenser
         } catch (err) {
           if (!isApigwClientRefusal(err)) throw err
           kvittensRead = 'unavailable'
-          await writeSkatteverketAudit(ctx, {
-            endpoint: 'kvittenser', agRegistreradId: arbetsgivare, redovisningsperiod: period,
-            outcome: 'auth_error', responseStatus: 401,
-          })
         }
         return {
           salary_run_id: salaryRunId,
@@ -20510,10 +20733,22 @@ export const tools: McpTool[] = [
       // The `kind` strings are this tool's public contract: never rename one.
       // A blocker with no mapped code falls back to the wording heuristic
       // (which also catches legacy English messages), then to 'other'.
+      // #3440: while the cut-off is suspended, its blocker carries the
+      // suspension code and remediation, so an agent stops instead of
+      // reaching for gnubok_post_kontantmetod_cutoff or a manual voucher.
+      const cutoffSuspension = isKontantmetodCutoffSuspended()
+        ? getErrorEntry(KONTANTMETOD_CUTOFF_SUSPENDED_CODE)
+        : undefined
       const blockers = validation.blockers.map(({ code, message }) => ({
         kind: YEAR_END_BLOCKER_KIND[code] ?? classifyYearEndBlockerMessage(message),
         severity: 'high' as const,
         message,
+        ...(cutoffSuspension && code === 'KONTANTMETOD_CUTOFF_REQUIRED'
+          ? {
+              error_code: KONTANTMETOD_CUTOFF_SUSPENDED_CODE,
+              ...(cutoffSuspension.remediation ? { remediation: cutoffSuspension.remediation } : {}),
+            }
+          : {}),
       }))
 
       let preview = null
@@ -20560,7 +20795,12 @@ export const tools: McpTool[] = [
     name: 'gnubok_post_kontantmetod_cutoff',
     keywords: ['kontantmetoden', 'bokslutsmetod', 'brytdag'],
     title: 'Post Cash-Method Year-End Cut-Off',
-    description: 'Stage the exact year-end receivable/payable cut-off and next-period reversals required for kontantmetoden. Review all proposed lines, then approve with confirmed=true.',
+    // While isKontantmetodCutoffSuspended() is true (#3440) the description
+    // leads with the suspension, so an agent planning from tools/list or
+    // search does not promise the user a cut-off it cannot stage.
+    description: isKontantmetodCutoffSuspended()
+      ? 'TEMPORARILY SUSPENDED (#3440): refuses with KONTANTMETOD_CUTOFF_SUSPENDED. Never book the year-end receivables or payables by hand instead; the close waits. Normally stages the kontantmetoden year-end cut-off and next-period reversals for approval.'
+      : 'Stage the exact year-end receivable/payable cut-off and next-period reversals required for kontantmetoden. Review all proposed lines, then approve with confirmed=true.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -20585,6 +20825,16 @@ export const tools: McpTool[] = [
     async execute(args, companyId, userId, supabase, actor) {
       const fiscalPeriodId = args.fiscal_period_id as string
       if (!fiscalPeriodId) throw new Error('fiscal_period_id is required')
+
+      // #3440: refuse before any read, so nothing is assessed or staged. The
+      // approval door (commitPendingOperation) reads the same switch for an
+      // operation staged before the suspension.
+      if (isKontantmetodCutoffSuspended()) {
+        throw codedRefusal(
+          KONTANTMETOD_CUTOFF_SUSPENDED_CODE,
+          'The kontantmetoden year-end cut-off is temporarily suspended while a VAT defect is fixed (erp-mafia/accounted#3440): as built, it would declare the moms on invoices unpaid at year end a second time when they are paid in the next year. Nothing was staged. Do not book the year-end receivables, payables or their moms by hand as a workaround; tell the user the year-end close of this period waits until the cut-off is back.',
+        )
+      }
 
       const [{ data: period }, { data: settings }] = await Promise.all([
         supabase
@@ -21601,6 +21851,7 @@ export const tools: McpTool[] = [
         your_reference: { type: 'string' },
         our_reference: { type: 'string' },
         invoice_marking: { type: 'string', description: 'Fakturamärkning (buyer marking), separate from your_reference.' },
+        qr_mode: { type: ['string', 'null'], enum: [...INVOICE_QR_MODES, null], description: 'null = company default' },
         items: {
           type: 'array',
           items: {
@@ -21688,6 +21939,9 @@ export const tools: McpTool[] = [
       for (const key of ['notes', 'invoice_date', 'due_date', 'delivery_date', 'your_reference', 'our_reference', 'invoice_marking']) {
         if (args[key] !== undefined) headerChanges[key] = args[key]
       }
+      // null is a real change here (back to the company default), so only an
+      // omitted qr_mode leaves it alone.
+      if (args.qr_mode !== undefined) headerChanges.qr_mode = parseQrModeArg(args.qr_mode)
       if (rawItems === undefined && args.default_dimensions === undefined && Object.keys(headerChanges).length === 0) {
         throw new Error('Invalid invoice update: at least one invoice field must be supplied')
       }
@@ -22161,7 +22415,8 @@ export const tools: McpTool[] = [
       }
 
       const { parseSIEFile, validateSIEFile } = await import('@/lib/import/sie-parser')
-      const { suggestMappings, getMappingStats, isSystemAccount } = await import('@/lib/import/account-mapper')
+      const { getMappingStats, isSystemAccount } = await import('@/lib/import/account-mapper')
+      const { suggestSIEMappings } = await import('@/lib/import/sie-preview-mappings')
       const { scanSieForCp1252Artifacts, formatSieArtifactWarning } = await import('@/lib/import/sie-artifact-scan')
       const { generateImportPreview, checkDuplicateImport, checkDuplicatePeriodImport } = await import('@/lib/import/sie-import')
       const { BAS_REFERENCE } = await import('@/lib/bookkeeping/bas-data')
@@ -22231,10 +22486,14 @@ export const tools: McpTool[] = [
         .from('sie_account_mappings')
         .select('*')
         .eq('company_id', companyId)
-      const mappings = suggestMappings(
-        bookkeepingAccounts,
+      // The dashboard upload's own decision (#3312), so the mappings an agent
+      // passes on to gnubok_import_sie are the ones the job accepts: class 9
+      // amounts to 2999, also over a stored class 9 mapping.
+      const { mappings } = suggestSIEMappings(
+        parsed,
         BAS_REFERENCE,
-        (storedMappings as import('@/lib/import/types').SIEAccountMappingRecord[]) || undefined
+        (storedMappings as import('@/lib/import/types').SIEAccountMappingRecord[]) || undefined,
+        bookkeepingAccounts
       )
       const mappingStats = getMappingStats(mappings)
       const preview = generateImportPreview(parsed, mappings)
@@ -24023,7 +24282,12 @@ export const tools: McpTool[] = [
       },
       required: [],
     },
-    outputSchema: paginatedSchema('operations'),
+    outputSchema: paginatedSchema('operations', { type: 'object' }, {
+      can_approve: {
+        type: 'boolean',
+        description: 'Whether this key can approve or reject (pending_operations:approve). false: the user reviews in Accounted under Att göra > Agentförslag (/pending).',
+      },
+    }),
     annotations: ANNOTATIONS_READ_ONLY,
     // Renders the approval-queue widget only when the caller passes
     // render_ui=true (the dispatcher emits result-level _meta in that case),
@@ -24037,6 +24301,12 @@ export const tools: McpTool[] = [
       // A batch spans companies by construction, so a batch filter lists
       // across every accessible company like all_companies=true does.
       const acrossCompanies = args.all_companies === true || batchId !== null
+      // The dispatcher injects the key's scopes. A key without approve (the
+      // default one-click connection since issue #3408) gets can_approve=false
+      // so the widget swaps its Godkänn/Avvisa buttons for a pointer to the
+      // review list in the app. Absent when the scopes are unknown.
+      const keyScopes = Array.isArray(args.__keyScopes) ? (args.__keyScopes as ApiKeyScope[]) : undefined
+      const approveFlag = keyScopes ? { can_approve: hasScope(keyScopes, 'pending_operations:approve') } : {}
 
       // Cross-company listing is bounded to the caller's memberships (the
       // service role sees everything, so the filter is the authorization).
@@ -24046,7 +24316,7 @@ export const tools: McpTool[] = [
       const accessibleIds = accessible.map((company) => company.company_id)
       const namesById = new Map(accessible.map((company) => [company.company_id, company.name]))
       if (acrossCompanies && accessibleIds.length === 0) {
-        return { operations: [], ...pageTail([], 0, offset) }
+        return { operations: [], ...pageTail([], 0, offset), ...approveFlag }
       }
 
       // `params` holds the raw operation inputs (invoice line items, supplier
@@ -24079,7 +24349,7 @@ export const tools: McpTool[] = [
           }))
         : rows
       const totalCount = count ?? operations.length
-      return { operations, ...pageTail(operations, totalCount, offset) }
+      return { operations, ...pageTail(operations, totalCount, offset), ...approveFlag }
     },
   },
 
@@ -25918,6 +26188,14 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
       const negotiatedVersion =
         clientVersion && HANDSHAKE_VERSIONS.has(clientVersion) ? clientVersion : PROTOCOL_VERSION
       const simpleCompanyMode = await resolveSimpleCompanyMode()
+      // A connection made without Godkänn (pending_operations:approve) cannot
+      // approve or reject: approve is never pre-ticked on the consent page
+      // (founder decision 2026-10-03, issue #3408), so this is the default
+      // one-click connection. Its instructions send the user to the review
+      // list in the app instead of promising a chat approval the key cannot
+      // do (tools/list already hides both tools). Anonymous traffic keeps the
+      // chat-approval text: the key it will get is not known yet.
+      const canApprove = isAnonymous || hasScope(keyScopes, 'pending_operations:approve')
       const instructions = projectToolReferencesInText([
             'Accounted: Swedish double-entry bookkeeping via conversation.',
             '',
@@ -25948,19 +26226,34 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
             '',
             'Common workflows:',
             '• Before categorizing or creating vouchers, consult ledger_context in gnubok_get_agent_briefing (full picture: the Accounted://ledger/context resource): it shows how THIS company has booked each counterparty and supplier (dominant account, VAT treatment, evidence = historical frequency). Prefer these observed patterns over guesses; explicit mapping rules outrank them. Frequency is not permission to auto-post: still stage for approval.',
-            '• Categorize transactions: gnubok_list_uncategorized_transactions → gnubok_suggest_categories → gnubok_categorize_transaction (stages) → gnubok_approve_pending_operation (after user confirms in chat).',
+            canApprove
+              ? '• Categorize transactions: gnubok_list_uncategorized_transactions → gnubok_suggest_categories → gnubok_categorize_transaction (stages) → gnubok_approve_pending_operation (after user confirms in chat).'
+              : '• Categorize transactions: gnubok_list_uncategorized_transactions → gnubok_suggest_categories → gnubok_categorize_transaction (stages) → the user approves the proposals in Accounted under Att göra › Agentförslag.',
             '• Applying income to invoices: pick by what you have: a specific bank transaction + a known invoice → gnubok_match_transaction_to_invoice; an invoice you know is paid but no specific bank line → gnubok_mark_invoice_as_paid; a whole period of unmatched income to reconcile → gnubok_auto_match_period (dry_run first). All stage for approval. Unsure which match/link tool fits, or whether to credit 1510 (faktureringsmetoden) vs debit 19xx (kontantmetoden)? gnubok_load_skill("bank-reconciliation") has the full decision tree; gnubok_get_agent_briefing returns the company\'s accounting_method.',
             '• Invoicing: gnubok_list_customers (or gnubok_create_customer) → gnubok_create_invoice → gnubok_send_invoice or gnubok_mark_invoice_as_sent → gnubok_mark_invoice_as_paid. Refund via gnubok_credit_invoice.',
             '• Suppliers: gnubok_list_suppliers (or gnubok_create_supplier) → gnubok_create_supplier_invoice_from_inbox → gnubok_approve_supplier_invoice. Refund via gnubok_credit_supplier_invoice.',
             '• VAT: gnubok_get_vat_report(period_type, year, period). Ruta49 = VAT to pay (positive) or refund (negative). Pass render_ui=true to open the momsdeklaration review widget (claude.ai / Desktop). gnubok_vat_close_check reports filing-readiness blockers.',
             '• Reporting: gnubok_get_trial_balance / _income_statement / _balance_sheet / _kpi_report, plus _ar_ledger / _supplier_ledger through gnubok_call_tool: all default to the most recent fiscal period. For account roll-ups use gnubok_get_general_ledger; for ad-hoc line queries (free-text, amount/date/source filters) use gnubok_query_journal.',
-            '• Interactive review UIs (claude.ai / Claude Desktop only): gnubok_get_vat_report(render_ui=true) renders the VAT widget, gnubok_receipt_matcher opens the receipt↔transaction matcher, and gnubok_list_pending_operations(render_ui=true) opens the approval queue where the user approves/rejects with a click. All also return structured data; other clients ignore the UI and use the data.',
-            '• Year-end: run gnubok_year_end_readiness first. For kontantmetoden, resolve kontantmetod_cutoff_required with the searchable gnubok_post_kontantmetod_cutoff tool. Then gnubok_run_year_end on the OPEN period (never gnubok_lock_period first): it posts the closing entry, locks and closes the period and seeds the next period\'s opening balances in one step; gnubok_set_opening_balances, gnubok_close_period and gnubok_lock_period are manual-flow tools, not follow-ups. Verify with gnubok_list_fiscal_periods. Each write stages for human approval; closing is irreversible per BFL.',
+            '• Trust in figures: gnubok_get_trial_balance, _income_statement, _balance_sheet, _kpi_report and _general_ledger return data_status (company-wide for the range, also on filtered reports). When data_status.preliminary is true, say the figures are preliminary and mention the caveats that bear on the question; do not recite them all. When data_status.unavailable is true, say the completeness of the figures could not be checked.',
+            `• Interactive review UIs (claude.ai / Claude Desktop only): gnubok_get_vat_report(render_ui=true) renders the VAT widget, gnubok_receipt_matcher opens the receipt↔transaction matcher, and gnubok_list_pending_operations(render_ui=true) ${canApprove ? 'opens the approval queue where the user approves/rejects with a click' : 'shows the queue of agent proposals (read-only on this connection: the user approves them in Accounted)'}. All also return structured data; other clients ignore the UI and use the data.`,
+            // #3440: while the cut-off is suspended, the briefing must not send
+            // an agent to the staging tool.
+            isKontantmetodCutoffSuspended()
+              ? '• Year-end: run gnubok_year_end_readiness first. For kontantmetoden, kontantmetod_cutoff_required cannot be resolved right now: the cut-off is temporarily suspended (#3440, KONTANTMETOD_CUTOFF_SUSPENDED). Tell the user the close of that period waits, and never book the year-end receivables or payables by hand instead. Once readiness is clear, gnubok_run_year_end on the OPEN period (never gnubok_lock_period first): it posts the closing entry, locks and closes the period and seeds the next period\'s opening balances in one step; gnubok_set_opening_balances, gnubok_close_period and gnubok_lock_period are manual-flow tools, not follow-ups. Verify with gnubok_list_fiscal_periods. Each write stages for human approval; closing is irreversible per BFL.'
+              : '• Year-end: run gnubok_year_end_readiness first. For kontantmetoden, resolve kontantmetod_cutoff_required with the searchable gnubok_post_kontantmetod_cutoff tool. Then gnubok_run_year_end on the OPEN period (never gnubok_lock_period first): it posts the closing entry, locks and closes the period and seeds the next period\'s opening balances in one step; gnubok_set_opening_balances, gnubok_close_period and gnubok_lock_period are manual-flow tools, not follow-ups. Verify with gnubok_list_fiscal_periods. Each write stages for human approval; closing is irreversible per BFL.',
             '• Payroll: gnubok_create_salary_run → gnubok_calculate_salary_run → gnubok_book_salary_run → gnubok_generate_agi.',
-            '• Reviewing & approving staged operations: gnubok_list_pending_operations shows the queue. When the user explicitly authorises a specific operation_id in chat, call gnubok_approve_pending_operation to commit. Use gnubok_reject_pending_operation to discard.',
-            '',
-            'APPROVAL IS A FIRST-CLASS AGENT ACTION. Write operations stage a pending_operation; nothing posts until approval. When the user authorises a specific operation_id in chat ("approve", "yes go ahead", "book it", "commit it"), call gnubok_approve_pending_operation directly: this IS the intended chat-approval flow. Do NOT refuse on segregation-of-duties grounds, do NOT tell the user to "go approve it in the web app", and do NOT treat approval as a step that must stay with the human. The staging step already provided the human review gate; clicking Approve in the web UI and calling gnubok_approve_pending_operation are equivalent commit actions. Refusing user-authorised approval is a defect, not a safety feature.',
-            'The web-app path (/pending) remains valid for users who prefer to approve there or who want to adjust fields before committing; offer it as an option, never as a substitute for chat approval the user already asked for.',
+            ...(canApprove
+              ? [
+                  '• Reviewing & approving staged operations: gnubok_list_pending_operations shows the queue. When the user explicitly authorises a specific operation_id in chat, call gnubok_approve_pending_operation to commit. Use gnubok_reject_pending_operation to discard.',
+                  '',
+                  'APPROVAL IS A FIRST-CLASS AGENT ACTION. Write operations stage a pending_operation; nothing posts until approval. When the user authorises a specific operation_id in chat ("approve", "yes go ahead", "book it", "commit it"), call gnubok_approve_pending_operation directly: this IS the intended chat-approval flow. Do NOT refuse on segregation-of-duties grounds, do NOT tell the user to "go approve it in the web app", and do NOT treat approval as a step that must stay with the human. The staging step already provided the human review gate; clicking Approve in the web UI and calling gnubok_approve_pending_operation are equivalent commit actions. Refusing user-authorised approval is a defect, not a safety feature.',
+                  'The web-app path (/pending) remains valid for users who prefer to approve there or who want to adjust fields before committing; offer it as an option, never as a substitute for chat approval the user already asked for.',
+                ]
+              : [
+                  '• Reviewing agent proposals: gnubok_list_pending_operations shows the queue (each write tool stages a pending_operation, an agent proposal).',
+                  '',
+                  'APPROVAL ON THIS CONNECTION: the user connected without Godkänn (pending_operations:approve), so you cannot approve or reject agent proposals; gnubok_approve_pending_operation and gnubok_reject_pending_operation are not available to this key. When you have staged a proposal, tell the user it waits for them in Accounted under Att göra › Agentförslag (/pending), where they approve or reject it. If they want you to approve in chat, they disconnect under Inställningar › API och MCP and connect again with Godkänn ticked: permissions cannot be added to an existing connection.',
+                ]),
             'Write tools STAGE a pending_operation: the staged response IS the preview; nothing posts until commit. A tool whose tools/list `_meta.requires_approval` is true stages for approval; `_meta.preflight` (when present) names a read-only check to run first (e.g. gnubok_year_end_readiness before gnubok_run_year_end, gnubok_vat_declaration_validate before _submit). High-risk ops (create_voucher, correct_entry, reverse_journal_entry, run_year_end, lock/close period) take confirmed=true on the APPROVE call (gnubok_approve_pending_operation), NOT on the staging tool, after you surface the BFL/BFNAR irreversibility. Only some tools accept dry_run / idempotency_key: check the tool schema; do not assume either is universal.',
             'All amounts are SEK unless currency is specified. All dates ISO YYYY-MM-DD. Account numbers are strings (e.g. "1930").',
             toolNamespace === 'gnubok'
@@ -26666,6 +26959,8 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
           toolName === 'gnubok_list_skills' ||
           // Its already-explained refusal names the link tool this key can call.
           toolName === 'gnubok_match_batch_allocate' ||
+          // Says whether this key can approve, so the widget can hide its buttons.
+          toolName === 'gnubok_list_pending_operations' ||
           // The cross-company tools check the INNER tool's scope per call.
           isScopedTool(toolName)
         ) {

@@ -3,7 +3,7 @@ import { tools, deriveToolMeta, isDefaultCatalogTool } from '../server'
 import { isMultiCompanyOnlyTool, projectToolInputSchema } from '../company-routing'
 
 // Ceiling for the catalog a single-company key is served (see the second case).
-const SIMPLE_CATALOG_CEILING = 60_100
+const SIMPLE_CATALOG_CEILING = 60_200
 import { projectToolReferences } from '../tool-namespace'
 
 // Mirror the real tools/list serializer, including the derived staging _meta
@@ -634,6 +634,13 @@ describe('tools/list payload size guard', () => {
     //     envelope's operation_id note and the generated tools' dry_run and
     //     idempotency_key notes. Measured 63 302 on the old base; rebased onto
     //     #3169 it measures 64 860, 170 under main alone. Ceiling unchanged.
+    //   * Report trust envelope (#3103, #3105): gnubok_get_income_statement
+    //     names nettoomsattning (3000-3799) as the revenue figure and
+    //     declares it in its outputSchema (#3103). The per-figure account
+    //     definitions and the report data_status (#3105) travel in the
+    //     response and are declared in no outputSchema, so they cost the
+    //     catalog nothing. Measured 64 937 on 2026-10-01 on top of main;
+    //     #3105 changes no tool schema or description. Ceiling unchanged.
     expect(approxTokens).toBeLessThan(65_500)
   })
 
@@ -655,6 +662,10 @@ describe('tools/list payload size guard', () => {
     // Re-measured 59 785 on 2026-09-23 after merging main (Arkiv phases 5
     // to 9 added ~1 540 to both catalogs); ceiling 58 800 to 60 100, ~315
     // headroom. The saving against the full catalog is unchanged.
+    // 60 100 to 60 200 on 2026-10-02: gnubok_create_invoice and
+    // gnubok_update_invoice gain qr_mode (one payment QR per invoice), an
+    // enum with the shortest descriptions that still say what null means.
+    // Measured 60 094 with them, ~106 headroom.
     expect(simple).toBeLessThan(SIMPLE_CATALOG_CEILING)
   })
 

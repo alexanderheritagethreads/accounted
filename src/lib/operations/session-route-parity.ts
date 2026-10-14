@@ -109,6 +109,7 @@ export const SESSION_ROUTE_PARITY: Record<string, ParityEntry> = {
   'PUT /api/calendar/feed': uiOnly('calendar feed subscription settings for the secret feed URL'),
   'DELETE /api/calendar/feed': uiOnly('revokes the secret calendar feed URL (credential)'),
   'POST /api/company/members/invite': uiOnly(PRIVILEGE),
+  'POST /api/company/members/invite/:id': uiOnly(PRIVILEGE),
   'DELETE /api/company/members/invite/:id': uiOnly(PRIVILEGE),
   'DELETE /api/company/members/:id': uiOnly(PRIVILEGE),
   'POST /api/team/invite': uiOnly(PRIVILEGE),
@@ -322,12 +323,14 @@ export const SESSION_ROUTE_PARITY: Record<string, ParityEntry> = {
   'POST /api/import/suppliers/execute': covered([`POST ${V}/suppliers/bulk-create`]),
   'POST /api/import/articles/parse': uiOnly(PREVIEW),
   'POST /api/import/articles/execute': covered(['gnubok_create_article'], 'one article per call, no bulk'),
+  'DELETE /api/import/registers/:id/undo': gap('P3', 'undo a dashboard customer/supplier/article import; v1 bulk-create records no run to undo'),
   'POST /api/import/documents/preview': uiOnly(PREVIEW),
   'POST /api/import/documents/attach': covered(['gnubok_upload_document', 'gnubok_link_documents_to_vouchers']),
   'POST /api/import/opening-balance/parse': uiOnly(PREVIEW),
   'POST /api/import/opening-balance/execute': covered([`POST ${V}/fiscal-periods/:id/opening-balances/manual`, 'gnubok_set_opening_balances_manual'], 'the spreadsheet parse stays UI-only; the API takes lines'),
   'POST /api/import/opening-balance/correct': covered([`POST ${V}/fiscal-periods/:id/opening-balances/correct`, 'gnubok_correct_opening_balances']),
   'POST /api/import/opening-balance/correct-inline': covered([`POST ${V}/journal-entries/:id/strike-lines`, 'gnubok_correct_entry_lines'], 'no cascade to later years'),
+  'POST /api/import/opening-balance/split-per-project': covered([`POST ${V}/fiscal-periods/:id/opening-balances/split-per-project`, 'gnubok_split_opening_balances_per_project']),
 
   // ── Customers, articles, sales ─────────────────────────────────────
   'POST /api/customers': covered([`POST ${V}/customers`, 'gnubok_create_customer']),
@@ -363,6 +366,7 @@ export const SESSION_ROUTE_PARITY: Record<string, ParityEntry> = {
   'POST /api/invoices/:id/send-payment-confirmation': gap('P3', 'email a betalningsbekräftelse'),
   'POST /api/invoices/self-billed': gap('P3', 'register a received självfaktura'),
   'POST /api/invoices/preview-pdf': uiOnly(PREVIEW),
+  'POST /api/invoices/preview-email': uiOnly(PREVIEW),
   'POST /api/invoices/recurring': covered(['gnubok_create_recurring_schedule']),
   'PATCH /api/invoices/recurring/:id': covered(['gnubok_update_recurring_schedule']),
   'DELETE /api/invoices/recurring/:id': gap('P3', 'delete a schedule (pause is covered by gnubok_update_recurring_schedule)'),
@@ -688,4 +692,4 @@ export const SESSION_ROUTE_PARITY: Record<string, ParityEntry> = {
  * The exact number of 'gap' entries today. Covering a gap means lowering
  * this; adding one means raising it in the same diff, visibly.
  */
-export const GAP_CEILING = 137
+export const GAP_CEILING = 138

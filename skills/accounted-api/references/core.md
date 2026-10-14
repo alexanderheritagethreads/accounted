@@ -83,6 +83,7 @@ Creates a new company owned by the API key user (or attached to one of their tea
 - Not idempotent, and Idempotency-Key is not honoured on this company-less route: a retry after a network failure creates a second company. List GET /api/v1/companies before retrying.
 - org_number is required for a VAT-registered company (the invoice momsregistreringsnummer derives from it), and f_skatt must be stated explicitly: F-skatt approval is never assumed.
 - accounting_method may be omitted: it then defaults by form (aktiebolag accrual, enskild firma cash) and the response shows the resolved value. The cash default is only legal when turnover normally stays under 3 MSEK (BFL 4 kap 4 §): send accrual explicitly for a larger enskild firma.
+- ideell_forening and ekonomisk_forening are rolled out per installation behind the server-side flags NEXT_PUBLIC_IDEELL_FORENING_ENABLED and NEXT_PUBLIC_EKONOMISK_FORENING_ENABLED. Until the flag is on, a request with that entity_type is refused with VALIDATION_ERROR on entity_type; enskild_firma and aktiebolag are always creatable.
 
 | Parameter | In | Type | Required | Notes |
 |---|---|---|---|---|
@@ -92,7 +93,7 @@ Request body:
 ```ts
 {
   name: string,
-  entity_type: "enskild_firma" | "aktiebolag" | "ideell_forening",
+  entity_type: "enskild_firma" | "aktiebolag" | "ideell_forening" | "ekonomisk_forening",
   org_number?: string,
   vat_registered: boolean,
   moms_period?: "monthly" | "quarterly" | "yearly" | null,
@@ -126,7 +127,7 @@ Response `200`:
   data: {
     id: string,
     name: string,
-    entity_type: "enskild_firma" | "aktiebolag" | "ideell_forening",
+    entity_type: "enskild_firma" | "aktiebolag" | "ideell_forening" | "ekonomisk_forening",
     org_number: string | null,
     vat_registered: boolean,
     moms_period: "monthly" | "quarterly" | "yearly" | null,
@@ -185,6 +186,7 @@ Peppol is locked per company until the operators grant it (every transmission is
 
 **Pitfalls:**
 - A company that already has access answers 409 PEPPOL_ACCESS_ALREADY_ENABLED; ask support for a higher cap or a receiving slot instead.
+- A company that cannot be a Peppol participant answers 422 with the code GET /peppol/registration reports in participant.code (PEPPOL_REGISTRATION_PERSONAL_NUMBER for a sole trader identified by personnummer); nothing is recorded.
 - Nothing is enabled immediately: poll GET /peppol/registration for access.status=enabled.
 
 | Parameter | In | Type | Required | Notes |
@@ -426,11 +428,13 @@ Response `200`:
     org_number: string | null,
     onboarding_complete: boolean | null,
     contact_person: string | null,
+    invoice_qr_mode: "auto" | "bank_app" | "swish" | "payment_link" | "none" | null,
     company_name: string | null,
     address_line1: string | null,
     address_line2: string | null,
     postal_code: string | null,
     city: string | null,
+    registered_office: string | null,
     country: string | null,
     phone: string | null,
     email: string | null,
@@ -472,6 +476,7 @@ Response `200`:
     invoice_show_bankgiro: boolean | null,
     invoice_show_plusgiro: boolean | null,
     invoice_show_swish: boolean | null,
+    invoice_show_payment_qr: boolean | null,
     invoice_show_logo: boolean | null,
     invoice_show_company_name: boolean | null,
     invoice_payment_links_enabled: boolean | null,
@@ -589,6 +594,7 @@ Request body:
   address_line2?: string,
   postal_code?: string,
   city?: string,
+  registered_office?: string | null,
   country?: string,
   phone?: string,
   email?: string | "",
@@ -615,6 +621,8 @@ Request body:
   invoice_show_bankgiro?: boolean,
   invoice_show_plusgiro?: boolean,
   invoice_show_swish?: boolean,
+  invoice_show_payment_qr?: boolean,
+  invoice_qr_mode?: "auto" | "bank_app" | "swish" | "payment_link" | "none",
   invoice_show_logo?: boolean,
   invoice_show_company_name?: boolean,
   invoice_company_name_position?: "header" | "footer",
@@ -678,11 +686,13 @@ Response `200`:
     org_number: string | null,
     onboarding_complete: boolean | null,
     contact_person: string | null,
+    invoice_qr_mode: "auto" | "bank_app" | "swish" | "payment_link" | "none" | null,
     company_name: string | null,
     address_line1: string | null,
     address_line2: string | null,
     postal_code: string | null,
     city: string | null,
+    registered_office: string | null,
     country: string | null,
     phone: string | null,
     email: string | null,
@@ -724,6 +734,7 @@ Response `200`:
     invoice_show_bankgiro: boolean | null,
     invoice_show_plusgiro: boolean | null,
     invoice_show_swish: boolean | null,
+    invoice_show_payment_qr: boolean | null,
     invoice_show_logo: boolean | null,
     invoice_show_company_name: boolean | null,
     invoice_payment_links_enabled: boolean | null,
@@ -848,11 +859,13 @@ Response `200`:
     org_number: string | null,
     onboarding_complete: boolean | null,
     contact_person: string | null,
+    invoice_qr_mode: "auto" | "bank_app" | "swish" | "payment_link" | "none" | null,
     company_name: string | null,
     address_line1: string | null,
     address_line2: string | null,
     postal_code: string | null,
     city: string | null,
+    registered_office: string | null,
     country: string | null,
     phone: string | null,
     email: string | null,
@@ -894,6 +907,7 @@ Response `200`:
     invoice_show_bankgiro: boolean | null,
     invoice_show_plusgiro: boolean | null,
     invoice_show_swish: boolean | null,
+    invoice_show_payment_qr: boolean | null,
     invoice_show_logo: boolean | null,
     invoice_show_company_name: boolean | null,
     invoice_payment_links_enabled: boolean | null,
@@ -1049,11 +1063,13 @@ Response `200`:
     org_number: string | null,
     onboarding_complete: boolean | null,
     contact_person: string | null,
+    invoice_qr_mode: "auto" | "bank_app" | "swish" | "payment_link" | "none" | null,
     company_name: string | null,
     address_line1: string | null,
     address_line2: string | null,
     postal_code: string | null,
     city: string | null,
+    registered_office: string | null,
     country: string | null,
     phone: string | null,
     email: string | null,
@@ -1095,6 +1111,7 @@ Response `200`:
     invoice_show_bankgiro: boolean | null,
     invoice_show_plusgiro: boolean | null,
     invoice_show_swish: boolean | null,
+    invoice_show_payment_qr: boolean | null,
     invoice_show_logo: boolean | null,
     invoice_show_company_name: boolean | null,
     invoice_payment_links_enabled: boolean | null,

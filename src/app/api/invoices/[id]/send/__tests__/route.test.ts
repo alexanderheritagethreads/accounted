@@ -42,7 +42,6 @@ vi.mock('@react-pdf/renderer', () => ({
 vi.mock('@/lib/invoices/pdf-template', () => ({
   InvoicePDF: vi.fn().mockReturnValue('mock-pdf-element'),
   brandingFromCompanySettings: vi.fn().mockReturnValue({}),
-  SHOW_SWISH_ON_INVOICE: false,
 }))
 import { InvoicePDF } from '@/lib/invoices/pdf-template'
 
@@ -111,6 +110,11 @@ vi.mock('@/lib/email/invoice-templates', () => ({
   generateInvoiceEmailText: vi.fn().mockReturnValue('Invoice text'),
   generateInvoiceEmailSubject: vi.fn().mockReturnValue('Faktura F-2024001'),
 }))
+import {
+  generateInvoiceEmailHtml,
+  generateInvoiceEmailSubject,
+  generateInvoiceEmailText,
+} from '@/lib/email/invoice-templates'
 
 const mockCreateInvoiceJournalEntry = vi.fn()
 vi.mock('@/lib/bookkeeping/invoice-entries', () => ({
@@ -314,6 +318,24 @@ describe('POST /api/invoices/[id]/send', () => {
 
     expect(status).toBe(400)
     expect((body.error as unknown as { code: string }).code).toBe('INVOICE_SEND_NO_CUSTOMER_EMAIL')
+  })
+
+  it('returns 409 INVOICE_CUSTOMER_MISSING for a draft whose customer was deleted (crm#263)', async () => {
+    // invoices.customer_id is ON DELETE SET NULL: the join comes back null.
+    enqueue({
+      data: { ...makeInvoice({ id: 'inv-1', items: [] }), customer_id: null, customer: null },
+      error: null,
+    })
+
+    const request = createMockRequest('/api/invoices/inv-1/send', { method: 'POST' })
+    const response = await POST(request, createMockRouteParams({ id: 'inv-1' }))
+    const { status, body } = await parseJsonResponse<{ error: { code: string; message: string } }>(response)
+
+    expect(status).toBe(409)
+    expect(body.error.code).toBe('INVOICE_CUSTOMER_MISSING')
+    expect(body.error.message).toContain('Fakturan saknar kund')
+    expect(mockSendEmail).not.toHaveBeenCalled()
+    expect(findCalls('invoices', 'update')).toEqual([])
   })
 
   it('returns 400 when the stored customer email is malformed', async () => {
@@ -1076,6 +1098,60 @@ describe('POST /api/invoices/[id]/send', () => {
         ],
       })
     )
+  })
+
+  it('returns 400 for an email subject over 200 characters, before anything is issued or sent', async () => {
+    enqueue({ data: invoice, error: null }) // ownership fetch precedes validation
+    const request = createMockRequest('/api/invoices/inv-1/send', {
+      method: 'POST',
+      body: { email_subject: 'x'.repeat(201) },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'inv-1' }))
+    const { status } = await parseJsonResponse(response)
+
+    expect(status).toBe(400)
+    expect(mockCreateInvoiceJournalEntry).not.toHaveBeenCalled()
+    expect(mockSendEmail).not.toHaveBeenCalled()
+  })
+
+  it('returns 400 for an email message over 5000 characters', async () => {
+    enqueue({ data: invoice, error: null })
+    const request = createMockRequest('/api/invoices/inv-1/send', {
+      method: 'POST',
+      body: { email_body: 'x'.repeat(5001) },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'inv-1' }))
+
+    expect(response.status).toBe(400)
+    expect(mockSendEmail).not.toHaveBeenCalled()
+  })
+
+  it('writes the email with this send\'s own subject and message, without storing them', async () => {
+    enqueue({ data: invoice, error: null })
+    enqueue({ data: company, error: null })
+    mockSendEmail.mockResolvedValue({ success: true, messageId: 'msg-texts' })
+    mockCreateInvoiceJournalEntry.mockResolvedValue({ id: 'je-1' })
+    enqueue({ data: [{ id: 'inv-1' }], error: null }) // status flip
+    enqueue({ data: null, error: null }) // journal_entry_id link
+
+    const request = createMockRequest('/api/invoices/inv-1/send', {
+      method: 'POST',
+      body: { email_subject: 'Faktura {fakturanummer} för juli', email_body: 'Hej! Här kommer julifakturan.' },
+    })
+    const response = await POST(request, createMockRouteParams({ id: 'inv-1' }))
+
+    expect(response.status).toBe(200)
+    const expectedData = expect.objectContaining({
+      overrides: { subject: 'Faktura {fakturanummer} för juli', body: 'Hej! Här kommer julifakturan.' },
+    })
+    expect(vi.mocked(generateInvoiceEmailSubject)).toHaveBeenCalledWith(expectedData)
+    expect(vi.mocked(generateInvoiceEmailHtml)).toHaveBeenCalledWith(expectedData)
+    expect(vi.mocked(generateInvoiceEmailText)).toHaveBeenCalledWith(expectedData)
+    // Never written to the invoice row.
+    for (const [payload] of findCalls('invoices', 'update')) {
+      expect(payload).not.toHaveProperty('email_subject')
+      expect(payload).not.toHaveProperty('email_body')
+    }
   })
 
   it('renders the final PDF as if already sent (no UTKAST banner)', async () => {
