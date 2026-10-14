@@ -30,6 +30,10 @@ RUN apk upgrade --no-cache \
 # cap_drop:[ALL] and read_only:true in docker-compose.yml. The crontab is
 # bind-mounted read-only with default 644 perms (readable by all), and the
 # supercronic binary is world-executable (chmod 0755 above).
+# HT patch: bake the generated crontab in so platforms without bind mounts
+# (Railway) can run this image as-is. docker-compose still bind-mounts over it.
+COPY docker/crontab.self-hosted /etc/supercronic/crontab
+
 USER nobody:nobody
 
 ENTRYPOINT ["supercronic"]
