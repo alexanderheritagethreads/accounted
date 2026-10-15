@@ -63,3 +63,13 @@ Gemini gratisnivå = 20 anrop/dygn per modell, och upstreams bakgrundsjobb
 (`documents/classify` var 5:e min) tömmer den. Kör utan AI eller med betald
 nyckel/EU-leverantör med kostnadstak (`AI_PROVIDER=openai-compatible`,
 `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`).
+
+## Byta Supabase-adress i en körande app
+
+`NEXT_PUBLIC_*` byts vid containerstart, men JS-filen som bär värdet behåller
+sitt namn och cachas `immutable` i ett år: webbläsare som redan besökt appen
+fortsätter mot den gamla adressen (inloggningen hänger, inkognito fungerar).
+Webbläsarklienten läser därför URL och anon-nyckel från sidans HTML
+(`window.__SUPABASE_PUBLIC__`, satt i `src/app/layout.tsx`); de inbakade
+värdena är bara reserv. Efter flytten räcker alltså omstart med nya variabler.
+Alla måste ändå logga in igen om JWT-hemligheten är ny.
