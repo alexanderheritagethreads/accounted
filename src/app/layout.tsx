@@ -177,6 +177,15 @@ export default async function RootLayout({
   // style attribute at all, keeping default hosts byte-identical.
   const fontPair = brand ? getBrandFontPair(brand.fontKey) : null;
 
+  // HT patch: the browser Supabase client reads these at call time (see
+  // lib/supabase/client.ts). The HTML always carries the current env, unlike
+  // the year-cached JS chunks, so changing the Supabase URL/key takes effect
+  // on the next page load. Public values only (URL + anon key).
+  const supabasePublic = JSON.stringify({
+    url: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
+    anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "",
+  }).replace(/</g, "\\u003c");
+
   return (
     <html
       lang={locale}
@@ -192,6 +201,10 @@ export default async function RootLayout({
       }
     >
       <head>
+        <script
+          nonce={nonce}
+          dangerouslySetInnerHTML={{ __html: `window.__SUPABASE_PUBLIC__=${supabasePublic};` }}
+        />
         <link rel="apple-touch-icon" href={branding.appleTouchIconPath} />
         {/* Tab icon: the brand's dedicated square favicon when set, else the
             logo (a wide lockup squeezed to 16px, but better than the default
